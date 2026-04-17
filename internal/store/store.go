@@ -150,6 +150,21 @@ func (s *Store) migrate() error {
 		}
 		version = 10
 	}
+	if version < 11 {
+		// Phase 3A: introduce host-scoped, path-free identity alongside legacy
+		// project_dir/worktree_branch columns. Default host_id to 'local' so
+		// existing rows remain valid; repo_remote_url is backfilled lazily by
+		// the hub on next session start (or DiscoverSessions).
+		_, err := s.db.Exec(`
+			ALTER TABLE sessions ADD COLUMN host_id TEXT NOT NULL DEFAULT 'local';
+			ALTER TABLE sessions ADD COLUMN repo_remote_url TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 11;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v11: %w", err)
+		}
+		version = 11
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
@@ -161,6 +176,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
 		       project_dir, project_name, worktree_branch, worktree_dir,
+		       host_id, repo_remote_url,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -186,6 +202,8 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&info.ProjectName,
 			&info.WorktreeBranch,
 			&info.WorktreeDir,
+			&info.HostID,
+			&info.RepoRemoteURL,
 			&info.Prompt,
 			&info.Title,
 			&info.TicketID,
@@ -199,6 +217,9 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
 		info.FollowUp = followUp != 0
+		// Branch is the new canonical name; mirror from the legacy
+		// worktree_branch column so callers can read either.
+		info.Branch = info.WorktreeBranch
 		if lastReadAt.Valid {
 			info.LastReadAt = lastReadAt.Time
 		}
@@ -226,13 +247,24 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		lastReadAt = &info.LastReadAt
 	}
 
+	// Prefer the new Branch field; fall back to legacy WorktreeBranch.
+	branch := info.Branch
+	if branch == "" {
+		branch = info.WorktreeBranch
+	}
+	hostID := info.HostID
+	if hostID == "" {
+		hostID = "local"
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
 			 project_dir, project_name, worktree_branch, worktree_dir,
+			 host_id, repo_remote_url,
 			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		info.ID,
 		info.ExternalID,
@@ -242,8 +274,10 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		followUp,
 		info.ProjectDir,
 		info.ProjectName,
-		info.WorktreeBranch,
+		branch,
 		info.WorktreeDir,
+		hostID,
+		info.RepoRemoteURL,
 		info.Prompt,
 		info.Title,
 		info.TicketID,
@@ -337,6 +371,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
 		       project_dir, project_name, worktree_branch, worktree_dir,
+		       host_id, repo_remote_url,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -352,6 +387,8 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&info.ProjectName,
 		&info.WorktreeBranch,
 		&info.WorktreeDir,
+		&info.HostID,
+		&info.RepoRemoteURL,
 		&info.Prompt,
 		&info.Title,
 		&info.TicketID,
@@ -368,6 +405,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		return nil, fmt.Errorf("find session by external_id %s: %w", externalID, err)
 	}
 	info.FollowUp = followUp != 0
+	info.Branch = info.WorktreeBranch
 	if lastReadAt.Valid {
 		info.LastReadAt = lastReadAt.Time
 	}

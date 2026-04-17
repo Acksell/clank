@@ -33,6 +33,22 @@ func RepoRoot(dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RemoteURL returns the URL of the named remote (typically "origin") for
+// the repository containing dir. Returns an error when the remote is not
+// configured — callers must decide whether to treat that as fatal or
+// degrade gracefully (a brand-new local repo may have no remotes yet).
+func RemoteURL(dir, remote string) (string, error) {
+	out, err := gitCmd(dir, "config", "--get", "remote."+remote+".url")
+	if err != nil {
+		return "", fmt.Errorf("get remote %q url: %w", remote, err)
+	}
+	url := strings.TrimSpace(out)
+	if url == "" {
+		return "", fmt.Errorf("remote %q has no url configured", remote)
+	}
+	return url, nil
+}
+
 // CurrentBranch returns the currently checked-out branch in dir.
 // Returns "HEAD" if in detached HEAD state.
 func CurrentBranch(dir string) (string, error) {

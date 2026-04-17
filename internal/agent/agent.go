@@ -324,15 +324,26 @@ type AgentInfo struct {
 }
 
 // StartRequest contains the parameters needed to start a new agent session.
+//
+// Identity fields are in transition (Phase 3 of hub_host_refactor.md):
+//   - HostID/RepoRemoteURL/Branch are the new canonical identity (host-scoped, path-free).
+//   - ProjectDir/WorktreeBranch are legacy fields kept for backwards compatibility;
+//     the hub backfills the new fields from them when only the legacy shape is sent.
+//
+// At least one of {ProjectDir, RepoRemoteURL} must be set so the hub can resolve a repo.
+// Note: identity uses raw strings (not host.RepoRef) to avoid an agent->host import cycle.
 type StartRequest struct {
 	Backend        BackendType    `json:"backend"`
-	ProjectDir     string         `json:"project_dir"`
+	HostID         string         `json:"host_id,omitempty"`         // Target host; empty defaults to "local" at the hub.
+	RepoRemoteURL  string         `json:"repo_remote_url,omitempty"` // Canonical repo identity (e.g. git@github.com:acksell/clank.git)
+	Branch         string         `json:"branch,omitempty"`          // Git branch; when set, the host creates/reuses a worktree
+	ProjectDir     string         `json:"project_dir,omitempty"`     // Legacy: filesystem path on the local host.
 	Prompt         string         `json:"prompt"`
 	SessionID      string         `json:"session_id,omitempty"`      // Empty = new session, set = resume
 	TicketID       string         `json:"ticket_id,omitempty"`       // Optional backlog ticket link
 	Agent          string         `json:"agent,omitempty"`           // OpenCode agent name (e.g. "build", "plan")
 	Model          *ModelOverride `json:"model,omitempty"`           // Per-message model override; nil = use default
-	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch name; when set, the daemon creates/reuses a worktree
+	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Legacy alias of Branch.
 }
 
 // Validate checks that required fields are set.
@@ -343,8 +354,8 @@ func (r StartRequest) Validate() error {
 	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
-	if r.ProjectDir == "" {
-		return fmt.Errorf("project_dir is required")
+	if r.ProjectDir == "" && r.RepoRemoteURL == "" {
+		return fmt.Errorf("project_dir or repo_remote_url is required")
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
@@ -362,7 +373,10 @@ type SessionInfo struct {
 	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
 	ProjectDir      string            `json:"project_dir"`
 	ProjectName     string            `json:"project_name"`
-	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Git branch this session operates on
+	HostID          string            `json:"host_id,omitempty"`         // New canonical identity (Phase 3); "local" by default.
+	RepoRemoteURL   string            `json:"repo_remote_url,omitempty"` // New canonical identity (Phase 3).
+	Branch          string            `json:"branch,omitempty"`          // New canonical name for the session's git branch.
+	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Legacy alias of Branch.
 	WorktreeDir     string            `json:"worktree_dir,omitempty"`    // Filesystem path of the git worktree (may differ from ProjectDir)
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode

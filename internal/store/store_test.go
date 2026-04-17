@@ -729,3 +729,81 @@ func TestConcurrentWrites(t *testing.T) {
 		t.Errorf("expected %d sessions, got %d", numWriters, len(sessions))
 	}
 }
+
+// TestUpsertAndLoadHostScopedIdentity verifies the Phase 3A identity fields
+// (HostID, RepoRemoteURL, Branch) round-trip alongside the legacy path-style
+// fields, and that the Branch field mirrors WorktreeBranch on load.
+func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	now := time.Now().Truncate(time.Millisecond)
+	info := agent.SessionInfo{
+		ID:            "ses-host-1",
+		Backend:       agent.BackendOpenCode,
+		Status:        agent.StatusIdle,
+		HostID:        "local",
+		RepoRemoteURL: "git@github.com:acksell/clank.git",
+		Branch:        "feat/x",
+		ProjectDir:    "/tmp/clank",
+		ProjectName:   "clank",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := s.UpsertSession(info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	got := sessions[0]
+	if got.HostID != "local" {
+		t.Errorf("HostID = %q, want local", got.HostID)
+	}
+	if got.RepoRemoteURL != info.RepoRemoteURL {
+		t.Errorf("RepoRemoteURL = %q, want %q", got.RepoRemoteURL, info.RepoRemoteURL)
+	}
+	// Branch and WorktreeBranch are mirrored: writer prefers Branch when set,
+	// reader populates Branch from the worktree_branch column.
+	if got.Branch != "feat/x" {
+		t.Errorf("Branch = %q, want feat/x", got.Branch)
+	}
+	if got.WorktreeBranch != "feat/x" {
+		t.Errorf("WorktreeBranch = %q, want feat/x", got.WorktreeBranch)
+	}
+}
+
+// TestUpsertDefaultsHostIDToLocal verifies that legacy callers that never
+// set HostID still produce rows with host_id='local' (the migration default
+// also covers this for pre-v11 rows).
+func TestUpsertDefaultsHostIDToLocal(t *testing.T) {
+	t.Parallel()
+	s := mustOpen(t, tempDBPath(t))
+
+	now := time.Now().Truncate(time.Millisecond)
+	info := agent.SessionInfo{
+		ID:          "ses-legacy-1",
+		Backend:     agent.BackendOpenCode,
+		Status:      agent.StatusIdle,
+		ProjectDir:  "/tmp/legacy",
+		ProjectName: "legacy",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.UpsertSession(info); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].HostID != "local" {
+		t.Fatalf("expected HostID=local, got %+v", sessions)
+	}
+}

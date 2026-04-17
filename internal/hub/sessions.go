@@ -12,6 +12,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -786,6 +787,27 @@ func parseTimeParam(s string) (time.Time, error) {
 // that branch, and the backend is started in the worktree directory instead of
 // the original ProjectDir.
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
+	// Phase 3A backfill: callers may send only the legacy {ProjectDir,
+	// WorktreeBranch} pair, only the new {RepoRemoteURL, Branch} pair, or
+	// both. Normalise so downstream code (and persistence) sees both shapes
+	// when the information is recoverable.
+	if req.HostID == "" {
+		req.HostID = string(host.HostLocal)
+	}
+	if req.Branch == "" && req.WorktreeBranch != "" {
+		req.Branch = req.WorktreeBranch
+	}
+	if req.WorktreeBranch == "" && req.Branch != "" {
+		req.WorktreeBranch = req.Branch
+	}
+	if req.RepoRemoteURL == "" && req.ProjectDir != "" {
+		// Best-effort: a missing or unconfigured remote shouldn't block
+		// session creation while the legacy path-centric flow is still in use.
+		if remote, err := git.RemoteURL(req.ProjectDir, "origin"); err == nil {
+			req.RepoRemoteURL = remote
+		}
+	}
+
 	// Resolve worktree if a branch is requested.
 	var wtBranch, worktreeDir string
 	if req.WorktreeBranch != "" {
@@ -816,6 +838,9 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		ID:             id,
 		Backend:        req.Backend,
 		Status:         agent.StatusStarting,
+		HostID:         req.HostID,
+		RepoRemoteURL:  req.RepoRemoteURL,
+		Branch:         wtBranch,
 		ProjectDir:     req.ProjectDir,
 		ProjectName:    filepath.Base(req.ProjectDir),
 		WorktreeBranch: wtBranch,
