@@ -20,10 +20,7 @@ func newInProcessHostClient(t *testing.T) hostclient.Client {
 func TestService_RegisterAndLookupHost(t *testing.T) {
 	t.Parallel()
 
-	s, err := New()
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	s := New()
 	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
@@ -48,10 +45,7 @@ func TestService_RegisterAndLookupHost(t *testing.T) {
 func TestService_RegisterHost_Validation(t *testing.T) {
 	t.Parallel()
 
-	s, err := New()
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	s := New()
 	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
@@ -66,10 +60,7 @@ func TestService_RegisterHost_Validation(t *testing.T) {
 func TestService_UnregisterHost(t *testing.T) {
 	t.Parallel()
 
-	s, err := New()
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	s := New()
 	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
@@ -97,10 +88,7 @@ func TestService_UnregisterHost(t *testing.T) {
 func TestService_closeHosts_ClosesEveryRegisteredHost(t *testing.T) {
 	t.Parallel()
 
-	s, err := New()
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	s := New()
 	defer s.Stop()
 
 	closedLocal := false
@@ -124,10 +112,7 @@ func TestService_closeHosts_ClosesEveryRegisteredHost(t *testing.T) {
 func TestService_closeHosts_SwallowsCloseErrors(t *testing.T) {
 	t.Parallel()
 
-	s, err := New()
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	s := New()
 	defer s.Stop()
 
 	remoteClosed := false

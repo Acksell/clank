@@ -72,15 +72,15 @@ func RunStart(foreground bool) error {
 
 	if foreground {
 		// Run in foreground — useful for debugging.
-		d, err := hub.New()
-		if err != nil {
-			return err
-		}
+		d := hub.New()
 
 		// Open SQLite store for session persistence.
 		dir, err := config.Dir()
 		if err != nil {
 			return fmt.Errorf("config dir: %w", err)
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir config dir: %w", err)
 		}
 		dbPath := filepath.Join(dir, "clank.db")
 		st, err := store.Open(dbPath)
@@ -115,7 +115,7 @@ func RunStart(foreground bool) error {
 
 		d.SetHostClient(hh.client)
 
-		return d.Run()
+		return runHubServer(d)
 	}
 
 	// Fork a background process. The forked process runs with

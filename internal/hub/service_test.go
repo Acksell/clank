@@ -2,6 +2,7 @@ package hub_test
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,44 +251,40 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-// testDaemon creates a daemon in a temp directory, starts it, and returns
-// the daemon, a connected client, and a cleanup function.
-func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
+// startHubOnSocket runs s on a fresh Unix listener in a temp directory
+// and blocks until the daemon is responsive. It mirrors what
+// daemoncli.runHubServer does in production minus the PID file and
+// signal handling — both of which are out of scope for hub_test.
+//
+// Returns a connected client, the socket path (so persistence tests
+// can restart on the same path via startHubAtSocket), and a cleanup
+// function that stops the daemon and waits for Run to return.
+func startHubOnSocket(t *testing.T, s *hub.Service) (*hubclient.Client, string, func()) {
 	t.Helper()
-
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
+	client, cleanup := startHubAtSocket(t, s, sockPath)
+	return client, sockPath, cleanup
+}
 
-	s := hub.NewWithPaths(sockPath, pidPath)
-
-	// Wire up mock backend manager for all backend types.
-	mgr := newMockBackendManager()
-	s.BackendManagers[agent.BackendOpenCode] = mgr
-	s.BackendManagers[agent.BackendClaudeCode] = mgr
-
-	// Start daemon in background.
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.Run()
-	}()
-
-	// Wait for socket to exist.
-	client := hubclient.NewClient(sockPath)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	for {
-		if err := client.Ping(ctx); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("daemon did not start in time")
-		case err := <-errCh:
-			t.Fatalf("daemon exited unexpectedly: %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
+// startHubAtSocket runs s on a Unix listener bound to the supplied
+// sockPath. Used by persistence tests that need to restart a hub on
+// the same socket the previous instance was bound to.
+func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient.Client, func()) {
+	t.Helper()
+	// Defensive: clear any stale socket left by a previous instance
+	// (closing a Unix listener does not unlink the on-disk file).
+	os.Remove(sockPath)
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen %s: %v", sockPath, err)
 	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Run(listener) }()
+
+	client := hubclient.NewClient(sockPath)
+	waitForDaemon(t, client)
 
 	cleanup := func() {
 		s.Stop()
@@ -296,12 +293,22 @@ func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 		case <-time.After(5 * time.Second):
 			t.Error("daemon did not stop in time")
 		}
+		os.Remove(sockPath)
 	}
+	return client, cleanup
+}
 
-	// Store lastBackend accessor on test via a helper.
-	// We'll access it through the test closure.
-	_ = mgr
+// testDaemon creates a daemon with mock backends, starts it, and returns
+// the daemon, a connected client, and a cleanup function.
+func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
+	t.Helper()
 
+	s := hub.New()
+	mgr := newMockBackendManager()
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
+
+	client, _, cleanup := startHubOnSocket(t, s)
 	return s, client, cleanup
 }
 
@@ -310,35 +317,13 @@ func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 func testDaemonWithBackendAccess(t *testing.T) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
 	t.Helper()
 
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-
-	s := hub.NewWithPaths(sockPath, pidPath)
-
+	s := hub.New()
 	mgr := newMockBackendManager()
 	s.BackendManagers[agent.BackendOpenCode] = mgr
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	client := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client)
-
-	getBackend := func() *mockBackend {
-		return mgr.getLatest()
-	}
-
-	cleanup := func() {
-		s.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
-	}
-
+	client, _, cleanup := startHubOnSocket(t, s)
+	getBackend := func() *mockBackend { return mgr.getLatest() }
 	return s, client, getBackend, cleanup
 }
 
@@ -374,11 +359,7 @@ func eventTypes(events []agent.Event) []string {
 func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
 	t.Helper()
 
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-
-	s := hub.NewWithPaths(sockPath, pidPath)
+	s := hub.New()
 
 	discMgr := &mockDiscovererManager{
 		snapshots: snapshots,
@@ -392,36 +373,27 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*h
 	s.BackendManagers[agent.BackendOpenCode] = discMgr
 	s.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	client := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client)
-
-	getBackend := func() *mockBackend {
-		return discMgr.getLatest()
-	}
-
-	cleanup := func() {
-		s.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
-	}
-
+	client, _, cleanup := startHubOnSocket(t, s)
+	getBackend := func() *mockBackend { return discMgr.getLatest() }
 	return s, client, getBackend, cleanup
 }
 
-func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, pidPath, dbPath string, cleanup func()) {
+// testDaemonWithStore is the persistence variant: it allocates a temp
+// dir (or uses the supplied one), opens a SQLite store, and starts a
+// hub bound to a socket inside that dir. Returns the socket path and DB
+// path so two-phase persistence tests can shut the daemon down and
+// restart a second instance on the same artifacts.
+//
+// PID file path is intentionally NOT returned: hub.Service no longer
+// touches a PID file (Phase 2F lifted that into daemoncli), so tests
+// have nothing to clean up there.
+func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, dbPath string, cleanup func()) {
 	t.Helper()
 
 	if dir == "" {
 		dir = shortTempDir(t)
 	}
 	sockPath = filepath.Join(dir, "test.sock")
-	pidPath = filepath.Join(dir, "test.pid")
 	dbPath = filepath.Join(dir, "test.db")
 
 	st, err := store.Open(dbPath)
@@ -429,7 +401,7 @@ func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubc
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	s = hub.NewWithPaths(sockPath, pidPath)
+	s = hub.New()
 	s.Store = st
 
 	// Wire up mock backend manager.
@@ -437,20 +409,7 @@ func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubc
 	s.BackendManagers[agent.BackendOpenCode] = mgr
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	client = hubclient.NewClient(sockPath)
-	waitForDaemon(t, client)
-
-	cleanup = func() {
-		s.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
-	}
+	client, cleanup = startHubAtSocket(t, s, sockPath)
 	return
 }
 

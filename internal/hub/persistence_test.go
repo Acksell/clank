@@ -2,13 +2,11 @@ package hub_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
@@ -20,7 +18,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 
 	// --- Phase 1: create sessions and mutate user-owned fields ---
 
-	d1, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
 	_ = d1
 	ctx := context.Background()
 
@@ -63,34 +61,18 @@ func TestPersistence_RoundTrip(t *testing.T) {
 
 	// --- Phase 2: restart daemon with same DB, verify persistence ---
 
-	// Need to remove stale socket before new daemon can listen.
-	os.Remove(sockPath)
-	os.Remove(pidPath)
-
 	st2, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store.Open (phase 2): %v", err)
 	}
-	d2 := hub.NewWithPaths(sockPath, pidPath)
+	d2 := hub.New()
 	d2.Store = st2
 	mgr2 := newMockBackendManager()
 	d2.BackendManagers[agent.BackendOpenCode] = mgr2
 	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
 
-	errCh2 := make(chan error, 1)
-	go func() { errCh2 <- d2.Run() }()
-
-	client2 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client2)
-
-	defer func() {
-		d2.Stop()
-		select {
-		case <-errCh2:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon 2 did not stop in time")
-		}
-	}()
+	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
+	defer cleanup2()
 
 	// The session should survive the restart.
 	sessions, err := client2.ListSessions(ctx)
@@ -137,7 +119,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	dir := shortTempDir(t)
 
 	// Phase 1: create and delete a session.
-	_, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	_, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
 	ctx := context.Background()
 
 	info, err := client1.CreateSession(ctx, agent.StartRequest{
@@ -157,29 +139,16 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	cleanup1()
 
 	// Phase 2: restart, verify session is gone.
-	os.Remove(sockPath)
-	os.Remove(pidPath)
-
 	st2, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := hub.NewWithPaths(sockPath, pidPath)
+	d2 := hub.New()
 	d2.Store = st2
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- d2.Run() }()
-
-	client2 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client2)
-
+	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
 	defer func() {
-		d2.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
+		cleanup2()
 		st2.Close()
 	}()
 
@@ -202,7 +171,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	dir := shortTempDir(t)
 
 	// Phase 1: create a session and leave it in a busy state.
-	d1, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
 	_ = d1
 	ctx := context.Background()
 
@@ -229,32 +198,19 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	cleanup1()
 
 	// Phase 2: restart daemon — the session should be normalized to idle.
-	os.Remove(sockPath)
-	os.Remove(pidPath)
-
 	st2, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := hub.NewWithPaths(sockPath, pidPath)
+	d2 := hub.New()
 	d2.Store = st2
 	mgr2 := newMockBackendManager()
 	d2.BackendManagers[agent.BackendOpenCode] = mgr2
 	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- d2.Run() }()
-
-	client2 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client2)
-
+	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
 	defer func() {
-		d2.Stop()
-		select {
-		case <-errCh:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
+		cleanup2()
 		st2.Close()
 	}()
 
@@ -291,8 +247,6 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 
 	// Phase 1: create daemon with store, discover session, then
 	// manually corrupt the status by writing busy to the DB.
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
 	dbPath := filepath.Join(dir, "test.db")
 
 	st1, err := store.Open(dbPath)
@@ -300,16 +254,13 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	d1 := hub.NewWithPaths(sockPath, pidPath)
+	d1 := hub.New()
 	d1.Store = st1
 	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
 	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
 	d1.BackendManagers[agent.BackendClaudeCode] = &discMgr1.mockBackendManager
 
-	errCh1 := make(chan error, 1)
-	go func() { errCh1 <- d1.Run() }()
-	client1 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client1)
+	client1, sockPath, cleanup1 := startHubOnSocket(t, d1)
 
 	ctx := context.Background()
 	if err := client1.DiscoverSessions(ctx, "/tmp/stale-project"); err != nil {
@@ -336,37 +287,25 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 	}
 
 	d1.Stop()
-	<-errCh1
+	cleanup1()
 	st1.Close()
 
 	// Phase 2: restart and re-discover. The stale busy status
 	// should be normalized to idle.
-	os.Remove(sockPath)
-	os.Remove(pidPath)
-
 	st2, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	d2 := hub.NewWithPaths(sockPath, pidPath)
+	d2 := hub.New()
 	d2.Store = st2
 	discMgr2 := &mockDiscovererManager{snapshots: snapshots}
 	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
 	d2.BackendManagers[agent.BackendClaudeCode] = &discMgr2.mockBackendManager
 
-	errCh2 := make(chan error, 1)
-	go func() { errCh2 <- d2.Run() }()
-	client2 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client2)
-
+	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
 	defer func() {
-		d2.Stop()
-		select {
-		case <-errCh2:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
+		cleanup2()
 		st2.Close()
 	}()
 
@@ -446,7 +385,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 		},
 	}
 
-	d1, client1, sockPath, pidPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
 	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
 	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
 	ctx := context.Background()
@@ -478,9 +417,6 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	cleanup1()
 
 	// Phase 2: restart daemon, re-discover with updated backend fields.
-	os.Remove(sockPath)
-	os.Remove(pidPath)
-
 	updatedSnapshots := []agent.SessionSnapshot{
 		{
 			ID:        "ext-merge-1",                // same external ID
@@ -495,24 +431,16 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := hub.NewWithPaths(sockPath, pidPath)
+	d2 := hub.New()
 	d2.Store = st2
 	discMgr2 := &mockDiscovererManager{snapshots: updatedSnapshots}
 	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
 	d2.BackendManagers[agent.BackendClaudeCode] = &discMgr2.mockBackendManager
 
-	errCh2 := make(chan error, 1)
-	go func() { errCh2 <- d2.Run() }()
-
-	client2 := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client2)
+	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
 	defer func() {
-		d2.Stop()
-		select {
-		case <-errCh2:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop in time")
-		}
+		cleanup2()
+		st2.Close()
 	}()
 
 	// Re-discover — the session should be a duplicate (already loaded from DB).

@@ -2,13 +2,8 @@
 // HTTP API. The TUI, the clank CLI, and any external Go-based clients
 // import this package.
 //
-// Phase 2A of hub_host_refactor.md introduces this package as the new home
-// for the daemon-facing Client; internal/daemon retains type aliases for
-// backwards-compat while the rest of the codebase migrates over.
-//
 // The socket path and PID-file helpers (SocketPath, PIDPath, IsRunning) also
-// live here. They still resolve to "daemon.sock" / "daemon.pid" inside
-// ~/.clank during Phase 2 — Phase 2F renames them to "hub.sock" / "hub.pid".
+// live here and resolve to "hub.sock" / "hub.pid" inside ~/.clank.
 package hubclient
 
 import (
@@ -66,15 +61,12 @@ func NewDefaultClient() (*Client, error) {
 }
 
 // SocketPath returns the Unix socket path for clankd's Hub API.
-//
-// Phase 2F will rename this to hub.sock; today it remains daemon.sock to
-// avoid breaking already-running daemons.
 func SocketPath() (string, error) {
 	dir, err := config.Dir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "daemon.sock"), nil
+	return filepath.Join(dir, "hub.sock"), nil
 }
 
 // PIDPath returns the PID file path for clankd.
@@ -83,7 +75,7 @@ func PIDPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "daemon.pid"), nil
+	return filepath.Join(dir, "hub.pid"), nil
 }
 
 // IsRunning checks if clankd is already running by reading the PID file and

@@ -1,36 +1,27 @@
 // This file contains the core Service struct, constructor, and HTTP
-// listener lifecycle for the Hub control plane. The host-catalog
-// primitives are in hub.go; topical method sets are in sessions.go,
-// events.go, permissions.go, voice.go, etc.
+// serve loop for the Hub control plane. The host-catalog primitives
+// are in hub.go; topical method sets are in sessions.go, events.go,
+// permissions.go, voice.go, etc.
 //
-// Phase 2 caveat: Service still owns the Unix socket listener and PID
-// file. The intended endgame (per hub_host_refactor.md Phase 2F) is for
-// internal/cli/daemoncli to open the listener and inject it into a
-// minimal RunWithListener; doing so requires renaming the socket from
-// daemon.sock → hub.sock without breaking any running production
-// daemon, so it's deferred.
+// Service does NOT touch the filesystem for its own listener or PID
+// file — those are caller responsibilities (daemoncli in production,
+// startHubOnSocket in tests). Run takes a pre-bound net.Listener and
+// returns when Stop() is called or s.ctx is otherwise cancelled.
 package hub
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
-	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
@@ -40,13 +31,9 @@ import (
 //
 // It manages coding agent sessions (OpenCode, Claude Code) — currently
 // in-process or via a single clank-host subprocess — aggregates their
-// events, and exposes an HTTP API over a Unix domain socket for the TUI
-// and CLI to consume.
+// events, and exposes an HTTP API to its caller-supplied net.Listener
+// (a Unix domain socket in production).
 type Service struct {
-	sockPath string
-	pidPath  string
-	listener net.Listener
-
 	// hosts is the catalog of registered Host endpoints, keyed by
 	// HostID. Phase 2 only uses a single "local" host whose client is
 	// also mirrored into hostClient below for the legacy single-host
@@ -121,38 +108,13 @@ type managedSession struct {
 	pendingPerms []agent.PermissionData // queue of permission prompts awaiting responses
 }
 
-// New creates a new daemon instance. It does not start listening.
-func New() (*Service, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return nil, fmt.Errorf("config dir: %w", err)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir config dir: %w", err)
-	}
+// New constructs an in-memory Hub Service. It does not touch the
+// filesystem or open any sockets — wire up BackendManagers / Store /
+// HostClient as needed, then hand the result to a Run-driver
+// (daemoncli.startServer in production, startHubOnSocket in tests).
+func New() *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		sockPath:                     filepath.Join(dir, "daemon.sock"),
-		pidPath:                      filepath.Join(dir, "daemon.pid"),
-		hosts:                        make(map[host.HostID]hostclient.Client),
-		sessions:                     make(map[string]*managedSession),
-		subscribers:                  make(map[string]chan agent.Event),
-		startTime:                    time.Now(),
-		ctx:                          ctx,
-		cancel:                       cancel,
-		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
-		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
-		primaryAgentsRefreshInFlight: make(map[string]bool),
-	}, nil
-}
-
-// NewWithPaths creates a Service with explicit socket and PID file paths.
-// Used for testing where we don't want to use the default config directory.
-func NewWithPaths(sockPath, pidPath string) *Service {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{
-		sockPath:                     sockPath,
-		pidPath:                      pidPath,
 		hosts:                        make(map[host.HostID]hostclient.Client),
 		sessions:                     make(map[string]*managedSession),
 		subscribers:                  make(map[string]chan agent.Event),
@@ -165,40 +127,12 @@ func NewWithPaths(sockPath, pidPath string) *Service {
 	}
 }
 
-// SocketPath returns the Unix socket path for the daemon. Delegates to
-// hubclient (canonical home post-Phase-2A).
-func SocketPath() (string, error) { return hubclient.SocketPath() }
-
-// PIDPath returns the PID file path. Delegates to hubclient.
-func PIDPath() (string, error) { return hubclient.PIDPath() }
-
-// IsRunning checks if a daemon is already running. Delegates to hubclient.
-func IsRunning() (bool, int, error) { return hubclient.IsRunning() }
-
-// Run starts the daemon, listening on the Unix socket. It blocks until
-// the context is cancelled or a termination signal is received.
-func (s *Service) Run() error {
-	// Clean up stale socket.
-	os.Remove(s.sockPath)
-
-	listener, err := net.Listen("unix", s.sockPath)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.sockPath, err)
-	}
-	s.listener = listener
-	// Make socket accessible.
-	if err := os.Chmod(s.sockPath, 0o600); err != nil {
-		listener.Close()
-		return fmt.Errorf("chmod socket: %w", err)
-	}
-
-	// Write PID file.
-	if err := os.WriteFile(s.pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
-		listener.Close()
-		return fmt.Errorf("write PID file: %w", err)
-	}
-
-	s.log.Printf("daemon started (pid=%d, socket=%s)", os.Getpid(), s.sockPath)
+// Run serves the Hub HTTP API on the provided listener and blocks
+// until Stop() is called (or s.ctx is cancelled some other way). The
+// caller owns the listener's lifetime AND any on-disk artifacts (PID
+// file, socket file, etc.); Run never touches them.
+func (s *Service) Run(listener net.Listener) error {
+	s.log.Printf("hub started (pid=%d, addr=%s)", os.Getpid(), listener.Addr())
 
 	// Load persisted sessions from the store (if available).
 	if s.Store != nil {
@@ -266,10 +200,6 @@ func (s *Service) Run() error {
 
 	server := &http.Server{Handler: mux}
 
-	// Handle termination signals.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	// Start HTTP server in background.
 	s.wg.Add(1)
 	go func() {
@@ -279,18 +209,16 @@ func (s *Service) Run() error {
 		}
 	}()
 
-	// Wait for shutdown signal or context cancellation.
-	select {
-	case sig := <-sigCh:
-		s.log.Printf("received signal %v, shutting down", sig)
-	case <-s.ctx.Done():
-		s.log.Printf("context cancelled, shutting down")
-	}
+	// Wait for shutdown (Stop() or external ctx cancellation).
+	<-s.ctx.Done()
+	s.log.Printf("context cancelled, shutting down")
 
 	return s.shutdown(server)
 }
 
-// shutdown gracefully stops the daemon.
+// shutdown gracefully tears down internal subsystems and the HTTP
+// server. The on-disk listener artifacts (socket file, PID file) are
+// the caller's responsibility — Run never created them.
 func (s *Service) shutdown(server *http.Server) error {
 	s.cancel()
 
@@ -339,12 +267,8 @@ func (s *Service) shutdown(server *http.Server) error {
 		s.log.Printf("http shutdown error: %v", err)
 	}
 
-	// Clean up files.
-	os.Remove(s.sockPath)
-	os.Remove(s.pidPath)
-
 	s.wg.Wait()
-	s.log.Printf("daemon stopped")
+	s.log.Printf("hub stopped")
 	return nil
 }
 
@@ -366,7 +290,8 @@ func (s *Service) SetHostClient(c hostclient.Client) {
 	_ = s.RegisterHost("local", c)
 }
 
-// Stop requests the daemon to shut down.
+// Stop requests the daemon to shut down. Safe to call from any
+// goroutine; idempotent.
 func (s *Service) Stop() {
 	s.cancel()
 }

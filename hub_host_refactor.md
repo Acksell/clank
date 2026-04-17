@@ -393,14 +393,15 @@ Done when: full session lifecycle works end-to-end through Unix socket; existing
 - Service is **not yet wired into clankd** — it is a destination for the migrations in 2C–2E. `internal/daemon` still owns the live session registry, event fanout, and permission broker.
 - Unit tests for the catalog primitives use the real `hostclient.NewInProcess(host.New(...))` rather than mocks (per AGENTS.md). Shutdown's host-close-error swallowing is covered.
 
-#### Phase 2C–2E complete (deferred: 2F)
+#### Phase 2C–2E complete (2F complete)
 
 - `internal/daemon/` package fully drained: `daemon.go` (→ `service.go`), `sessions.go`, `events.go`, `permissions.go`, `agents_models.go`, `persistence.go`, `voice.go`, `routes.go`, `worktrees.go`, `host_aliases.go`, and every `*_test.go` `git mv`'d into `internal/hub/`. The directory has been removed; `internal/daemon/client.go` was deleted (TUI and clankcli already imported `hubclient` after 2A).
 - `daemon.Daemon` → `hub.Service`; method receivers renamed `(d *Daemon)` → `(s *Service)`; `daemonToolProvider` → `hubToolProvider`. Test packages renamed `daemon_test` → `hub_test`. Logger prefix `[clank-daemon]` → `[clank-hub]`.
 - The merged `Service` struct adds the host catalog (`hostsMu`, `hosts`) on top of the legacy daemon fields. `SetHostClient(c)` is now equivalent to `RegisterHost("local", c)`; the in-process host built in `Run()` registers itself the same way, so the catalog and the legacy `s.hostClient` shortcut stay in sync.
 - A new public `Service.Shutdown()` closes registered hosts + the persistence store without touching the HTTP listener — for tests that never called `Run()` and need to release the host client they registered. The Run-owned `(s *Service) shutdown(server)` path is unchanged and still does the file/listener cleanup in production.
 - `internal/cli/daemoncli/daemoncli.go` now imports `hub` and `hubclient` (no `daemon` import anywhere in production code). `RunStart`'s foreground path calls `hub.New()` + `hub.Service.Run()`; `runStop`/`runStatus` use `hubclient.IsRunning` and `hubclient.NewDefaultClient`.
-- Socket file is still `daemon.sock` (Phase 2F item — needs a coordinated stop+restart of any running production daemon to avoid orphan sockets).
+- Socket and PID files renamed to `hub.sock` / `hub.pid` (Phase 2F). The lifecycle of those on-disk artifacts — listener creation, chmod, PID write, SIGINT/SIGTERM → Stop, and removal on shutdown — was lifted out of `hub.Service` into `internal/cli/daemoncli/server.go::runHubServer`. `hub.Service` is now constructed with `hub.New()` (no error, no disk I/O) and run via `Service.Run(net.Listener)`; tests construct their own listeners via the `startHubOnSocket`/`startHubAtSocket` helpers in `internal/hub/service_test.go`. Coverage for the on-disk lifecycle moved to `internal/cli/daemoncli/server_test.go::TestRunHubServer_ManagesSocketAndPIDFiles`.
+- Note: `daemon.log` was **not** renamed in 2F (out of scope for the spec which only mentions `.sock`/`.pid`); rename if/when other `daemon` strings get a sweep.
 - `cmd/clankd/main.go` was already a trivial delegator to `daemoncli.Command()`; no change needed.
 - Pre-existing rot surfaced but **not fixed** in this commit (out of scope, no behaviour change):
   - `internal/tui/sessionview_integration_test.go` (build tag `integration`) still references the long-deleted `daemon.NewDefaultBackendFactory` / `BackendFactory` / `OnShutdown` API. Default `go test ./...` skips it; needs a follow-up to either modernize or delete.

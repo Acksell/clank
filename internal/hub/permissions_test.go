@@ -2,35 +2,22 @@ package hub_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/hub"
 )
 
 func TestDaemonPermissionReply(t *testing.T) {
 	mgr := newMockBackendManager()
 
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-
-	s := hub.NewWithPaths(sockPath, pidPath)
+	s := hub.New()
 	s.BackendManagers[agent.BackendOpenCode] = mgr
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	client := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client)
-	defer func() {
-		s.Stop()
-		<-errCh
-	}()
+	client, _, cleanup := startHubOnSocket(t, s)
+	defer cleanup()
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{

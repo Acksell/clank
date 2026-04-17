@@ -2,13 +2,10 @@ package hub_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/hub"
 )
 
@@ -29,55 +26,6 @@ func TestDaemonPing(t *testing.T) {
 	}
 	if resp.Version == "" {
 		t.Error("expected non-empty version")
-	}
-}
-
-func TestDaemonPIDFile(t *testing.T) {
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-
-	s := hub.NewWithPaths(sockPath, pidPath)
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	// Wait for PID file.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	client := hubclient.NewClient(sockPath)
-	for {
-		if err := client.Ping(ctx); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("daemon did not start in time")
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	// PID file should exist.
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("read PID file: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("PID file is empty")
-	}
-
-	// Stop hub.
-	s.Stop()
-	<-errCh
-
-	// PID file should be cleaned up.
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Error("PID file should be removed after stop")
-	}
-	// Socket should be cleaned up.
-	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
-		t.Error("socket file should be removed after stop")
 	}
 }
 
@@ -115,19 +63,13 @@ func TestDaemonStatus(t *testing.T) {
 func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	mgr := newMockBackendManager()
 
-	dir := shortTempDir(t)
-	sockPath := filepath.Join(dir, "test.sock")
-	pidPath := filepath.Join(dir, "test.pid")
-
-	s := hub.NewWithPaths(sockPath, pidPath)
+	s := hub.New()
 	s.BackendManagers[agent.BackendOpenCode] = mgr
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run() }()
-
-	client := hubclient.NewClient(sockPath)
-	waitForDaemon(t, client)
+	client, _, cleanup := startHubOnSocket(t, s)
+	// Note: cleanup is NOT deferred — this test triggers shutdown
+	// inline to verify backends are stopped during graceful shutdown.
 
 	ctx := context.Background()
 
@@ -151,13 +93,8 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Stop hub.
-	s.Stop()
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not stop in time")
-	}
+	// Trigger shutdown via cleanup (s.Stop + wait for Run to return).
+	cleanup()
 
 	// All backends should have been stopped.
 	backends := mgr.getAll()
