@@ -21,8 +21,10 @@ func TestService_RegisterAndLookupHost(t *testing.T) {
 	t.Parallel()
 
 	s, err := New()
-	if err != nil { t.Fatalf("New: %v", err) }
-	defer s.Shutdown()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
 	if err := s.RegisterHost("local", hc); err != nil {
@@ -47,8 +49,10 @@ func TestService_RegisterHost_Validation(t *testing.T) {
 	t.Parallel()
 
 	s, err := New()
-	if err != nil { t.Fatalf("New: %v", err) }
-	defer s.Shutdown()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
 	if err := s.RegisterHost("", hc); err == nil {
@@ -63,8 +67,10 @@ func TestService_UnregisterHost(t *testing.T) {
 	t.Parallel()
 
 	s, err := New()
-	if err != nil { t.Fatalf("New: %v", err) }
-	defer s.Shutdown()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Stop()
 
 	hc := newInProcessHostClient(t)
 	_ = s.RegisterHost("local", hc)
@@ -82,41 +88,61 @@ func TestService_UnregisterHost(t *testing.T) {
 	}
 }
 
-func TestService_Shutdown_ClosesRegisteredHosts(t *testing.T) {
+// TestService_closeHosts_ClosesEveryRegisteredHost guards the
+// catalog-iterating cleanup in shutdown(server). The pre-refactor
+// shutdown path called Close on s.hostClient only (the legacy
+// single-host shortcut); migrating to a multi-host catalog without
+// updating shutdown would silently leak every non-"local" host. This
+// test fails if someone reverts closeHosts to the single-client path.
+func TestService_closeHosts_ClosesEveryRegisteredHost(t *testing.T) {
 	t.Parallel()
 
 	s, err := New()
-	if err != nil { t.Fatalf("New: %v", err) }
-
-	closed := false
-	closer := &closeRecorder{onClose: func() error { closed = true; return nil }}
-	if err := s.RegisterHost("local", closer); err != nil {
-		t.Fatalf("RegisterHost: %v", err)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
+	defer s.Stop()
 
-	if err := s.Shutdown(); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	closedLocal := false
+	closedRemote := false
+	_ = s.RegisterHost("local", &closeRecorder{onClose: func() error { closedLocal = true; return nil }})
+	_ = s.RegisterHost("remote-1", &closeRecorder{onClose: func() error { closedRemote = true; return nil }})
+
+	s.closeHosts()
+
+	if !closedLocal {
+		t.Error("closeHosts did not close the local host")
 	}
-	if !closed {
-		t.Error("Shutdown did not call Close on the registered host")
+	if !closedRemote {
+		t.Error("closeHosts did not close the non-local host (catalog leak)")
 	}
 }
 
-func TestService_Shutdown_SwallowsHostCloseErrors(t *testing.T) {
+// TestService_closeHosts_SwallowsCloseErrors asserts that one host
+// returning an error from Close does not abort the iteration; the
+// remote host's Close must still run.
+func TestService_closeHosts_SwallowsCloseErrors(t *testing.T) {
 	t.Parallel()
 
 	s, err := New()
-	if err != nil { t.Fatalf("New: %v", err) }
-	closer := &closeRecorder{onClose: func() error { return errors.New("boom") }}
-	_ = s.RegisterHost("local", closer)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Stop()
 
-	if err := s.Shutdown(); err != nil {
-		t.Errorf("Shutdown propagated host close error: %v", err)
+	remoteClosed := false
+	_ = s.RegisterHost("local", &closeRecorder{onClose: func() error { return errors.New("boom") }})
+	_ = s.RegisterHost("remote", &closeRecorder{onClose: func() error { remoteClosed = true; return nil }})
+
+	s.closeHosts() // must not panic
+
+	if !remoteClosed {
+		t.Error("closeHosts stopped iterating after the first host's Close errored")
 	}
 }
 
 // closeRecorder is the minimum satisfier of hostclient.Client we need to
-// observe Shutdown semantics. It panics on every other method to make
+// observe shutdown semantics. It panics on every other method to make
 // accidental expansion of the surface obvious during the migration.
 type closeRecorder struct {
 	hostclient.Client // embedded interface; all unimplemented methods panic

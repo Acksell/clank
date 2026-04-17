@@ -307,16 +307,15 @@ func (s *Service) shutdown(server *http.Server) error {
 	}
 	s.mu.Unlock()
 
-	// Shut down the host plane. host.Shutdown() stops every backend in its
-	// registry, which is the canonical owner now that createSession /
-	// activateBackend / handleSendMessage all go through hostClient.CreateSession.
-	// Service must not double-stop.
+	// Shut down the host plane. host.Shutdown() stops every backend in
+	// the in-process host's registry; closeHosts then disconnects every
+	// client in the catalog (including the legacy s.hostClient shortcut,
+	// which is the same object as catalog["local"]). Service must not
+	// double-stop the host service itself.
 	if s.host != nil {
 		s.host.Shutdown()
 	}
-	if s.hostClient != nil {
-		_ = s.hostClient.Close()
-	}
+	s.closeHosts()
 
 	// Close the persistence store.
 	if s.Store != nil {
@@ -372,24 +371,18 @@ func (s *Service) Stop() {
 	s.cancel()
 }
 
-// Shutdown closes catalog-owned resources (registered hosts, store) and
-// cancels the Service's root context. Unlike the internal shutdown
-// helper, it does NOT touch the HTTP server, listener, or PID file —
-// the production path runs those through Run/shutdown, while tests that
-// never called Run still need a way to release the host clients they
-// registered.
-func (s *Service) Shutdown() error {
-	s.cancel()
-
+// closeHosts disconnects every host client in the catalog. Errors are
+// logged but not returned: shutdown is best-effort, and the caller
+// (typically the Run-cleanup path) has nothing useful to do with a
+// per-host close failure.
+//
+// Iterates a snapshot so we don't hold hostsMu across an external Close
+// call. Safe to call multiple times — Close on an already-closed client
+// is a no-op for both InProcess and HTTP transports.
+func (s *Service) closeHosts() {
 	for id, c := range s.snapshotHosts() {
 		if err := c.Close(); err != nil {
 			s.log.Printf("close host %s: %v", id, err)
 		}
 	}
-	if s.Store != nil {
-		if err := s.Store.Close(); err != nil {
-			s.log.Printf("close store: %v", err)
-		}
-	}
-	return nil
 }
