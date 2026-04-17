@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 )
 
 // HUB
@@ -20,16 +21,6 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bt := agent.BackendType(backendStr)
-	mgr, ok := d.BackendManagers[bt]
-	if !ok {
-		writeJSON(w, http.StatusOK, []agent.AgentInfo{})
-		return
-	}
-	lister, ok := mgr.(agent.AgentLister)
-	if !ok {
-		writeJSON(w, http.StatusOK, []agent.AgentInfo{})
-		return
-	}
 
 	// Try to serve from the persistent cache (SQLite) first. This avoids
 	// blocking on the OpenCode server starting up — the response is instant.
@@ -40,14 +31,14 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		if cached != nil {
 			// Return cached data immediately and refresh in the background.
-			d.refreshPrimaryAgentsInBackground(bt, projectDir, lister)
+			d.refreshPrimaryAgentsInBackground(bt, projectDir)
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
 	}
 
-	// No cache — must fetch synchronously (first time for this project).
-	agents, err := lister.ListAgents(r.Context(), projectDir)
+	// No cache — fetch synchronously through the host plane.
+	agents, err := d.hostClient.ListAgents(r.Context(), bt, projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -71,18 +62,7 @@ func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bt := agent.BackendType(backendStr)
-	mgr, ok := d.BackendManagers[bt]
-	if !ok {
-		writeJSON(w, http.StatusOK, []agent.ModelInfo{})
-		return
-	}
-	lister, ok := mgr.(agent.ModelLister)
-	if !ok {
-		writeJSON(w, http.StatusOK, []agent.ModelInfo{})
-		return
-	}
-
-	models, err := lister.ListModels(r.Context(), projectDir)
+	models, err := d.hostClient.ListModels(r.Context(), bt, projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -94,48 +74,16 @@ func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-// handleDebugOpenCodeServers returns running OpenCode server processes.
-// This is a debug endpoint specific to the OpenCode backend — it type-asserts
-// directly to *OpenCodeBackendManager rather than going through an interface.
-func (d *Daemon) handleDebugOpenCodeServers(w http.ResponseWriter, r *http.Request) {
-	type serverWithSessions struct {
-		agent.ServerInfo
-		SessionCount int `json:"session_count"`
-	}
-
-	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager)
-	if !ok {
-		writeJSON(w, http.StatusOK, []serverWithSessions{})
-		return
-	}
-
-	// Count sessions per project dir.
-	d.mu.RLock()
-	projectSessions := make(map[string]int)
-	for _, ms := range d.sessions {
-		projectSessions[ms.info.ProjectDir]++
-	}
-	d.mu.RUnlock()
-
-	var result []serverWithSessions
-	for _, srv := range ocMgr.ListServers() {
-		result = append(result, serverWithSessions{
-			ServerInfo:   srv,
-			SessionCount: projectSessions[srv.ProjectDir],
-		})
-	}
-	if result == nil {
-		result = []serverWithSessions{}
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-// HOST
 // openCodeServerURLs returns a map from project directory to server URL
 // for all running OpenCode servers. Returns nil if no OpenCode backend
 // manager is registered.
+//
+// TODO(hub-host-refactor): this still type-asserts to the concrete
+// OpenCodeBackendManager. Once the daemon's session info no longer needs
+// the URL inline (or once it's exposed via SessionBackend / Client),
+// this helper goes away.
 func (d *Daemon) openCodeServerURLs() map[string]string {
-	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*OpenCodeBackendManager)
+	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*host.OpenCodeBackendManager)
 	if !ok {
 		return nil
 	}
@@ -162,7 +110,7 @@ func (d *Daemon) persistPrimaryAgents(bt agent.BackendType, projectDir string, a
 // agent list for the given backend/project. The result is persisted to SQLite
 // so that subsequent requests get the updated list. Safe to call multiple
 // times — concurrent refreshes for the same key are deduplicated.
-func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectDir string, lister agent.AgentLister) {
+func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectDir string) {
 	d.primaryAgentsRefreshMu.Lock()
 	key := string(bt) + "\x00" + projectDir
 	if d.primaryAgentsRefreshInFlight[key] {
@@ -182,7 +130,7 @@ func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectD
 		ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 		defer cancel()
 
-		agents, err := lister.ListAgents(ctx, projectDir)
+		agents, err := d.hostClient.ListAgents(ctx, bt, projectDir)
 		if err != nil {
 			d.log.Printf("background primary agent refresh for %s/%s: %v", bt, projectDir, err)
 			return
@@ -204,11 +152,13 @@ func (d *Daemon) warmPrimaryAgentCaches() {
 	if d.Store == nil {
 		return
 	}
-	for bt, mgr := range d.BackendManagers {
-		lister, ok := mgr.(agent.AgentLister)
-		if !ok {
-			continue
-		}
+	backends, err := d.hostClient.ListBackends(d.ctx)
+	if err != nil {
+		d.log.Printf("warning: list backends: %v", err)
+		return
+	}
+	for _, bi := range backends {
+		bt := bi.Name
 		dirs, err := d.Store.KnownProjectDirs(bt)
 		if err != nil {
 			d.log.Printf("warning: load project dirs for %s: %v", bt, err)
@@ -218,7 +168,7 @@ func (d *Daemon) warmPrimaryAgentCaches() {
 			if _, err := os.Stat(dir); os.IsNotExist(err) {
 				continue
 			}
-			d.refreshPrimaryAgentsInBackground(bt, dir, lister)
+			d.refreshPrimaryAgentsInBackground(bt, dir)
 		}
 	}
 }

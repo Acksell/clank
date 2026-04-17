@@ -23,6 +23,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/host"
+	hostclient "github.com/acksell/clank/internal/host/client"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
@@ -50,7 +52,25 @@ type Daemon struct {
 	// OpenCode servers). Managers that also implement agent.AgentLister or
 	// agent.SessionDiscoverer gain agent listing and session discovery
 	// capabilities automatically.
+	//
+	// Set BEFORE Run(); Run() consumes this map to construct the embedded
+	// host.Service. After Run() the canonical access path is hostClient.
 	BackendManagers map[agent.BackendType]agent.BackendManager
+
+	// host is the in-process Host plane. Built in Run() from
+	// BackendManagers. Lifecycle (Init/Shutdown) is owned by the Daemon
+	// while we're a single process; Phase 2+ moves it to clank-host.
+	host *host.Service
+	// hostClient is the Hub-side abstraction over host. May be injected
+	// by the caller before Run() (production clankd path: HTTP client
+	// over a Unix socket to the clank-host subprocess). If nil at Run()
+	// entry, the daemon constructs an in-process host from
+	// BackendManagers — used by tests and by the legacy single-process
+	// path.
+	//
+	// All HUB-tagged code paths go through this so the call shape matches
+	// the wire path.
+	hostClient hostclient.Client
 
 	// Store is the optional SQLite persistence layer. When non-nil, session
 	// metadata is written through on every mutation and loaded on startup.
@@ -221,19 +241,31 @@ func (d *Daemon) Run() error {
 		}
 	}
 
-	// Populate the desired server set from known project dirs and start
-	// the reconciler loop. This is the ONLY mechanism that starts servers.
-	// The first reconcile tick runs immediately, starting all known servers
-	// in parallel.
-	for bt, mgr := range d.BackendManagers {
-		knownDirs := func() ([]string, error) {
+	// Construct the in-process Host plane from the configured
+	// BackendManagers, UNLESS the caller injected a HostClient (the
+	// production clankd path, where clank-host runs as a subprocess and
+	// daemon talks to it over a Unix socket).
+	//
+	// In InProcess mode the daemon owns the host's lifetime: it must
+	// call host.Run / host.Shutdown. In HTTP mode the subprocess owns
+	// the host; the daemon only owns the client connection.
+	if d.hostClient == nil {
+		d.host = host.New(host.Options{
+			BackendManagers: d.BackendManagers,
+			Log:             d.log,
+		})
+		d.hostClient = hostclient.NewInProcess(d.host)
+
+		// Initialize backend managers via host.Service. The knownDirs callback
+		// is closed over d.Store so warm-up uses the persisted project list.
+		knownDirs := func(bt agent.BackendType) ([]string, error) {
 			if d.Store == nil {
 				return nil, nil
 			}
 			return d.Store.KnownProjectDirs(bt)
 		}
-		if err := mgr.Init(d.ctx, knownDirs); err != nil {
-			d.log.Printf("warning: init %s backend: %v", bt, err)
+		if err := d.host.Run(d.ctx, knownDirs); err != nil {
+			d.log.Printf("warning: host.Run: %v", err)
 		}
 	}
 
@@ -288,22 +320,15 @@ func (d *Daemon) shutdown(server *http.Server) error {
 	}
 	d.mu.Unlock()
 
-	// Stop all managed sessions.
-	d.mu.Lock()
-	for id, ms := range d.sessions {
-		if ms.backend != nil {
-			d.log.Printf("stopping session %s", id)
-			if err := ms.backend.Stop(); err != nil {
-				d.log.Printf("error stopping session %s: %v", id, err)
-			}
-		}
+	// Shut down the host plane. host.Shutdown() stops every backend in its
+	// registry, which is the canonical owner now that createSession /
+	// activateBackend / handleSendMessage all go through hostClient.CreateSession.
+	// Daemon must not double-stop.
+	if d.host != nil {
+		d.host.Shutdown()
 	}
-	d.mu.Unlock()
-
-	// Shut down all backend managers (e.g., stop OpenCode servers).
-	for bt, mgr := range d.BackendManagers {
-		d.log.Printf("shutting down %s backend manager", bt)
-		mgr.Shutdown()
+	if d.hostClient != nil {
+		_ = d.hostClient.Close()
 	}
 
 	// Close the persistence store.
@@ -341,6 +366,15 @@ func (d *Daemon) shutdown(server *http.Server) error {
 // Call before Run() to capture all daemon output.
 func (d *Daemon) SetLogOutput(w io.Writer) {
 	d.log.SetOutput(w)
+}
+
+// SetHostClient injects a host client. Call before Run(). When set, the
+// daemon does NOT construct its own in-process host.Service and the
+// caller is responsible for the host plane's lifetime (e.g. the clankd
+// subprocess supervisor for clank-host). When unset, daemon falls back
+// to building an in-process host from BackendManagers.
+func (d *Daemon) SetHostClient(c hostclient.Client) {
+	d.hostClient = c
 }
 
 // Stop requests the daemon to shut down.

@@ -1,8 +1,8 @@
-package daemon
+package host
 
-// HOST: BackendManager implementations live on the Host plane in the target
-// architecture (see hub_host_refactor.md, decision #6). They are colocated
-// with the daemon today; Phase 1 extracts them into host.Service.
+// BackendManager implementations live on the Host plane. Each manages a
+// specific backend type (OpenCode, Claude Code), owning any long-lived
+// resources such as OpenCode server processes.
 
 import (
 	"context"

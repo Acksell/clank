@@ -224,10 +224,14 @@ func (tp *daemonToolProvider) KnownProjectDirs(ctx context.Context) ([]string, e
 		return nil, nil
 	}
 	seen := make(map[string]struct{})
-	for bt := range tp.d.BackendManagers {
-		dirs, err := tp.d.Store.KnownProjectDirs(bt)
+	backends, err := tp.d.hostClient.ListBackends(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list backends: %w", err)
+	}
+	for _, bi := range backends {
+		dirs, err := tp.d.Store.KnownProjectDirs(bi.Name)
 		if err != nil {
-			return nil, fmt.Errorf("known dirs for %s: %w", bt, err)
+			return nil, fmt.Errorf("known dirs for %s: %w", bi.Name, err)
 		}
 		for _, dir := range dirs {
 			seen[dir] = struct{}{}

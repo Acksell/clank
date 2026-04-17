@@ -28,17 +28,20 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
 		return
 	}
-	// Try each backend manager that supports session discovery.
+	// Fan out to every backend the host knows about and accumulate
+	// snapshots. Discovery is best-effort per backend — failures are
+	// logged but do not abort the whole call.
 	var snapshots []agent.SessionSnapshot
-	for _, mgr := range d.BackendManagers {
-		discoverer, ok := mgr.(agent.SessionDiscoverer)
-		if !ok {
-			continue
-		}
-		found, err := discoverer.DiscoverSessions(r.Context(), body.ProjectDir)
+	backends, err := d.hostClient.ListBackends(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, bi := range backends {
+		found, err := d.hostClient.DiscoverSessions(r.Context(), bi.Name, body.ProjectDir)
 		if err != nil {
-			d.log.Printf("discover sessions: %v", err)
-			continue // best-effort: try other managers
+			d.log.Printf("discover sessions (%s): %v", bi.Name, err)
+			continue
 		}
 		snapshots = append(snapshots, found...)
 	}
@@ -232,11 +235,7 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (d *Daemon) activateBackend(id string, ms *managedSession) error {
-	mgr, ok := d.BackendManagers[ms.info.Backend]
-	if !ok {
-		return fmt.Errorf("no backend manager registered for %s", ms.info.Backend)
-	}
-	backend, err := mgr.CreateBackend(agent.StartRequest{
+	backend, err := d.hostClient.CreateSession(d.ctx, id, agent.StartRequest{
 		Backend:    ms.info.Backend,
 		ProjectDir: ms.info.ProjectDir,
 		SessionID:  ms.info.ExternalID,
@@ -363,11 +362,6 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		// Historical session with no backend — create one and start it with
 		// the follow-up prompt. Start() handles resume: it skips Session.New()
 		// because sessionID is already set, starts SSE, then sends the prompt.
-		mgr, ok := d.BackendManagers[ms.info.Backend]
-		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no backend manager for " + string(ms.info.Backend)})
-			return
-		}
 		req := agent.StartRequest{
 			Backend:    ms.info.Backend,
 			ProjectDir: ms.info.ProjectDir,
@@ -376,7 +370,7 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			Agent:      body.Agent,
 			Model:      body.Model,
 		}
-		backend, err := mgr.CreateBackend(req)
+		backend, err := d.hostClient.CreateSession(d.ctx, id, req)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -656,8 +650,12 @@ func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	d.deletePersistedSession(id)
 	d.mu.Unlock()
 
+	// Free the host registry slot. StopSession is a no-op if the session
+	// was never registered (historical session that was never activated).
 	if ms.backend != nil {
-		ms.backend.Stop()
+		if err := d.hostClient.StopSession(d.ctx, id); err != nil {
+			d.log.Printf("error stopping session %s on host: %v", id, err)
+		}
 	}
 
 	d.broadcast(agent.Event{
@@ -802,16 +800,16 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 		req.ProjectDir = wt
 	}
 
-	mgr, ok := d.BackendManagers[req.Backend]
-	if !ok {
-		return nil, fmt.Errorf("no backend manager registered for %s", req.Backend)
-	}
-	backend, err := mgr.CreateBackend(req)
+	// Hub assigns the session ID up front, then asks the Host to create
+	// and register a backend under it. After Phase 2 this is an HTTP
+	// round-trip; today it's an in-process call but the call shape is
+	// already wire-correct.
+	id := ulid.Make().String()
+	backend, err := d.hostClient.CreateSession(d.ctx, id, req)
 	if err != nil {
-		return nil, fmt.Errorf("create backend: %w", err)
+		return nil, fmt.Errorf("create session backend: %w", err)
 	}
 
-	id := ulid.Make().String()
 	now := time.Now()
 
 	info := agent.SessionInfo{

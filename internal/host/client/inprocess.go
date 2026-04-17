@@ -1,0 +1,72 @@
+package hostclient
+
+import (
+	"context"
+
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+)
+
+// InProcess implements Client by calling *host.Service directly. The
+// returned SessionBackend from CreateSession is the real backend
+// instance, not a wrapper. Suitable for tests and the local-only
+// deployment.
+type InProcess struct {
+	svc *host.Service
+}
+
+// NewInProcess constructs an in-process client around svc. svc must be
+// non-nil.
+func NewInProcess(svc *host.Service) *InProcess {
+	if svc == nil {
+		panic("hostclient.NewInProcess: svc is required")
+	}
+	return &InProcess{svc: svc}
+}
+
+// Close is a no-op; the caller manages the Service lifecycle.
+func (c *InProcess) Close() error { return nil }
+
+func (c *InProcess) Status(ctx context.Context) (host.HostStatus, error) {
+	return c.svc.Status(ctx)
+}
+
+func (c *InProcess) ListBackends(ctx context.Context) ([]host.BackendInfo, error) {
+	return c.svc.ListBackends(ctx)
+}
+
+func (c *InProcess) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]host.AgentInfo, error) {
+	return c.svc.ListAgents(ctx, bt, projectDir)
+}
+
+func (c *InProcess) ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]host.ModelInfo, error) {
+	return c.svc.ListModels(ctx, bt, projectDir)
+}
+
+func (c *InProcess) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
+	return c.svc.DiscoverSessions(ctx, bt, seedDir)
+}
+
+func (c *InProcess) ListBranches(ctx context.Context, projectDir string) ([]host.BranchInfo, error) {
+	return c.svc.ListBranches(ctx, projectDir)
+}
+
+func (c *InProcess) ResolveWorktree(ctx context.Context, projectDir, branch string) (host.WorktreeInfo, error) {
+	return c.svc.ResolveWorktree(ctx, projectDir, branch)
+}
+
+func (c *InProcess) RemoveWorktree(ctx context.Context, projectDir, branch string, force bool) error {
+	return c.svc.RemoveWorktree(ctx, projectDir, branch, force)
+}
+
+func (c *InProcess) MergeBranch(ctx context.Context, projectDir, branch, commitMessage string) (host.MergeResult, error) {
+	return c.svc.MergeBranch(ctx, projectDir, branch, commitMessage)
+}
+
+func (c *InProcess) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
+	return c.svc.CreateSession(ctx, sessionID, req)
+}
+
+func (c *InProcess) StopSession(_ context.Context, sessionID string) error {
+	return c.svc.StopSession(sessionID)
+}

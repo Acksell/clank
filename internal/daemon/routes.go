@@ -38,9 +38,6 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /worktrees", d.handleRemoveWorktree)
 	mux.HandleFunc("POST /worktrees/merge", d.handleMergeWorktree)
 
-	// Debug endpoints — backend-specific, not part of the general API.
-	mux.HandleFunc("GET /debug/opencode/servers", d.handleDebugOpenCodeServers)
-
 	// Voice endpoints.
 	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
 	mux.HandleFunc("GET /voice/status", d.handleVoiceStatus)

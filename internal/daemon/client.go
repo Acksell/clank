@@ -185,24 +185,6 @@ func (c *Client) ListModels(ctx context.Context, backend agent.BackendType, proj
 	return models, nil
 }
 
-// ServerStatus is a running OpenCode server with its session count.
-type ServerStatus struct {
-	URL          string    `json:"url"`
-	ProjectDir   string    `json:"project_dir"`
-	PID          int       `json:"pid"`
-	StartedAt    time.Time `json:"started_at"`
-	SessionCount int       `json:"session_count"`
-}
-
-// ListOpenCodeServers returns running OpenCode server processes.
-func (c *Client) ListOpenCodeServers(ctx context.Context) ([]ServerStatus, error) {
-	var servers []ServerStatus
-	if err := c.get(ctx, "/debug/opencode/servers", &servers); err != nil {
-		return nil, err
-	}
-	return servers, nil
-}
-
 // AbortSession interrupts a running session.
 func (c *Client) AbortSession(ctx context.Context, sessionID string) error {
 	return c.post(ctx, "/sessions/"+sessionID+"/abort", nil, nil)

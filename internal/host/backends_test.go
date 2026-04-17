@@ -1,24 +1,24 @@
-package daemon_test
+package host_test
 
 import (
 	"context"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/host"
 )
 
 func TestOpenCodeBackendManagerCreateBackend(t *testing.T) {
 	t.Parallel()
 	// Smoke test: creating an OpenCodeBackendManager should not panic.
-	mgr := daemon.NewOpenCodeBackendManager()
+	mgr := host.NewOpenCodeBackendManager()
 	defer mgr.Shutdown()
 	_ = mgr
 }
 
 func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 	t.Parallel()
-	mgr := daemon.NewClaudeBackendManager()
+	mgr := host.NewClaudeBackendManager()
 	defer mgr.Shutdown()
 
 	backend, err := mgr.CreateBackend(agent.StartRequest{
