@@ -378,6 +378,21 @@ Done when: full session lifecycle works end-to-end through Unix socket; existing
 - Migrate voice logic (capture, transcription, command routing) from `internal/tui/voice.go` into `hub.Service`. TUI keeps only UI affordances.
 - **Voice migration is the highest-risk item in this phase.** If it bloats Phase 2 timeline, defer the voice extraction to Phase 3 — voice continues to work against the existing TUI-side implementation in the meantime. Do not let voice block the Hub extraction.
 
+#### Phase 2A complete (in progress: 2B+)
+
+- `internal/hub/client/` created (pkg `hubclient`) — canonical home of `Client`, `SocketPath`, `PIDPath`, `IsRunning`, `parseSSEStream`, and the SSE regression tests.
+- TUI (`sidebar.go`, `mergeoverlay.go`, `inbox.go`, `sessionview.go`, `sessionview_compose.go`, `voice.go`) and `clankcli` import `hubclient` directly. Worktree wire types now reference `host.X`.
+- Worktree wire types (`BranchInfo`, `WorktreeInfo`, `CreateWorktreeRequest`, `RemoveWorktreeRequest`, `MergeWorktreeRequest`, `MergeWorktreeResponse`) consolidated into `internal/host/types.go` (canonical), with `internal/daemon/host_aliases.go` re-exporting them as type aliases for daemon-internal callers.
+- `internal/daemon/client.go` shrunk to a backwards-compat shim (`Client = hubclient.Client`, `NewClient`/`NewDefaultClient` thin wrappers); `daemon.SocketPath`/`PIDPath`/`IsRunning` delegate to `hubclient`.
+- Socket file is still `daemon.sock`; rename to `hub.sock` deferred to Phase 2F to avoid breaking running daemons.
+- `daemon.{Daemon,sessions,events,permissions,...}` not yet moved — that is Phase 2B onward.
+
+#### Phase 2B complete (in progress: 2C+)
+
+- `internal/hub/` package introduced with the `hub.Service` skeleton: constructor, host catalog primitives (`RegisterHost`, `UnregisterHost`, `Host`, `Hosts`), `Run`/`Shutdown`/`SetLogOutput`. Catalog handles arbitrary `host.HostID`s; the multi-host case is exercised lightly until Phase 4 wires TCP+TLS.
+- Service is **not yet wired into clankd** — it is a destination for the migrations in 2C–2E. `internal/daemon` still owns the live session registry, event fanout, and permission broker.
+- Unit tests for the catalog primitives use the real `hostclient.NewInProcess(host.New(...))` rather than mocks (per AGENTS.md). Shutdown's host-close-error swallowing is covered.
+
 Done when: `internal/daemon/` is gone or reduced to a thin entry point; integration tests cover Hub→Host routing across the socket.
 
 ### Phase 3: Drop path-centric session creation

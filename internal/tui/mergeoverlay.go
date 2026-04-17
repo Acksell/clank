@@ -11,7 +11,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // mergeResultMsg is emitted when the merge overlay completes (success or cancel).
@@ -25,9 +26,9 @@ type mergeResultMsg struct {
 // a branch merge. It shows branch info, diff stats, a commit log, and an
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
-	client     *daemon.Client
+	client     *hubclient.Client
 	projectDir string
-	branch     daemon.BranchInfo
+	branch     host.BranchInfo
 
 	commitMsg textarea.Model
 	merging   bool // true while the merge request is in flight
@@ -36,7 +37,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *daemon.Client, projectDir string, branch daemon.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *hubclient.Client, projectDir string, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."
@@ -129,7 +130,7 @@ func (m *mergeOverlayModel) doMerge(commitMsg string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+		_, err := client.MergeWorktree(ctx, host.MergeWorktreeRequest{
 			ProjectDir:    projectDir,
 			Branch:        branch,
 			CommitMessage: commitMsg,

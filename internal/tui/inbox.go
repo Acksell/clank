@@ -17,7 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -59,7 +59,7 @@ type inboxGroup struct {
 // It uses a sidebar + main layout: sidebar shows branches, main area shows
 // sessions. In narrow terminals, only the session pane is shown.
 type InboxModel struct {
-	client *daemon.Client
+	client *hubclient.Client
 
 	// Two-pane layout state.
 	pane          inboxPane    // which pane has keyboard focus
@@ -132,7 +132,7 @@ type InboxModel struct {
 }
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
-func NewInboxModel(client *daemon.Client) *InboxModel {
+func NewInboxModel(client *hubclient.Client) *InboxModel {
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),

@@ -171,6 +171,40 @@ type WorktreeInfo struct {
 	WorktreeDir string `json:"worktree_dir"`
 }
 
+// CreateWorktreeRequest is the Hub→Host request body for POST /worktrees.
+//
+// ProjectDir is the path-style identifier used through Phase 1; Phase 3
+// replaces it with (RepoID, branch).
+type CreateWorktreeRequest struct {
+	ProjectDir string `json:"project_dir"`
+	Branch     string `json:"branch"`
+	NewBranch  bool   `json:"new_branch,omitempty"` // If true, create a new branch
+	Base       string `json:"base,omitempty"`       // Base ref for new branches (default: repo default branch)
+}
+
+// RemoveWorktreeRequest is the Hub→Host request body for DELETE /worktrees.
+type RemoveWorktreeRequest struct {
+	ProjectDir string `json:"project_dir"`
+	Branch     string `json:"branch"`
+	Force      bool   `json:"force,omitempty"`
+}
+
+// MergeWorktreeRequest is the Hub→Host request body for POST /worktrees/merge.
+type MergeWorktreeRequest struct {
+	ProjectDir    string `json:"project_dir"`
+	Branch        string `json:"branch"`                   // Branch to merge into the default branch
+	CommitMessage string `json:"commit_message,omitempty"` // Worktree commit message (used to commit uncommitted work before merging)
+}
+
+// MergeWorktreeResponse is the Host→Hub response from POST /worktrees/merge.
+type MergeWorktreeResponse struct {
+	Status          string `json:"status"`           // "merged"
+	MergedBranch    string `json:"merged_branch"`    // Branch that was merged
+	SessionsDone    int    `json:"sessions_done"`    // Number of sessions marked done
+	WorktreeRemoved bool   `json:"worktree_removed"` // Whether the worktree was cleaned up
+	BranchDeleted   bool   `json:"branch_deleted"`   // Whether the branch was deleted
+}
+
 // HostStatus is the response body of `GET /status` on the Host API. Hub
 // surfaces a derived view (online/offline + last seen) to clients.
 type HostStatus struct {

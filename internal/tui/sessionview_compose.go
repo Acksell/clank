@@ -17,7 +17,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // sessionCreateResultMsg carries the result of creating a session from composing mode.
@@ -30,7 +30,7 @@ type sessionCreateResultMsg struct {
 
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
-func NewSessionViewComposing(client *daemon.Client, projectDir string) *SessionViewModel {
+func NewSessionViewComposing(client *hubclient.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
 	sp := spinner.New(

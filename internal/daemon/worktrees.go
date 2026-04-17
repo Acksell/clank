@@ -14,53 +14,8 @@ import (
 	"github.com/acksell/clank/internal/git"
 )
 
-// BranchInfo describes a worktree entry (including the main working tree).
-type BranchInfo struct {
-	Name         string `json:"name"`
-	WorktreeDir  string `json:"worktree_dir,omitempty"`  // Non-empty if a worktree is checked out for this branch
-	IsDefault    bool   `json:"is_default,omitempty"`    // True if this is the repo's default branch (main/master)
-	IsCurrent    bool   `json:"is_current,omitempty"`    // True if this branch is checked out in the main working tree
-	LinesAdded   int    `json:"lines_added,omitempty"`   // Lines added vs default branch
-	LinesRemoved int    `json:"lines_removed,omitempty"` // Lines removed vs default branch
-	CommitsAhead int    `json:"commits_ahead,omitempty"` // Commits ahead of default branch
-}
-
-// CreateWorktreeRequest is the request body for POST /worktrees.
-type CreateWorktreeRequest struct {
-	ProjectDir string `json:"project_dir"`
-	Branch     string `json:"branch"`
-	NewBranch  bool   `json:"new_branch,omitempty"` // If true, create a new branch
-	Base       string `json:"base,omitempty"`       // Base ref for new branches (default: repo default branch)
-}
-
-// WorktreeInfo is the response for POST /worktrees.
-type WorktreeInfo struct {
-	Branch      string `json:"branch"`
-	WorktreeDir string `json:"worktree_dir"`
-}
-
-// RemoveWorktreeRequest is the request body for DELETE /worktrees.
-type RemoveWorktreeRequest struct {
-	ProjectDir string `json:"project_dir"`
-	Branch     string `json:"branch"`
-	Force      bool   `json:"force,omitempty"`
-}
-
-// MergeWorktreeRequest is the request body for POST /worktrees/merge.
-type MergeWorktreeRequest struct {
-	ProjectDir    string `json:"project_dir"`
-	Branch        string `json:"branch"`                   // Branch to merge into the default branch
-	CommitMessage string `json:"commit_message,omitempty"` // Worktree commit message (used to commit uncommitted work before merging)
-}
-
-// MergeWorktreeResponse is the response from POST /worktrees/merge.
-type MergeWorktreeResponse struct {
-	Status          string `json:"status"`           // "merged"
-	MergedBranch    string `json:"merged_branch"`    // Branch that was merged
-	SessionsDone    int    `json:"sessions_done"`    // Number of sessions marked done
-	WorktreeRemoved bool   `json:"worktree_removed"` // Whether the worktree was cleaned up
-	BranchDeleted   bool   `json:"branch_deleted"`   // Whether the branch was deleted
-}
+// Worktree wire types are aliased from internal/host (canonical source).
+// See host_aliases.go for the alias declarations.
 
 // resolveWorktree ensures a git worktree exists for the given branch in the
 // repository at projectDir. Returns the worktree's filesystem path.

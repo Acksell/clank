@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
@@ -53,13 +53,19 @@ type Daemon struct {
 	// agent.SessionDiscoverer gain agent listing and session discovery
 	// capabilities automatically.
 	//
-	// Set BEFORE Run(); Run() consumes this map to construct the embedded
-	// host.Service. After Run() the canonical access path is hostClient.
+	// As of Phase 1, this field is **only used by tests**. Production
+	// clankd injects a HostClient via SetHostClient (the clank-host
+	// subprocess owns the real BackendManagers). Tests still use the
+	// `d.BackendManagers[X] = mgr` pattern; when Run() finds hostClient
+	// nil it builds an in-process host from this map.
+	//
+	// Removed in Phase 2 once tests get a `WithHost` constructor option.
 	BackendManagers map[agent.BackendType]agent.BackendManager
 
 	// host is the in-process Host plane. Built in Run() from
-	// BackendManagers. Lifecycle (Init/Shutdown) is owned by the Daemon
-	// while we're a single process; Phase 2+ moves it to clank-host.
+	// BackendManagers ONLY when no HostClient was injected (i.e., tests).
+	// In production clankd, host lives in the clank-host subprocess and
+	// this field stays nil; the daemon talks to it via hostClient.
 	host *host.Service
 	// hostClient is the Hub-side abstraction over host. May be injected
 	// by the caller before Run() (production clankd path: HTTP client
@@ -138,59 +144,15 @@ func NewWithPaths(sockPath, pidPath string) *Daemon {
 	}
 }
 
-// SocketPath returns the Unix socket path for the daemon.
-func SocketPath() (string, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "daemon.sock"), nil
-}
+// SocketPath returns the Unix socket path for the daemon. Delegates to
+// hubclient (canonical home post-Phase-2A).
+func SocketPath() (string, error) { return hubclient.SocketPath() }
 
-// PIDPath returns the PID file path.
-func PIDPath() (string, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "daemon.pid"), nil
-}
+// PIDPath returns the PID file path. Delegates to hubclient.
+func PIDPath() (string, error) { return hubclient.PIDPath() }
 
-// IsRunning checks if a daemon is already running by reading the PID file
-// and verifying the process exists.
-func IsRunning() (bool, int, error) {
-	pidPath, err := PIDPath()
-	if err != nil {
-		return false, 0, err
-	}
-	data, err := os.ReadFile(pidPath)
-	if os.IsNotExist(err) {
-		return false, 0, nil
-	}
-	if err != nil {
-		return false, 0, err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return false, 0, nil // corrupt PID file, treat as not running
-	}
-	// Check if process exists by sending signal 0.
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false, pid, nil
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err != nil {
-		// Process doesn't exist, clean up stale PID file.
-		os.Remove(pidPath)
-		sockPath, _ := SocketPath()
-		if sockPath != "" {
-			os.Remove(sockPath)
-		}
-		return false, pid, nil
-	}
-	return true, pid, nil
-}
+// IsRunning checks if a daemon is already running. Delegates to hubclient.
+func IsRunning() (bool, int, error) { return hubclient.IsRunning() }
 
 // Run starts the daemon, listening on the Unix socket. It blocks until
 // the context is cancelled or a termination signal is received.

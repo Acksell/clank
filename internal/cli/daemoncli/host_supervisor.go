@@ -14,6 +14,11 @@ import (
 )
 
 // hostHandle owns a clank-host subprocess and the Hub's HTTP client to it.
+//
+// Phase 1 limitation: no restart-on-crash. If clank-host dies mid-session,
+// the Hub keeps a dead client and every subsequent request fails. A
+// supervisor with health probes + restart belongs in Phase 2 (or sooner
+// if instability bites).
 type hostHandle struct {
 	cmd        *exec.Cmd
 	socketPath string

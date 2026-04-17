@@ -14,7 +14,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/tui"
 )
 
@@ -207,8 +207,8 @@ func redirectLogToFile() func() {
 
 // ensureDaemon makes sure the daemon is running, starting it if needed.
 // Returns a connected client.
-func ensureDaemon() (*daemon.Client, error) {
-	running, _, err := daemon.IsRunning()
+func ensureDaemon() (*hubclient.Client, error) {
+	running, _, err := hubclient.IsRunning()
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +220,7 @@ func ensureDaemon() (*daemon.Client, error) {
 		}
 	}
 
-	client, err := daemon.NewDefaultClient()
+	client, err := hubclient.NewDefaultClient()
 	if err != nil {
 		return nil, err
 	}

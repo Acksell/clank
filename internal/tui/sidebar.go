@@ -16,7 +16,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // sidebarWidth is the fixed width of the sidebar (including border).
@@ -24,7 +25,7 @@ const sidebarWidth = 30
 
 // branchLoadedMsg carries the result of loading branches from the daemon.
 type branchLoadedMsg struct {
-	branches []daemon.BranchInfo
+	branches []host.BranchInfo
 	err      error
 }
 
@@ -56,10 +57,10 @@ func (s branchSessionStatus) IsArchived() bool {
 
 // SidebarModel displays local git branches in a navigation sidebar and allows selection.
 type SidebarModel struct {
-	client     *daemon.Client
+	client     *hubclient.Client
 	projectDir string
 
-	branches []daemon.BranchInfo
+	branches []host.BranchInfo
 	cursor   int
 	scroll   int
 
@@ -79,7 +80,7 @@ type SidebarModel struct {
 }
 
 // NewSidebarModel creates a sidebar for the given project directory.
-func NewSidebarModel(client *daemon.Client, projectDir string) SidebarModel {
+func NewSidebarModel(client *hubclient.Client, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -131,7 +132,7 @@ func (m *SidebarModel) SelectedWorktreeDir() string {
 
 // SelectedBranchInfo returns the full BranchInfo for the currently selected
 // entry, or nil if "All" is selected.
-func (m *SidebarModel) SelectedBranchInfo() *daemon.BranchInfo {
+func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
 	if m.cursor == 0 || len(m.branches) == 0 {
 		return nil
 	}
@@ -346,7 +347,7 @@ func (m *SidebarModel) View() string {
 }
 
 // renderBranch renders a single worktree entry with diff stats.
-func (m *SidebarModel) renderBranch(b daemon.BranchInfo, idx, maxWidth int) string {
+func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string {
 	selected := m.cursor == idx && m.focused
 
 	// Diff stat string: "+123 -45" or empty for the default branch.
@@ -471,7 +472,7 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.CreateWorktree(ctx, daemon.CreateWorktreeRequest{
+		_, err := client.CreateWorktree(ctx, host.CreateWorktreeRequest{
 			ProjectDir: projectDir,
 			Branch:     branch,
 		})
