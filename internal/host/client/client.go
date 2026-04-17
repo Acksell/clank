@@ -48,6 +48,15 @@ type Client interface {
 	RemoveWorktree(ctx context.Context, projectDir, branch string, force bool) error
 	MergeBranch(ctx context.Context, projectDir, branch, commitMessage string) (host.MergeResult, error)
 
+	// Phase 3B: RepoID-scoped variants. The Hub uses these once the TUI
+	// is on the host-scoped API. The legacy path-style methods above
+	// stick around until Phase 3D removes them.
+	ListRepos(ctx context.Context) ([]host.Repo, error)
+	ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error)
+	ResolveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string) (host.WorktreeInfo, error)
+	RemoveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string, force bool) error
+	MergeBranchByRepo(ctx context.Context, id host.RepoID, branch, commitMessage string) (host.MergeResult, error)
+
 	// CreateSession registers a SessionBackend on the Host under
 	// sessionID and returns a SessionBackend the Hub can use as if it
 	// were the real backend. With InProcess, the returned object IS the

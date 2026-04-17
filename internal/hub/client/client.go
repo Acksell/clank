@@ -464,6 +464,60 @@ func (c *Client) MergeWorktree(ctx context.Context, req host.MergeWorktreeReques
 	return &resp, nil
 }
 
+// --- Phase 3B: host- and repo-scoped methods ---
+
+// ListBranchesOnRepo returns the branches/worktrees for (hostID, repoID).
+func (c *Client) ListBranchesOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID) ([]host.BranchInfo, error) {
+	var out []host.BranchInfo
+	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/branches", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateWorktreeOnRepo creates (or reuses) a worktree for branch on (hostID, repoID).
+func (c *Client) CreateWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string) (*host.WorktreeInfo, error) {
+	body := struct {
+		Branch string `json:"branch"`
+	}{branch}
+	var out host.WorktreeInfo
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveWorktreeOnRepo removes the worktree for branch on (hostID, repoID).
+func (c *Client) RemoveWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string, force bool) error {
+	q := url.Values{
+		"branch": {branch},
+		"force":  {strconv.FormatBool(force)},
+	}
+	return c.do(ctx, "DELETE", "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees?"+q.Encode(), nil, nil)
+}
+
+// MergeBranchOnRepo merges branch into the default branch on (hostID, repoID).
+func (c *Client) MergeBranchOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch, commitMessage string) (*host.MergeResult, error) {
+	body := struct {
+		Branch        string `json:"branch"`
+		CommitMessage string `json:"commit_message,omitempty"`
+	}{branch, commitMessage}
+	var out host.MergeResult
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees/merge", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListReposOnHost returns the repos registered on the given host.
+func (c *Client) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]host.Repo, error) {
+	var out []host.Repo
+	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // --- Voice methods ---
 
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM audio

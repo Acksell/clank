@@ -63,6 +63,26 @@ func (c *InProcess) MergeBranch(ctx context.Context, projectDir, branch, commitM
 	return c.svc.MergeBranch(ctx, projectDir, branch, commitMessage)
 }
 
+func (c *InProcess) ListRepos(ctx context.Context) ([]host.Repo, error) {
+	return c.svc.ListRepos(ctx)
+}
+
+func (c *InProcess) ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error) {
+	return c.svc.ListBranchesByRepo(ctx, id)
+}
+
+func (c *InProcess) ResolveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string) (host.WorktreeInfo, error) {
+	return c.svc.ResolveWorktreeByRepo(ctx, id, branch)
+}
+
+func (c *InProcess) RemoveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string, force bool) error {
+	return c.svc.RemoveWorktreeByRepo(ctx, id, branch, force)
+}
+
+func (c *InProcess) MergeBranchByRepo(ctx context.Context, id host.RepoID, branch, commitMessage string) (host.MergeResult, error) {
+	return c.svc.MergeBranchByRepo(ctx, id, branch, commitMessage)
+}
+
 func (c *InProcess) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
 	return c.svc.CreateSession(ctx, sessionID, req)
 }

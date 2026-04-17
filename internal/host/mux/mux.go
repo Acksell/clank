@@ -55,6 +55,15 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("DELETE /worktrees", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeWorktree)
 
+	// Phase 3B: RepoID-scoped routes. Branch names go in the body or
+	// query string (not path) because they contain "/" which would
+	// conflict with path-segment routing.
+	mx.HandleFunc("GET /repos", m.handleListRepos)
+	mx.HandleFunc("GET /repos/{id}/branches", m.handleListBranchesByRepo)
+	mx.HandleFunc("POST /repos/{id}/worktrees", m.handleCreateWorktreeByRepo)
+	mx.HandleFunc("DELETE /repos/{id}/worktrees", m.handleRemoveWorktreeByRepo)
+	mx.HandleFunc("POST /repos/{id}/worktrees/merge", m.handleMergeBranchByRepo)
+
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
 	mx.HandleFunc("POST /sessions/{id}/start", m.handleStartSession)
 	mx.HandleFunc("POST /sessions/{id}/watch", m.handleWatchSession)

@@ -46,6 +46,9 @@ type Service struct {
 
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
+
+	reposMu sync.RWMutex
+	repos   map[RepoID]Repo
 }
 
 // Options configures a Service at construction time.
@@ -80,6 +83,7 @@ func New(opts Options) *Service {
 		backendManagers: opts.BackendManagers,
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
+		repos:           make(map[RepoID]Repo),
 	}
 }
 
@@ -249,6 +253,16 @@ func (s *Service) CreateSession(_ context.Context, sessionID string, req agent.S
 	s.mu.Lock()
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
+
+	// Lazy auto-registration: when the request carries both the canonical
+	// remote URL and a local path, record the (RepoID → rootDir) mapping
+	// so subsequent /repos/{id}/... routes can find it. Best-effort —
+	// failures don't block session creation, only get logged.
+	if req.RepoRemoteURL != "" && req.ProjectDir != "" {
+		if _, err := s.RegisterRepo(RepoRef{RemoteURL: req.RepoRemoteURL}, req.ProjectDir); err != nil {
+			s.log.Printf("warning: auto-register repo for session %s: %v", sessionID, err)
+		}
+	}
 	return b, nil
 }
 

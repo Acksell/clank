@@ -197,6 +197,47 @@ func (c *HTTP) MergeBranch(ctx context.Context, projectDir, branch, commitMessag
 	return out, err
 }
 
+// --- Phase 3B: RepoID-scoped methods ---
+
+func (c *HTTP) ListRepos(ctx context.Context) ([]host.Repo, error) {
+	var out []host.Repo
+	err := c.do(ctx, http.MethodGet, "/repos", nil, &out)
+	return out, err
+}
+
+func (c *HTTP) ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error) {
+	var out []host.BranchInfo
+	err := c.do(ctx, http.MethodGet, "/repos/"+url.PathEscape(string(id))+"/branches", nil, &out)
+	return out, err
+}
+
+func (c *HTTP) ResolveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string) (host.WorktreeInfo, error) {
+	body := struct {
+		Branch string `json:"branch"`
+	}{branch}
+	var out host.WorktreeInfo
+	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(string(id))+"/worktrees", body, &out)
+	return out, err
+}
+
+func (c *HTTP) RemoveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string, force bool) error {
+	q := url.Values{
+		"branch": {branch},
+		"force":  {strconv.FormatBool(force)},
+	}
+	return c.do(ctx, http.MethodDelete, "/repos/"+url.PathEscape(string(id))+"/worktrees?"+q.Encode(), nil, nil)
+}
+
+func (c *HTTP) MergeBranchByRepo(ctx context.Context, id host.RepoID, branch, commitMessage string) (host.MergeResult, error) {
+	body := struct {
+		Branch        string `json:"branch"`
+		CommitMessage string `json:"commit_message,omitempty"`
+	}{branch, commitMessage}
+	var out host.MergeResult
+	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(string(id))+"/worktrees/merge", body, &out)
+	return out, err
+}
+
 func (c *HTTP) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
 	body := struct {
 		SessionID string             `json:"session_id"`
