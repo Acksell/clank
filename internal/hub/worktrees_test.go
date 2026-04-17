@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/hub"
 )
 
 func TestMergeWorktree_HappyPath(t *testing.T) {
@@ -34,14 +34,14 @@ func TestMergeWorktree_HappyPath(t *testing.T) {
 	gitWriteFile(t, filepath.Join(wtDir, "uncommitted.txt"), "agent-created file\n")
 
 	// Start the daemon with sessions on the worktree.
-	d, client, cleanup := testDaemon(t)
+	s, client, cleanup := testDaemon(t)
 	defer cleanup()
 
 	ctx := context.Background()
 
 	// Inject a session whose ProjectDir is the worktree path, simulating
 	// a session that was running in the worktree.
-	d.InjectSession(agent.SessionInfo{
+	s.InjectSession(agent.SessionInfo{
 		ID:         "ses-on-worktree",
 		Status:     agent.StatusIdle,
 		ProjectDir: wtDir,
@@ -68,7 +68,7 @@ func TestMergeWorktree_HappyPath(t *testing.T) {
 
 	// Merge the feature branch. CommitMessage is the worktree commit message
 	// (used to commit the uncommitted.txt file before merging).
-	resp, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+	resp, err := client.MergeWorktree(ctx, hub.MergeWorktreeRequest{
 		ProjectDir:    repoDir,
 		Branch:        "feat/merge",
 		CommitMessage: "commit remaining agent work",
@@ -141,7 +141,7 @@ func TestMergeWorktree_DirtyMainFails(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+	_, err := client.MergeWorktree(ctx, hub.MergeWorktreeRequest{
 		ProjectDir: repoDir,
 		Branch:     "feat/dirty-test",
 	})
@@ -174,7 +174,7 @@ func TestMergeWorktree_ConflictAborts(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+	_, err := client.MergeWorktree(ctx, hub.MergeWorktreeRequest{
 		ProjectDir: repoDir,
 		Branch:     "feat/conflict",
 	})
@@ -205,7 +205,7 @@ func TestMergeWorktree_NothingToMerge(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	_, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+	_, err := client.MergeWorktree(ctx, hub.MergeWorktreeRequest{
 		ProjectDir: repoDir,
 		Branch:     "feat/nothing",
 	})
@@ -236,7 +236,7 @@ func TestMergeWorktree_AutoCommitsThenMerges(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	resp, err := client.MergeWorktree(ctx, daemon.MergeWorktreeRequest{
+	resp, err := client.MergeWorktree(ctx, hub.MergeWorktreeRequest{
 		ProjectDir:    repoDir,
 		Branch:        "feat/autocommit",
 		CommitMessage: "auto-commit agent work",

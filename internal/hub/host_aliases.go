@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 // Backwards-compat aliases for worktree wire types whose canonical home moved
 // to internal/host (Phase 2A of hub_host_refactor.md). New code should import

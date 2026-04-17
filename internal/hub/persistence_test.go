@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -70,7 +71,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open (phase 2): %v", err)
 	}
-	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2 := hub.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
 	mgr2 := newMockBackendManager()
 	d2.BackendManagers[agent.BackendOpenCode] = mgr2
@@ -79,7 +80,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	errCh2 := make(chan error, 1)
 	go func() { errCh2 <- d2.Run() }()
 
-	client2 := daemon.NewClient(sockPath)
+	client2 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client2)
 
 	defer func() {
@@ -163,13 +164,13 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2 := hub.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d2.Run() }()
 
-	client2 := daemon.NewClient(sockPath)
+	client2 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client2)
 
 	defer func() {
@@ -235,7 +236,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2 := hub.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
 	mgr2 := newMockBackendManager()
 	d2.BackendManagers[agent.BackendOpenCode] = mgr2
@@ -244,7 +245,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- d2.Run() }()
 
-	client2 := daemon.NewClient(sockPath)
+	client2 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client2)
 
 	defer func() {
@@ -299,7 +300,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	d1 := daemon.NewWithPaths(sockPath, pidPath)
+	d1 := hub.NewWithPaths(sockPath, pidPath)
 	d1.Store = st1
 	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
 	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
@@ -307,7 +308,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 
 	errCh1 := make(chan error, 1)
 	go func() { errCh1 <- d1.Run() }()
-	client1 := daemon.NewClient(sockPath)
+	client1 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client1)
 
 	ctx := context.Background()
@@ -348,7 +349,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2 := hub.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
 	discMgr2 := &mockDiscovererManager{snapshots: snapshots}
 	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
@@ -356,7 +357,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 
 	errCh2 := make(chan error, 1)
 	go func() { errCh2 <- d2.Run() }()
-	client2 := daemon.NewClient(sockPath)
+	client2 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client2)
 
 	defer func() {
@@ -494,7 +495,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	d2 := daemon.NewWithPaths(sockPath, pidPath)
+	d2 := hub.NewWithPaths(sockPath, pidPath)
 	d2.Store = st2
 	discMgr2 := &mockDiscovererManager{snapshots: updatedSnapshots}
 	d2.BackendManagers[agent.BackendOpenCode] = discMgr2
@@ -503,7 +504,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	errCh2 := make(chan error, 1)
 	go func() { errCh2 <- d2.Run() }()
 
-	client2 := daemon.NewClient(sockPath)
+	client2 := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client2)
 	defer func() {
 		d2.Stop()

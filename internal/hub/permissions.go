@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 )
 
 // HOST
-func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	permID := r.PathValue("permID")
 
@@ -20,9 +20,9 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.RLock()
-	ms, ok := d.sessions[sessionID]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -37,7 +37,7 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.Lock()
+	s.mu.Lock()
 	// OpenCode may cancel the remaining permission batch after a rejection.
 	// Keep the daemon queue aligned with that behavior so reconnect/resync
 	// never re-surface stale prompts the backend will not honor.
@@ -52,27 +52,27 @@ func (d *Daemon) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	} else {
 		ms.pendingPerms = nil
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // HUB
-func (d *Daemon) handleGetPendingPermission(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleGetPendingPermission(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 
-	d.mu.RLock()
-	ms, ok := d.sessions[sessionID]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 
-	d.mu.RLock()
+	s.mu.RLock()
 	perms := make([]agent.PermissionData, len(ms.pendingPerms))
 	copy(perms, ms.pendingPerms)
-	d.mu.RUnlock()
+	s.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, perms)
 }

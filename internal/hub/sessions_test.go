@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -267,17 +268,17 @@ func TestDaemonSendMessage(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -317,17 +318,17 @@ func TestDaemonAbortSession(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -365,17 +366,17 @@ func TestDaemonRevertSession(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -449,17 +450,17 @@ func TestDaemonForkSession(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -519,17 +520,17 @@ func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -1045,7 +1046,7 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	// The mock backend returns "oc-real-session" as its SessionID, mimicking
 	// what happens when OpenCodeBackend.Start() creates a real session.
@@ -1065,16 +1066,16 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 		b.sessionID = "oc-real-session"
 		return b
 	}
-	d.BackendManagers[agent.BackendOpenCode] = discMgr
-	d.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
+	s.BackendManagers[agent.BackendOpenCode] = discMgr
+	s.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -1663,7 +1664,7 @@ func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
 // testDaemonWithStore creates a daemon backed by a real SQLite store in the
 // given dir. If dir is "", a fresh temp dir is created. Returns the daemon,
 // client, store, paths, and cleanup func. The caller must call cleanup to
-// stop the daemon.
+// stop the hub.
 func TestDaemonSearchSessions(t *testing.T) {
 	t.Parallel()
 
@@ -1705,19 +1706,19 @@ func TestDaemonSearchSessions(t *testing.T) {
 		}
 	}
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.Store = st
 	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -1967,19 +1968,19 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 		}
 	}
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.Store = st
 	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 

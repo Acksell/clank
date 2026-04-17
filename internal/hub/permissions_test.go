@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+	"github.com/acksell/clank/internal/hub"
 )
 
 func TestDaemonPermissionReply(t *testing.T) {
@@ -17,17 +18,17 @@ func TestDaemonPermissionReply(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 

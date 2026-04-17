@@ -1,9 +1,15 @@
-// Package daemon implements the Clank background daemon.
+// This file contains the core Service struct, constructor, and HTTP
+// listener lifecycle for the Hub control plane. The host-catalog
+// primitives are in hub.go; topical method sets are in sessions.go,
+// events.go, permissions.go, voice.go, etc.
 //
-// The daemon manages coding agent sessions (OpenCode, Claude Code) as child
-// processes, aggregates their events, and exposes an HTTP API over a Unix
-// domain socket for the TUI and CLI to consume.
-package daemon
+// Phase 2 caveat: Service still owns the Unix socket listener and PID
+// file. The intended endgame (per hub_host_refactor.md Phase 2F) is for
+// internal/cli/daemoncli to open the listener and inject it into a
+// minimal RunWithListener; doing so requires renaming the socket from
+// daemon.sock → hub.sock without breaking any running production
+// daemon, so it's deferred.
+package hub
 
 import (
 	"context"
@@ -30,15 +36,28 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Daemon is the long-lived background process that manages agent sessions.
-type Daemon struct {
+// Service is the Hub control plane.
+//
+// It manages coding agent sessions (OpenCode, Claude Code) — currently
+// in-process or via a single clank-host subprocess — aggregates their
+// events, and exposes an HTTP API over a Unix domain socket for the TUI
+// and CLI to consume.
+type Service struct {
 	sockPath string
 	pidPath  string
 	listener net.Listener
 
+	// hosts is the catalog of registered Host endpoints, keyed by
+	// HostID. Phase 2 only uses a single "local" host whose client is
+	// also mirrored into hostClient below for the legacy single-host
+	// fast path; multi-host dispatch arrives with the TCP+TLS transport
+	// in Phase 4.
+	hostsMu sync.RWMutex
+	hosts   map[host.HostID]hostclient.Client
+
 	mu       sync.RWMutex
-	sessions map[string]*managedSession // keyed by daemon session ID
-	// subscribers receive all events broadcast by the daemon.
+	sessions map[string]*managedSession // keyed by hub session ID
+	// subscribers receive all events broadcast by the hub.
 	subMu       sync.RWMutex
 	subscribers map[string]chan agent.Event // keyed by subscriber ID
 
@@ -56,7 +75,7 @@ type Daemon struct {
 	// As of Phase 1, this field is **only used by tests**. Production
 	// clankd injects a HostClient via SetHostClient (the clank-host
 	// subprocess owns the real BackendManagers). Tests still use the
-	// `d.BackendManagers[X] = mgr` pattern; when Run() finds hostClient
+	// `s.BackendManagers[X] = mgr` pattern; when Run() finds hostClient
 	// nil it builds an in-process host from this map.
 	//
 	// Removed in Phase 2 once tests get a `WithHost` constructor option.
@@ -103,7 +122,7 @@ type managedSession struct {
 }
 
 // New creates a new daemon instance. It does not start listening.
-func New() (*Daemon, error) {
+func New() (*Service, error) {
 	dir, err := config.Dir()
 	if err != nil {
 		return nil, fmt.Errorf("config dir: %w", err)
@@ -112,33 +131,35 @@ func New() (*Daemon, error) {
 		return nil, fmt.Errorf("mkdir config dir: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Daemon{
+	return &Service{
 		sockPath:                     filepath.Join(dir, "daemon.sock"),
 		pidPath:                      filepath.Join(dir, "daemon.pid"),
+		hosts:                        make(map[host.HostID]hostclient.Client),
 		sessions:                     make(map[string]*managedSession),
 		subscribers:                  make(map[string]chan agent.Event),
 		startTime:                    time.Now(),
 		ctx:                          ctx,
 		cancel:                       cancel,
-		log:                          log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
 		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
 		primaryAgentsRefreshInFlight: make(map[string]bool),
 	}, nil
 }
 
-// NewWithPaths creates a daemon with explicit socket and PID file paths.
+// NewWithPaths creates a Service with explicit socket and PID file paths.
 // Used for testing where we don't want to use the default config directory.
-func NewWithPaths(sockPath, pidPath string) *Daemon {
+func NewWithPaths(sockPath, pidPath string) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Daemon{
+	return &Service{
 		sockPath:                     sockPath,
 		pidPath:                      pidPath,
+		hosts:                        make(map[host.HostID]hostclient.Client),
 		sessions:                     make(map[string]*managedSession),
 		subscribers:                  make(map[string]chan agent.Event),
 		startTime:                    time.Now(),
 		ctx:                          ctx,
 		cancel:                       cancel,
-		log:                          log.New(os.Stderr, "[clank-daemon] ", log.LstdFlags|log.Lmsgprefix),
+		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
 		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
 		primaryAgentsRefreshInFlight: make(map[string]bool),
 	}
@@ -156,36 +177,36 @@ func IsRunning() (bool, int, error) { return hubclient.IsRunning() }
 
 // Run starts the daemon, listening on the Unix socket. It blocks until
 // the context is cancelled or a termination signal is received.
-func (d *Daemon) Run() error {
+func (s *Service) Run() error {
 	// Clean up stale socket.
-	os.Remove(d.sockPath)
+	os.Remove(s.sockPath)
 
-	listener, err := net.Listen("unix", d.sockPath)
+	listener, err := net.Listen("unix", s.sockPath)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", d.sockPath, err)
+		return fmt.Errorf("listen %s: %w", s.sockPath, err)
 	}
-	d.listener = listener
+	s.listener = listener
 	// Make socket accessible.
-	if err := os.Chmod(d.sockPath, 0o600); err != nil {
+	if err := os.Chmod(s.sockPath, 0o600); err != nil {
 		listener.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
 	// Write PID file.
-	if err := os.WriteFile(d.pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+	if err := os.WriteFile(s.pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		listener.Close()
 		return fmt.Errorf("write PID file: %w", err)
 	}
 
-	d.log.Printf("daemon started (pid=%d, socket=%s)", os.Getpid(), d.sockPath)
+	s.log.Printf("daemon started (pid=%d, socket=%s)", os.Getpid(), s.sockPath)
 
 	// Load persisted sessions from the store (if available).
-	if d.Store != nil {
-		sessions, err := d.Store.LoadSessions()
+	if s.Store != nil {
+		sessions, err := s.Store.LoadSessions()
 		if err != nil {
-			d.log.Printf("warning: failed to load sessions from store: %v", err)
+			s.log.Printf("warning: failed to load sessions from store: %v", err)
 		} else {
-			d.mu.Lock()
+			s.mu.Lock()
 			for _, info := range sessions {
 				// Sessions loaded from DB have no backend — they can't
 				// be actively busy. Normalize stale statuses to idle so
@@ -194,11 +215,11 @@ func (d *Daemon) Run() error {
 				if info.Status == agent.StatusBusy || info.Status == agent.StatusStarting || info.Status == agent.StatusDead {
 					info.Status = agent.StatusIdle
 				}
-				d.sessions[info.ID] = &managedSession{info: info, backend: nil}
+				s.sessions[info.ID] = &managedSession{info: info, backend: nil}
 			}
-			d.mu.Unlock()
+			s.mu.Unlock()
 			if len(sessions) > 0 {
-				d.log.Printf("loaded %d sessions from store", len(sessions))
+				s.log.Printf("loaded %d sessions from store", len(sessions))
 			}
 		}
 	}
@@ -211,33 +232,37 @@ func (d *Daemon) Run() error {
 	// In InProcess mode the daemon owns the host's lifetime: it must
 	// call host.Run / host.Shutdown. In HTTP mode the subprocess owns
 	// the host; the daemon only owns the client connection.
-	if d.hostClient == nil {
-		d.host = host.New(host.Options{
-			BackendManagers: d.BackendManagers,
-			Log:             d.log,
+	if s.hostClient == nil {
+		s.host = host.New(host.Options{
+			BackendManagers: s.BackendManagers,
+			Log:             s.log,
 		})
-		d.hostClient = hostclient.NewInProcess(d.host)
+		// Register as the canonical "local" host so the catalog stays
+		// in sync; RegisterHost also sets s.hostClient under the hood.
+		if err := s.RegisterHost("local", hostclient.NewInProcess(s.host)); err != nil {
+			s.log.Printf("warning: register local host: %v", err)
+		}
 
 		// Initialize backend managers via host.Service. The knownDirs callback
-		// is closed over d.Store so warm-up uses the persisted project list.
+		// is closed over s.Store so warm-up uses the persisted project list.
 		knownDirs := func(bt agent.BackendType) ([]string, error) {
-			if d.Store == nil {
+			if s.Store == nil {
 				return nil, nil
 			}
-			return d.Store.KnownProjectDirs(bt)
+			return s.Store.KnownProjectDirs(bt)
 		}
-		if err := d.host.Run(d.ctx, knownDirs); err != nil {
-			d.log.Printf("warning: host.Run: %v", err)
+		if err := s.host.Run(s.ctx, knownDirs); err != nil {
+			s.log.Printf("warning: host.Run: %v", err)
 		}
 	}
 
 	// Warm primary agent caches AFTER the reconciler has started. The
 	// cache warmer uses GetOrStartServer which will wait for the reconciler
 	// to finish starting servers rather than starting them itself.
-	d.warmPrimaryAgentCaches()
+	s.warmPrimaryAgentCaches()
 
 	mux := http.NewServeMux()
-	d.registerRoutes(mux)
+	s.registerRoutes(mux)
 
 	server := &http.Server{Handler: mux}
 
@@ -246,100 +271,125 @@ func (d *Daemon) Run() error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start HTTP server in background.
-	d.wg.Add(1)
+	s.wg.Add(1)
 	go func() {
-		defer d.wg.Done()
+		defer s.wg.Done()
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			d.log.Printf("http serve error: %v", err)
+			s.log.Printf("http serve error: %v", err)
 		}
 	}()
 
 	// Wait for shutdown signal or context cancellation.
 	select {
 	case sig := <-sigCh:
-		d.log.Printf("received signal %v, shutting down", sig)
-	case <-d.ctx.Done():
-		d.log.Printf("context cancelled, shutting down")
+		s.log.Printf("received signal %v, shutting down", sig)
+	case <-s.ctx.Done():
+		s.log.Printf("context cancelled, shutting down")
 	}
 
-	return d.shutdown(server)
+	return s.shutdown(server)
 }
 
 // shutdown gracefully stops the daemon.
-func (d *Daemon) shutdown(server *http.Server) error {
-	d.cancel()
+func (s *Service) shutdown(server *http.Server) error {
+	s.cancel()
 
 	// Stop the voice session if active.
-	d.mu.Lock()
-	if d.voice != nil {
-		d.log.Println("stopping voice session")
-		d.voice.Close()
-		d.voice = nil
+	s.mu.Lock()
+	if s.voice != nil {
+		s.log.Println("stopping voice session")
+		s.voice.Close()
+		s.voice = nil
 	}
-	if d.voiceAudioConn != nil {
-		d.voiceAudioConn.CloseNow()
-		d.voiceAudioConn = nil
+	if s.voiceAudioConn != nil {
+		s.voiceAudioConn.CloseNow()
+		s.voiceAudioConn = nil
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 
 	// Shut down the host plane. host.Shutdown() stops every backend in its
 	// registry, which is the canonical owner now that createSession /
 	// activateBackend / handleSendMessage all go through hostClient.CreateSession.
-	// Daemon must not double-stop.
-	if d.host != nil {
-		d.host.Shutdown()
+	// Service must not double-stop.
+	if s.host != nil {
+		s.host.Shutdown()
 	}
-	if d.hostClient != nil {
-		_ = d.hostClient.Close()
+	if s.hostClient != nil {
+		_ = s.hostClient.Close()
 	}
 
 	// Close the persistence store.
-	if d.Store != nil {
-		if err := d.Store.Close(); err != nil {
-			d.log.Printf("error closing store: %v", err)
+	if s.Store != nil {
+		if err := s.Store.Close(); err != nil {
+			s.log.Printf("error closing store: %v", err)
 		}
 	}
 
 	// Close all subscriber channels.
-	d.subMu.Lock()
-	for id, ch := range d.subscribers {
+	s.subMu.Lock()
+	for id, ch := range s.subscribers {
 		close(ch)
-		delete(d.subscribers, id)
+		delete(s.subscribers, id)
 	}
-	d.subMu.Unlock()
+	s.subMu.Unlock()
 
 	// Shutdown HTTP server.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		d.log.Printf("http shutdown error: %v", err)
+		s.log.Printf("http shutdown error: %v", err)
 	}
 
 	// Clean up files.
-	os.Remove(d.sockPath)
-	os.Remove(d.pidPath)
+	os.Remove(s.sockPath)
+	os.Remove(s.pidPath)
 
-	d.wg.Wait()
-	d.log.Printf("daemon stopped")
+	s.wg.Wait()
+	s.log.Printf("daemon stopped")
 	return nil
 }
 
 // SetLogOutput redirects the daemon's logger to the given writer.
 // Call before Run() to capture all daemon output.
-func (d *Daemon) SetLogOutput(w io.Writer) {
-	d.log.SetOutput(w)
+func (s *Service) SetLogOutput(w io.Writer) {
+	s.log.SetOutput(w)
 }
 
 // SetHostClient injects a host client. Call before Run(). When set, the
-// daemon does NOT construct its own in-process host.Service and the
+// Service does NOT construct its own in-process host.Service and the
 // caller is responsible for the host plane's lifetime (e.g. the clankd
-// subprocess supervisor for clank-host). When unset, daemon falls back
+// subprocess supervisor for clank-host). When unset, Service falls back
 // to building an in-process host from BackendManagers.
-func (d *Daemon) SetHostClient(c hostclient.Client) {
-	d.hostClient = c
+//
+// Equivalent to RegisterHost("local", c); kept as a convenience for the
+// existing call sites that predate the host catalog.
+func (s *Service) SetHostClient(c hostclient.Client) {
+	_ = s.RegisterHost("local", c)
 }
 
 // Stop requests the daemon to shut down.
-func (d *Daemon) Stop() {
-	d.cancel()
+func (s *Service) Stop() {
+	s.cancel()
+}
+
+// Shutdown closes catalog-owned resources (registered hosts, store) and
+// cancels the Service's root context. Unlike the internal shutdown
+// helper, it does NOT touch the HTTP server, listener, or PID file —
+// the production path runs those through Run/shutdown, while tests that
+// never called Run still need a way to release the host clients they
+// registered.
+func (s *Service) Shutdown() error {
+	s.cancel()
+
+	for id, c := range s.snapshotHosts() {
+		if err := c.Close(); err != nil {
+			s.log.Printf("close host %s: %v", id, err)
+		}
+	}
+	if s.Store != nil {
+		if err := s.Store.Close(); err != nil {
+			s.log.Printf("close store: %v", err)
+		}
+	}
+	return nil
 }

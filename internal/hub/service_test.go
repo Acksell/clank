@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	"github.com/acksell/clank/internal/hub"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -251,28 +252,28 @@ func shortTempDir(t *testing.T) string {
 
 // testDaemon creates a daemon in a temp directory, starts it, and returns
 // the daemon, a connected client, and a cleanup function.
-func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
+func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 	t.Helper()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	// Wire up mock backend manager for all backend types.
 	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	// Start daemon in background.
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.Run()
+		errCh <- s.Run()
 	}()
 
 	// Wait for socket to exist.
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	for {
@@ -289,7 +290,7 @@ func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
 	}
 
 	cleanup := func() {
-		d.Stop()
+		s.Stop()
 		select {
 		case <-errCh:
 		case <-time.After(5 * time.Second):
@@ -301,28 +302,28 @@ func testDaemon(t *testing.T) (*daemon.Daemon, *daemon.Client, func()) {
 	// We'll access it through the test closure.
 	_ = mgr
 
-	return d, client, cleanup
+	return s, client, cleanup
 }
 
 // --- Tests ---
 
-func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, func() *mockBackend, func()) {
+func testDaemonWithBackendAccess(t *testing.T) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
 	t.Helper()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	getBackend := func() *mockBackend {
@@ -330,7 +331,7 @@ func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, 
 	}
 
 	cleanup := func() {
-		d.Stop()
+		s.Stop()
 		select {
 		case <-errCh:
 		case <-time.After(5 * time.Second):
@@ -338,10 +339,10 @@ func testDaemonWithBackendAccess(t *testing.T) (*daemon.Daemon, *daemon.Client, 
 		}
 	}
 
-	return d, client, getBackend, cleanup
+	return s, client, getBackend, cleanup
 }
 
-// receiveEvents collects up to n events from the channel, timing out after d.
+// receiveEvents collects up to n events from the channel, timing out after s.
 func receiveEvents(ch <-chan agent.Event, n int, timeout time.Duration) []agent.Event {
 	var result []agent.Event
 	timer := time.After(timeout)
@@ -370,14 +371,14 @@ func eventTypes(events []agent.Event) []string {
 	return types
 }
 
-func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*daemon.Daemon, *daemon.Client, func() *mockBackend, func()) {
+func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
 	t.Helper()
 
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	discMgr := &mockDiscovererManager{
 		snapshots: snapshots,
@@ -388,13 +389,13 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*d
 		b.sessionID = req.SessionID
 		return b
 	}
-	d.BackendManagers[agent.BackendOpenCode] = discMgr
-	d.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
+	s.BackendManagers[agent.BackendOpenCode] = discMgr
+	s.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	getBackend := func() *mockBackend {
@@ -402,7 +403,7 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*d
 	}
 
 	cleanup := func() {
-		d.Stop()
+		s.Stop()
 		select {
 		case <-errCh:
 		case <-time.After(5 * time.Second):
@@ -410,10 +411,10 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*d
 		}
 	}
 
-	return d, client, getBackend, cleanup
+	return s, client, getBackend, cleanup
 }
 
-func testDaemonWithStore(t *testing.T, dir string) (d *daemon.Daemon, client *daemon.Client, sockPath, pidPath, dbPath string, cleanup func()) {
+func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, pidPath, dbPath string, cleanup func()) {
 	t.Helper()
 
 	if dir == "" {
@@ -428,22 +429,22 @@ func testDaemonWithStore(t *testing.T, dir string) (d *daemon.Daemon, client *da
 		t.Fatalf("store.Open: %v", err)
 	}
 
-	d = daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
+	s = hub.NewWithPaths(sockPath, pidPath)
+	s.Store = st
 
 	// Wire up mock backend manager.
 	mgr := newMockBackendManager()
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client = daemon.NewClient(sockPath)
+	client = hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	cleanup = func() {
-		d.Stop()
+		s.Stop()
 		select {
 		case <-errCh:
 		case <-time.After(5 * time.Second):
@@ -453,7 +454,7 @@ func testDaemonWithStore(t *testing.T, dir string) (d *daemon.Daemon, client *da
 	return
 }
 
-func waitForDaemon(t *testing.T, client *daemon.Client) {
+func waitForDaemon(t *testing.T, client *hubclient.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

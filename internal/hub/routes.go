@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 import (
 	"encoding/json"
@@ -9,38 +9,38 @@ import (
 
 // HUB
 // registerRoutes sets up the HTTP handlers on the mux.
-func (d *Daemon) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /ping", d.handlePing)
-	mux.HandleFunc("POST /sessions", d.handleCreateSession)
-	mux.HandleFunc("GET /sessions", d.handleListSessions)
-	mux.HandleFunc("GET /sessions/search", d.handleSearchSessions)
-	mux.HandleFunc("GET /sessions/{id}", d.handleGetSession)
-	mux.HandleFunc("GET /sessions/{id}/messages", d.handleGetSessionMessages)
-	mux.HandleFunc("POST /sessions/{id}/message", d.handleSendMessage)
-	mux.HandleFunc("POST /sessions/{id}/revert", d.handleRevertSession)
-	mux.HandleFunc("POST /sessions/{id}/fork", d.handleForkSession)
-	mux.HandleFunc("POST /sessions/{id}/abort", d.handleAbortSession)
-	mux.HandleFunc("POST /sessions/{id}/read", d.handleMarkSessionRead)
-	mux.HandleFunc("POST /sessions/{id}/followup", d.handleToggleFollowUp)
-	mux.HandleFunc("POST /sessions/{id}/visibility", d.handleSetVisibility)
-	mux.HandleFunc("POST /sessions/{id}/draft", d.handleSetDraft)
-	mux.HandleFunc("DELETE /sessions/{id}", d.handleDeleteSession)
-	mux.HandleFunc("GET /events", d.handleEvents)
-	mux.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", d.handlePermissionReply)
-	mux.HandleFunc("GET /sessions/{id}/pending-permission", d.handleGetPendingPermission)
-	mux.HandleFunc("GET /status", d.handleStatus)
-	mux.HandleFunc("GET /agents", d.handleListAgents)
-	mux.HandleFunc("GET /models", d.handleListModels)
-	mux.HandleFunc("POST /sessions/discover", d.handleDiscoverSessions)
+func (s *Service) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /ping", s.handlePing)
+	mux.HandleFunc("POST /sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /sessions", s.handleListSessions)
+	mux.HandleFunc("GET /sessions/search", s.handleSearchSessions)
+	mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
+	mux.HandleFunc("GET /sessions/{id}/messages", s.handleGetSessionMessages)
+	mux.HandleFunc("POST /sessions/{id}/message", s.handleSendMessage)
+	mux.HandleFunc("POST /sessions/{id}/revert", s.handleRevertSession)
+	mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
+	mux.HandleFunc("POST /sessions/{id}/abort", s.handleAbortSession)
+	mux.HandleFunc("POST /sessions/{id}/read", s.handleMarkSessionRead)
+	mux.HandleFunc("POST /sessions/{id}/followup", s.handleToggleFollowUp)
+	mux.HandleFunc("POST /sessions/{id}/visibility", s.handleSetVisibility)
+	mux.HandleFunc("POST /sessions/{id}/draft", s.handleSetDraft)
+	mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
+	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", s.handlePermissionReply)
+	mux.HandleFunc("GET /sessions/{id}/pending-permission", s.handleGetPendingPermission)
+	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("GET /agents", s.handleListAgents)
+	mux.HandleFunc("GET /models", s.handleListModels)
+	mux.HandleFunc("POST /sessions/discover", s.handleDiscoverSessions)
 	// Worktree / branch endpoints.
-	mux.HandleFunc("GET /branches", d.handleListBranches)
-	mux.HandleFunc("POST /worktrees", d.handleCreateWorktree)
-	mux.HandleFunc("DELETE /worktrees", d.handleRemoveWorktree)
-	mux.HandleFunc("POST /worktrees/merge", d.handleMergeWorktree)
+	mux.HandleFunc("GET /branches", s.handleListBranches)
+	mux.HandleFunc("POST /worktrees", s.handleCreateWorktree)
+	mux.HandleFunc("DELETE /worktrees", s.handleRemoveWorktree)
+	mux.HandleFunc("POST /worktrees/merge", s.handleMergeWorktree)
 
 	// Voice endpoints.
-	mux.HandleFunc("GET /voice/audio", d.handleVoiceAudio)
-	mux.HandleFunc("GET /voice/status", d.handleVoiceStatus)
+	mux.HandleFunc("GET /voice/audio", s.handleVoiceAudio)
+	mux.HandleFunc("GET /voice/status", s.handleVoiceStatus)
 }
 
 // --- Helpers ---

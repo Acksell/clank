@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+	"github.com/acksell/clank/internal/hub"
 )
 
 func TestDaemonPing(t *testing.T) {
@@ -36,16 +37,16 @@ func TestDaemonPIDFile(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
 	// Wait for PID file.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	for {
 		if err := client.Ping(ctx); err == nil {
 			break
@@ -66,8 +67,8 @@ func TestDaemonPIDFile(t *testing.T) {
 		t.Error("PID file is empty")
 	}
 
-	// Stop daemon.
-	d.Stop()
+	// Stop hub.
+	s.Stop()
 	<-errCh
 
 	// PID file should be cleaned up.
@@ -118,14 +119,14 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = mgr
-	d.BackendManagers[agent.BackendClaudeCode] = mgr
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.BackendManagers[agent.BackendOpenCode] = mgr
+	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	ctx := context.Background()
@@ -150,8 +151,8 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Stop daemon.
-	d.Stop()
+	// Stop hub.
+	s.Stop()
 	select {
 	case <-errCh:
 	case <-time.After(5 * time.Second):

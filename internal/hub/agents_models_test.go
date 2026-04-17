@@ -1,4 +1,4 @@
-package daemon_test
+package hub_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/daemon"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -17,7 +18,7 @@ func TestDaemonListAgents(t *testing.T) {
 	sockPath := filepath.Join(dir, "test.sock")
 	pidPath := filepath.Join(dir, "test.pid")
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
+	s := hub.NewWithPaths(sockPath, pidPath)
 
 	// OpenCode manager with agent listing support.
 	ocMgr := &mockAgentListerManager{
@@ -28,17 +29,17 @@ func TestDaemonListAgents(t *testing.T) {
 			}, nil
 		},
 	}
-	d.BackendManagers[agent.BackendOpenCode] = ocMgr
+	s.BackendManagers[agent.BackendOpenCode] = ocMgr
 
 	// Claude manager — no agent lister support.
-	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+	s.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
-	defer d.Stop()
+	defer s.Stop()
 
 	ctx := context.Background()
 
@@ -98,8 +99,8 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.Store = st
 
 	// Use an agent lister that tracks whether it was called synchronously.
 	// The lister blocks until explicitly unblocked, so if the handler
@@ -115,16 +116,16 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 			}, nil
 		},
 	}
-	d.BackendManagers[agent.BackendOpenCode] = ocMgr
-	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+	s.BackendManagers[agent.BackendOpenCode] = ocMgr
+	s.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 
@@ -185,8 +186,8 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	}
 	// No pre-seeded agents — cache miss.
 
-	d := daemon.NewWithPaths(sockPath, pidPath)
-	d.Store = st
+	s := hub.NewWithPaths(sockPath, pidPath)
+	s.Store = st
 
 	ocMgr := &mockAgentListerManager{
 		agents: func(ctx context.Context, projectDir string) ([]agent.AgentInfo, error) {
@@ -195,16 +196,16 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 			}, nil
 		},
 	}
-	d.BackendManagers[agent.BackendOpenCode] = ocMgr
-	d.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
+	s.BackendManagers[agent.BackendOpenCode] = ocMgr
+	s.BackendManagers[agent.BackendClaudeCode] = newMockBackendManager()
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run() }()
+	go func() { errCh <- s.Run() }()
 
-	client := daemon.NewClient(sockPath)
+	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 	defer func() {
-		d.Stop()
+		s.Stop()
 		<-errCh
 	}()
 

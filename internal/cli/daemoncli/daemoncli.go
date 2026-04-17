@@ -15,7 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/daemon"
+	hub "github.com/acksell/clank/internal/hub"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -60,7 +61,7 @@ func Command() *cobra.Command {
 // RunStart starts the daemon, either in foreground or as a background process.
 // Exported so that ensureDaemon in the clank binary can call it directly.
 func RunStart(foreground bool) error {
-	running, pid, err := daemon.IsRunning()
+	running, pid, err := hubclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -71,7 +72,7 @@ func RunStart(foreground bool) error {
 
 	if foreground {
 		// Run in foreground — useful for debugging.
-		d, err := daemon.New()
+		d, err := hub.New()
 		if err != nil {
 			return err
 		}
@@ -153,7 +154,7 @@ func RunStart(foreground bool) error {
 	logFile.Close()
 
 	// Wait briefly for the daemon to be reachable.
-	client, err := daemon.NewDefaultClient()
+	client, err := hubclient.NewDefaultClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -177,7 +178,7 @@ func RunStart(foreground bool) error {
 
 // runStop sends SIGTERM to the running daemon.
 func runStop() error {
-	running, pid, err := daemon.IsRunning()
+	running, pid, err := hubclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -200,7 +201,7 @@ func runStop() error {
 	defer cancel()
 
 	for {
-		stillRunning, _, _ := daemon.IsRunning()
+		stillRunning, _, _ := hubclient.IsRunning()
 		if !stillRunning {
 			fmt.Printf("Daemon stopped (was pid=%d)\n", pid)
 			return nil
@@ -216,7 +217,7 @@ func runStop() error {
 
 // runStatus shows daemon info and managed sessions.
 func runStatus() error {
-	running, pid, err := daemon.IsRunning()
+	running, pid, err := hubclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -225,7 +226,7 @@ func runStatus() error {
 		return nil
 	}
 
-	client, err := daemon.NewDefaultClient()
+	client, err := hubclient.NewDefaultClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}

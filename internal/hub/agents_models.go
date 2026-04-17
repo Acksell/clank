@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 )
 
 // HUB
-func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	backendStr := r.URL.Query().Get("backend")
 	projectDir := r.URL.Query().Get("project_dir")
 
@@ -24,21 +24,21 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 	// Try to serve from the persistent cache (SQLite) first. This avoids
 	// blocking on the OpenCode server starting up — the response is instant.
-	if d.Store != nil {
-		cached, err := d.Store.LoadPrimaryAgents(bt, projectDir)
+	if s.Store != nil {
+		cached, err := s.Store.LoadPrimaryAgents(bt, projectDir)
 		if err != nil {
-			d.log.Printf("warning: load cached primary agents: %v", err)
+			s.log.Printf("warning: load cached primary agents: %v", err)
 		}
 		if cached != nil {
 			// Return cached data immediately and refresh in the background.
-			d.refreshPrimaryAgentsInBackground(bt, projectDir)
+			s.refreshPrimaryAgentsInBackground(bt, projectDir)
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
 	}
 
 	// No cache — fetch synchronously through the host plane.
-	agents, err := d.hostClient.ListAgents(r.Context(), bt, projectDir)
+	agents, err := s.hostClient.ListAgents(r.Context(), bt, projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -46,13 +46,13 @@ func (d *Daemon) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if agents == nil {
 		agents = []agent.AgentInfo{}
 	}
-	d.persistPrimaryAgents(bt, projectDir, agents)
+	s.persistPrimaryAgents(bt, projectDir, agents)
 	writeJSON(w, http.StatusOK, agents)
 }
 
 // HUB
 // handleListModels returns available models for a given backend and project.
-func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleListModels(w http.ResponseWriter, r *http.Request) {
 	backendStr := r.URL.Query().Get("backend")
 	projectDir := r.URL.Query().Get("project_dir")
 
@@ -62,7 +62,7 @@ func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bt := agent.BackendType(backendStr)
-	models, err := d.hostClient.ListModels(r.Context(), bt, projectDir)
+	models, err := s.hostClient.ListModels(r.Context(), bt, projectDir)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -82,8 +82,8 @@ func (d *Daemon) handleListModels(w http.ResponseWriter, r *http.Request) {
 // OpenCodeBackendManager. Once the daemon's session info no longer needs
 // the URL inline (or once it's exposed via SessionBackend / Client),
 // this helper goes away.
-func (d *Daemon) openCodeServerURLs() map[string]string {
-	ocMgr, ok := d.BackendManagers[agent.BackendOpenCode].(*host.OpenCodeBackendManager)
+func (s *Service) openCodeServerURLs() map[string]string {
+	ocMgr, ok := s.BackendManagers[agent.BackendOpenCode].(*host.OpenCodeBackendManager)
 	if !ok {
 		return nil
 	}
@@ -96,12 +96,12 @@ func (d *Daemon) openCodeServerURLs() map[string]string {
 
 // HUB
 // persistPrimaryAgents writes the primary agent list to the store for future cache hits.
-func (d *Daemon) persistPrimaryAgents(bt agent.BackendType, projectDir string, agents []agent.AgentInfo) {
-	if d.Store == nil {
+func (s *Service) persistPrimaryAgents(bt agent.BackendType, projectDir string, agents []agent.AgentInfo) {
+	if s.Store == nil {
 		return
 	}
-	if err := d.Store.UpsertPrimaryAgents(bt, projectDir, agents); err != nil {
-		d.log.Printf("warning: persist primary agents for %s/%s: %v", bt, projectDir, err)
+	if err := s.Store.UpsertPrimaryAgents(bt, projectDir, agents); err != nil {
+		s.log.Printf("warning: persist primary agents for %s/%s: %v", bt, projectDir, err)
 	}
 }
 
@@ -110,35 +110,35 @@ func (d *Daemon) persistPrimaryAgents(bt agent.BackendType, projectDir string, a
 // agent list for the given backend/project. The result is persisted to SQLite
 // so that subsequent requests get the updated list. Safe to call multiple
 // times — concurrent refreshes for the same key are deduplicated.
-func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectDir string) {
-	d.primaryAgentsRefreshMu.Lock()
+func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectDir string) {
+	s.primaryAgentsRefreshMu.Lock()
 	key := string(bt) + "\x00" + projectDir
-	if d.primaryAgentsRefreshInFlight[key] {
-		d.primaryAgentsRefreshMu.Unlock()
+	if s.primaryAgentsRefreshInFlight[key] {
+		s.primaryAgentsRefreshMu.Unlock()
 		return
 	}
-	d.primaryAgentsRefreshInFlight[key] = true
-	d.primaryAgentsRefreshMu.Unlock()
+	s.primaryAgentsRefreshInFlight[key] = true
+	s.primaryAgentsRefreshMu.Unlock()
 
 	go func() {
 		defer func() {
-			d.primaryAgentsRefreshMu.Lock()
-			delete(d.primaryAgentsRefreshInFlight, key)
-			d.primaryAgentsRefreshMu.Unlock()
+			s.primaryAgentsRefreshMu.Lock()
+			delete(s.primaryAgentsRefreshInFlight, key)
+			s.primaryAgentsRefreshMu.Unlock()
 		}()
 
-		ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 
-		agents, err := d.hostClient.ListAgents(ctx, bt, projectDir)
+		agents, err := s.hostClient.ListAgents(ctx, bt, projectDir)
 		if err != nil {
-			d.log.Printf("background primary agent refresh for %s/%s: %v", bt, projectDir, err)
+			s.log.Printf("background primary agent refresh for %s/%s: %v", bt, projectDir, err)
 			return
 		}
 		if agents == nil {
 			agents = []agent.AgentInfo{}
 		}
-		d.persistPrimaryAgents(bt, projectDir, agents)
+		s.persistPrimaryAgents(bt, projectDir, agents)
 	}()
 }
 
@@ -148,27 +148,27 @@ func (d *Daemon) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectD
 // reconciler has been started. The refreshPrimaryAgentsInBackground calls
 // use GetOrStartServer which will wait for the reconciler to provide a
 // running server — this method does NOT start servers itself.
-func (d *Daemon) warmPrimaryAgentCaches() {
-	if d.Store == nil {
+func (s *Service) warmPrimaryAgentCaches() {
+	if s.Store == nil {
 		return
 	}
-	backends, err := d.hostClient.ListBackends(d.ctx)
+	backends, err := s.hostClient.ListBackends(s.ctx)
 	if err != nil {
-		d.log.Printf("warning: list backends: %v", err)
+		s.log.Printf("warning: list backends: %v", err)
 		return
 	}
 	for _, bi := range backends {
 		bt := bi.Name
-		dirs, err := d.Store.KnownProjectDirs(bt)
+		dirs, err := s.Store.KnownProjectDirs(bt)
 		if err != nil {
-			d.log.Printf("warning: load project dirs for %s: %v", bt, err)
+			s.log.Printf("warning: load project dirs for %s: %v", bt, err)
 			continue
 		}
 		for _, dir := range dirs {
 			if _, err := os.Stat(dir); os.IsNotExist(err) {
 				continue
 			}
-			d.refreshPrimaryAgentsInBackground(bt, dir)
+			s.refreshPrimaryAgentsInBackground(bt, dir)
 		}
 	}
 }

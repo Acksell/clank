@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 // HOST: worktree and branch management is part of the Host plane in the
 // target architecture (see hub_host_refactor.md). These handlers and helpers
@@ -23,7 +23,7 @@ import (
 // If the branch already has a worktree checked out, returns the existing path.
 // If the branch exists locally but has no worktree, creates one.
 // If the branch doesn't exist, creates a new branch based on the default branch.
-func (d *Daemon) resolveWorktree(projectDir, branch string) (string, error) {
+func (s *Service) resolveWorktree(projectDir, branch string) (string, error) {
 	// Check if a worktree already exists for this branch.
 	wt, err := git.FindWorktreeForBranch(projectDir, branch)
 	if err != nil {
@@ -61,11 +61,11 @@ func (d *Daemon) resolveWorktree(projectDir, branch string) (string, error) {
 		}
 	}
 
-	d.log.Printf("created worktree for branch %q at %s", branch, wtDir)
+	s.log.Printf("created worktree for branch %q at %s", branch, wtDir)
 	return wtDir, nil
 }
 
-func (d *Daemon) handleListBranches(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	projectDir := r.URL.Query().Get("project_dir")
 	if projectDir == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
@@ -114,7 +114,7 @@ func (d *Daemon) handleListBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (d *Daemon) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	var req CreateWorktreeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -125,7 +125,7 @@ func (d *Daemon) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wtDir, err := d.resolveWorktree(req.ProjectDir, req.Branch)
+	wtDir, err := s.resolveWorktree(req.ProjectDir, req.Branch)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -137,7 +137,7 @@ func (d *Daemon) handleCreateWorktree(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (d *Daemon) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 	var req RemoveWorktreeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -163,11 +163,11 @@ func (d *Daemon) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.log.Printf("removed worktree for branch %q at %s", req.Branch, wt.Path)
+	s.log.Printf("removed worktree for branch %q at %s", req.Branch, wt.Path)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
-func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 	var req MergeWorktreeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -234,7 +234,7 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "commit worktree changes: " + err.Error()})
 			return
 		}
-		d.log.Printf("committed worktree changes in %s on branch %q", branchWt.Path, req.Branch)
+		s.log.Printf("committed worktree changes in %s on branch %q", branchWt.Path, req.Branch)
 	}
 
 	// Find the main worktree (the one with the default branch checked out).
@@ -272,7 +272,7 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.log.Printf("merged branch %q into %q in %s", req.Branch, defaultBranch, mainWt.Path)
+	s.log.Printf("merged branch %q into %q in %s", req.Branch, defaultBranch, mainWt.Path)
 
 	resp := MergeWorktreeResponse{
 		Status:       "merged",
@@ -280,18 +280,18 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Post-merge: mark sessions on this worktree as done.
-	resp.SessionsDone = d.markWorktreeSessionsDone(branchWt.Path)
+	resp.SessionsDone = s.markWorktreeSessionsDone(branchWt.Path)
 
 	// Post-merge: remove worktree (force — worktrees often have untracked files).
 	if err := git.RemoveWorktree(req.ProjectDir, branchWt.Path, true); err != nil {
-		d.log.Printf("warning: could not remove worktree after merge: %v", err)
+		s.log.Printf("warning: could not remove worktree after merge: %v", err)
 	} else {
 		resp.WorktreeRemoved = true
 	}
 
 	// Post-merge: delete the branch (safe delete, only if fully merged).
 	if err := git.DeleteBranch(req.ProjectDir, req.Branch, false); err != nil {
-		d.log.Printf("warning: could not delete branch after merge: %v", err)
+		s.log.Printf("warning: could not delete branch after merge: %v", err)
 	} else {
 		resp.BranchDeleted = true
 	}
@@ -301,12 +301,12 @@ func (d *Daemon) handleMergeWorktree(w http.ResponseWriter, r *http.Request) {
 
 // markWorktreeSessionsDone marks all non-archived sessions whose ProjectDir
 // matches the given worktree path as "done". Returns the count of sessions updated.
-func (d *Daemon) markWorktreeSessionsDone(worktreePath string) int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (s *Service) markWorktreeSessionsDone(worktreePath string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	count := 0
-	for _, ms := range d.sessions {
+	for _, ms := range s.sessions {
 		if ms.info.ProjectDir != worktreePath {
 			continue
 		}
@@ -314,7 +314,7 @@ func (d *Daemon) markWorktreeSessionsDone(worktreePath string) int {
 			continue
 		}
 		ms.info.Visibility = agent.VisibilityDone
-		d.persistSession(ms)
+		s.persistSession(ms)
 		count++
 	}
 	return count

@@ -7,7 +7,7 @@
 //
 //go:build integration
 
-package daemon
+package hub
 
 import (
 	"context"
@@ -33,14 +33,14 @@ func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	pidPath := sockDir + "/test.pid"
 
 	d := NewWithPaths(sockPath, pidPath)
-	d.BackendManagers[agent.BackendOpenCode] = NewOpenCodeBackendManager()
-	d.BackendManagers[agent.BackendClaudeCode] = NewClaudeBackendManager()
+	s.BackendManagers[agent.BackendOpenCode] = NewOpenCodeBackendManager()
+	s.BackendManagers[agent.BackendClaudeCode] = NewClaudeBackendManager()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
 	go func() {
 		close(started)
-		d.Run()
+		s.Run()
 	}()
 	<-started
 	// Wait for socket to be ready.
@@ -51,7 +51,7 @@ func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	cleanup := func() {
 		cancel()
 		_ = ctx // keep ctx referenced
-		d.Stop()
+		s.Stop()
 		time.Sleep(500 * time.Millisecond)
 		os.RemoveAll(sockDir)
 	}

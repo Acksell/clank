@@ -20,7 +20,8 @@ func newInProcessHostClient(t *testing.T) hostclient.Client {
 func TestService_RegisterAndLookupHost(t *testing.T) {
 	t.Parallel()
 
-	s := New(Options{})
+	s, err := New()
+	if err != nil { t.Fatalf("New: %v", err) }
 	defer s.Shutdown()
 
 	hc := newInProcessHostClient(t)
@@ -45,7 +46,8 @@ func TestService_RegisterAndLookupHost(t *testing.T) {
 func TestService_RegisterHost_Validation(t *testing.T) {
 	t.Parallel()
 
-	s := New(Options{})
+	s, err := New()
+	if err != nil { t.Fatalf("New: %v", err) }
 	defer s.Shutdown()
 
 	hc := newInProcessHostClient(t)
@@ -60,7 +62,8 @@ func TestService_RegisterHost_Validation(t *testing.T) {
 func TestService_UnregisterHost(t *testing.T) {
 	t.Parallel()
 
-	s := New(Options{})
+	s, err := New()
+	if err != nil { t.Fatalf("New: %v", err) }
 	defer s.Shutdown()
 
 	hc := newInProcessHostClient(t)
@@ -82,7 +85,8 @@ func TestService_UnregisterHost(t *testing.T) {
 func TestService_Shutdown_ClosesRegisteredHosts(t *testing.T) {
 	t.Parallel()
 
-	s := New(Options{})
+	s, err := New()
+	if err != nil { t.Fatalf("New: %v", err) }
 
 	closed := false
 	closer := &closeRecorder{onClose: func() error { closed = true; return nil }}
@@ -101,7 +105,8 @@ func TestService_Shutdown_ClosesRegisteredHosts(t *testing.T) {
 func TestService_Shutdown_SwallowsHostCloseErrors(t *testing.T) {
 	t.Parallel()
 
-	s := New(Options{})
+	s, err := New()
+	if err != nil { t.Fatalf("New: %v", err) }
 	closer := &closeRecorder{onClose: func() error { return errors.New("boom") }}
 	_ = s.RegisterHost("local", closer)
 

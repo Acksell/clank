@@ -1,4 +1,4 @@
-package daemon
+package hub
 
 import (
 	"encoding/json"
@@ -16,7 +16,7 @@ import (
 )
 
 // HUB
-func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectDir string `json:"project_dir"`
 	}
@@ -32,15 +32,15 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// snapshots. Discovery is best-effort per backend — failures are
 	// logged but do not abort the whole call.
 	var snapshots []agent.SessionSnapshot
-	backends, err := d.hostClient.ListBackends(r.Context())
+	backends, err := s.hostClient.ListBackends(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	for _, bi := range backends {
-		found, err := d.hostClient.DiscoverSessions(r.Context(), bi.Name, body.ProjectDir)
+		found, err := s.hostClient.DiscoverSessions(r.Context(), bi.Name, body.ProjectDir)
 		if err != nil {
-			d.log.Printf("discover sessions (%s): %v", bi.Name, err)
+			s.log.Printf("discover sessions (%s): %v", bi.Name, err)
 			continue
 		}
 		snapshots = append(snapshots, found...)
@@ -72,10 +72,10 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 	// snapshot while preserving user-owned fields (visibility, follow_up, draft,
 	// last_read_at) from the in-memory/DB copy.
 	added := 0
-	d.mu.Lock()
+	s.mu.Lock()
 	for _, snap := range snapshots {
 		var existingMS *managedSession
-		for _, existing := range d.sessions {
+		for _, existing := range s.sessions {
 			if existing.info.ExternalID == snap.ID {
 				existingMS = existing
 				break
@@ -105,7 +105,7 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
 				existingMS.info.Status = agent.StatusIdle
 			}
-			d.persistSession(existingMS)
+			s.persistSession(existingMS)
 			continue
 		}
 
@@ -133,11 +133,11 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 			UpdatedAt:       snap.UpdatedAt,
 			LastReadAt:      snap.UpdatedAt, // Mark as read — they're not new activity
 		}
-		d.sessions[id] = &managedSession{info: info, backend: nil}
-		d.persistSession(d.sessions[id])
+		s.sessions[id] = &managedSession{info: info, backend: nil}
+		s.persistSession(s.sessions[id])
 		added++
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"discovered": added,
@@ -146,7 +146,7 @@ func (d *Daemon) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) 
 }
 
 // HUB
-func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req agent.StartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -157,7 +157,7 @@ func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := d.createSession(req)
+	info, err := s.createSession(req)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -166,12 +166,12 @@ func (d *Daemon) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // HUB
-func (d *Daemon) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, d.snapshotSessions())
+func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.snapshotSessions())
 }
 
 // HUB
-func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	sinceRaw := r.URL.Query().Get("since")
 	untilRaw := r.URL.Query().Get("until")
@@ -203,15 +203,15 @@ func (d *Daemon) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 		p.Until = t
 	}
 
-	writeJSON(w, http.StatusOK, d.searchSessions(p))
+	writeJSON(w, http.StatusOK, s.searchSessions(p))
 }
 
 // HUB
-func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -221,7 +221,7 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		info.Status = ms.backend.Status()
 	}
 	if info.Backend == agent.BackendOpenCode {
-		if urls := d.openCodeServerURLs(); urls != nil {
+		if urls := s.openCodeServerURLs(); urls != nil {
 			info.ServerURL = urls[info.ProjectDir]
 		}
 	}
@@ -234,8 +234,8 @@ func (d *Daemon) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // via Watch() to enable SSE streaming without sending a prompt. An event
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
-func (d *Daemon) activateBackend(id string, ms *managedSession) error {
-	backend, err := d.hostClient.CreateSession(d.ctx, id, agent.StartRequest{
+func (s *Service) activateBackend(id string, ms *managedSession) error {
+	backend, err := s.hostClient.CreateSession(s.ctx, id, agent.StartRequest{
 		Backend:    ms.info.Backend,
 		ProjectDir: ms.info.ProjectDir,
 		SessionID:  ms.info.ExternalID,
@@ -245,43 +245,43 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 	}
 
 	// Start watching for events (SSE) without sending a prompt.
-	if err := backend.Watch(d.ctx); err != nil {
+	if err := backend.Watch(s.ctx); err != nil {
 		return fmt.Errorf("watch backend: %w", err)
 	}
 
-	d.mu.Lock()
+	s.mu.Lock()
 	ms.backend = backend
 	ms.watchOnly = true
-	d.mu.Unlock()
+	s.mu.Unlock()
 
 	// Start event relay goroutine so backend events flow through broadcast.
-	d.wg.Add(1)
+	s.wg.Add(1)
 	go func() {
-		defer d.wg.Done()
+		defer s.wg.Done()
 		for evt := range backend.Events() {
 			evt.SessionID = id
-			d.broadcast(evt)
+			s.broadcast(evt)
 
 			if evt.Type == agent.EventStatusChange {
 				if data, ok := evt.Data.(agent.StatusChangeData); ok {
-					d.updateSessionStatus(id, data.NewStatus)
+					s.updateSessionStatus(id, data.NewStatus)
 				}
 			}
 			if evt.Type == agent.EventTitleChange {
 				if data, ok := evt.Data.(agent.TitleChangeData); ok {
-					d.updateSessionTitle(id, data.Title)
+					s.updateSessionTitle(id, data.Title)
 				}
 			}
 			if evt.Type == agent.EventRevertChange {
 				if data, ok := evt.Data.(agent.RevertChangeData); ok {
-					d.updateSessionRevert(id, data.MessageID)
+					s.updateSessionRevert(id, data.MessageID)
 				}
 			}
 			if evt.Type == agent.EventPermission {
 				if data, ok := evt.Data.(agent.PermissionData); ok {
-					d.mu.Lock()
+					s.mu.Lock()
 					ms.pendingPerms = append(ms.pendingPerms, data)
-					d.mu.Unlock()
+					s.mu.Unlock()
 				}
 			}
 		}
@@ -291,18 +291,18 @@ func (d *Daemon) activateBackend(id string, ms *managedSession) error {
 }
 
 // HUB
-func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 	if ms.backend == nil {
 		// Historical session — activate a read-only backend to fetch messages.
-		if err := d.activateBackend(id, ms); err != nil {
+		if err := s.activateBackend(id, ms); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -320,7 +320,7 @@ func (d *Daemon) handleGetSessionMessages(w http.ResponseWriter, r *http.Request
 }
 
 // HUB
-func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		Text  string               `json:"text"`
@@ -336,9 +336,9 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -347,7 +347,7 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// Update the session's current agent if one was specified, clear any draft,
 	// and reset visibility if the session was hidden (user re-engaging means
 	// it's no longer done/archived).
-	d.mu.Lock()
+	s.mu.Lock()
 	if body.Agent != "" {
 		ms.info.Agent = body.Agent
 	}
@@ -355,8 +355,8 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if ms.info.Visibility == agent.VisibilityDone || ms.info.Visibility == agent.VisibilityArchived {
 		ms.info.Visibility = agent.VisibilityVisible
 	}
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 
 	if ms.backend == nil {
 		// Historical session with no backend — create one and start it with
@@ -370,20 +370,20 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			Agent:      body.Agent,
 			Model:      body.Model,
 		}
-		backend, err := d.hostClient.CreateSession(d.ctx, id, req)
+		backend, err := s.hostClient.CreateSession(s.ctx, id, req)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		d.mu.Lock()
+		s.mu.Lock()
 		ms.backend = backend
 		ms.watchOnly = false
-		d.mu.Unlock()
+		s.mu.Unlock()
 
-		d.wg.Add(1)
+		s.wg.Add(1)
 		go func() {
-			defer d.wg.Done()
-			d.runBackend(id, ms, req)
+			defer s.wg.Done()
+			s.runBackend(id, ms, req)
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
 		return
@@ -394,9 +394,9 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		// SendMessage first — OpenCode supports this. If it fails (e.g.,
 		// Claude), fall back to stopping the watch-only backend and starting
 		// a fresh one via Start().
-		d.mu.Lock()
+		s.mu.Lock()
 		ms.watchOnly = false
-		d.mu.Unlock()
+		s.mu.Unlock()
 	}
 
 	opts := agent.SendMessageOpts{
@@ -408,9 +408,9 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// Dispatch asynchronously — SendMessage blocks until the LLM responds.
 	// The TUI tracks progress via the SSE event stream instead.
 	go func() {
-		if err := ms.backend.SendMessage(d.ctx, opts); err != nil {
-			d.log.Printf("session %s: send message error: %v", id, err)
-			d.broadcast(agent.Event{
+		if err := ms.backend.SendMessage(s.ctx, opts); err != nil {
+			s.log.Printf("session %s: send message error: %v", id, err)
+			s.broadcast(agent.Event{
 				Type:      agent.EventError,
 				SessionID: id,
 				Timestamp: time.Now(),
@@ -422,11 +422,11 @@ func (d *Daemon) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-func (d *Daemon) handleAbortSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -444,7 +444,7 @@ func (d *Daemon) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		MessageID string `json:"message_id"`
@@ -458,9 +458,9 @@ func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -474,15 +474,15 @@ func (d *Daemon) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	d.mu.Lock()
+	s.mu.Lock()
 	ms.info.RevertMessageID = body.MessageID
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reverted"})
 }
 
 // HUB
-func (d *Daemon) handleForkSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		MessageID string `json:"message_id"`
@@ -493,9 +493,9 @@ func (d *Daemon) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// message_id is optional: empty means "fork the entire session".
 
-	d.mu.RLock()
-	ms, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -528,18 +528,18 @@ func (d *Daemon) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 	newMS := &managedSession{info: newInfo}
 
-	d.mu.Lock()
-	d.sessions[newID] = newMS
-	d.persistSession(newMS)
-	d.mu.Unlock()
+	s.mu.Lock()
+	s.sessions[newID] = newMS
+	s.persistSession(newMS)
+	s.mu.Unlock()
 
 	// Activate the backend so the forked session can stream events and accept prompts.
-	if err := d.activateBackend(newID, newMS); err != nil {
+	if err := s.activateBackend(newID, newMS); err != nil {
 		log.Printf("[daemon] fork: failed to activate backend for %s: %v", newID, err)
 		// Session is persisted but backend is inactive; user can still navigate to it.
 	}
 
-	d.broadcast(agent.Event{
+	s.broadcast(agent.Event{
 		Type:      agent.EventSessionCreate,
 		SessionID: newID,
 		Timestamp: now,
@@ -550,40 +550,40 @@ func (d *Daemon) handleForkSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // HUB
-func (d *Daemon) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d.mu.Lock()
-	ms, ok := d.sessions[id]
+	s.mu.Lock()
+	ms, ok := s.sessions[id]
 	if !ok {
-		d.mu.Unlock()
+		s.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 	ms.info.LastReadAt = time.Now()
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // HUB
-func (d *Daemon) handleToggleFollowUp(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleToggleFollowUp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	d.mu.Lock()
-	ms, ok := d.sessions[id]
+	s.mu.Lock()
+	ms, ok := s.sessions[id]
 	if !ok {
-		d.mu.Unlock()
+		s.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 	ms.info.FollowUp = !ms.info.FollowUp
 	followUp := ms.info.FollowUp
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"follow_up": followUp})
 }
 
 // HUB
-func (d *Daemon) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		Visibility agent.SessionVisibility `json:"visibility"`
@@ -600,20 +600,20 @@ func (d *Daemon) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.Lock()
-	ms, ok := d.sessions[id]
+	s.mu.Lock()
+	ms, ok := s.sessions[id]
 	if !ok {
-		d.mu.Unlock()
+		s.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 	ms.info.Visibility = body.Visibility
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 }
 
 // HUB
-func (d *Daemon) handleSetDraft(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleSetDraft(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
 		Draft string `json:"draft"`
@@ -623,42 +623,42 @@ func (d *Daemon) handleSetDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d.mu.Lock()
-	ms, ok := d.sessions[id]
+	s.mu.Lock()
+	ms, ok := s.sessions[id]
 	if !ok {
-		d.mu.Unlock()
+		s.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 	ms.info.Draft = body.Draft
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.persistSession(ms)
+	s.mu.Unlock()
 }
 
 // HUB
-func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	d.mu.Lock()
-	ms, ok := d.sessions[id]
+	s.mu.Lock()
+	ms, ok := s.sessions[id]
 	if !ok {
-		d.mu.Unlock()
+		s.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
-	delete(d.sessions, id)
-	d.deletePersistedSession(id)
-	d.mu.Unlock()
+	delete(s.sessions, id)
+	s.deletePersistedSession(id)
+	s.mu.Unlock()
 
 	// Free the host registry slot. StopSession is a no-op if the session
 	// was never registered (historical session that was never activated).
 	if ms.backend != nil {
-		if err := d.hostClient.StopSession(d.ctx, id); err != nil {
-			d.log.Printf("error stopping session %s on host: %v", id, err)
+		if err := s.hostClient.StopSession(s.ctx, id); err != nil {
+			s.log.Printf("error stopping session %s on host: %v", id, err)
 		}
 	}
 
-	d.broadcast(agent.Event{
+	s.broadcast(agent.Event{
 		Type:      agent.EventSessionDelete,
 		SessionID: id,
 		Timestamp: time.Now(),
@@ -670,13 +670,13 @@ func (d *Daemon) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 // HUB
 // snapshotSessions returns a point-in-time copy of all session infos
 // with live status from backends and populated ServerURL for OpenCode sessions.
-func (d *Daemon) snapshotSessions() []agent.SessionInfo {
-	serverURLs := d.openCodeServerURLs()
+func (s *Service) snapshotSessions() []agent.SessionInfo {
+	serverURLs := s.openCodeServerURLs()
 
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	sessions := make([]agent.SessionInfo, 0, len(d.sessions))
-	for _, ms := range d.sessions {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sessions := make([]agent.SessionInfo, 0, len(s.sessions))
+	for _, ms := range s.sessions {
 		info := ms.info
 		if ms.backend != nil {
 			info.Status = ms.backend.Status()
@@ -698,7 +698,7 @@ func (d *Daemon) snapshotSessions() []agent.SessionInfo {
 // of title, prompt, draft, and project_name.
 //
 // Since/Until filter on UpdatedAt. Results are sorted by updated_at descending.
-func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
+func (s *Service) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 	// Parse OR groups from the query. Each group is a slice of AND terms.
 	var orGroups [][]string
 	if p.Query != "" {
@@ -714,7 +714,7 @@ func (d *Daemon) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 	hasSince := !p.Since.IsZero()
 	hasUntil := !p.Until.IsZero()
 
-	all := d.snapshotSessions()
+	all := s.snapshotSessions()
 	results := make([]agent.SessionInfo, 0)
 	for _, si := range all {
 		// Visibility filter.
@@ -785,11 +785,11 @@ func parseTimeParam(s string) (time.Time, error) {
 // When req.WorktreeBranch is set, a git worktree is created (or reused) for
 // that branch, and the backend is started in the worktree directory instead of
 // the original ProjectDir.
-func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
+func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
 	// Resolve worktree if a branch is requested.
 	var wtBranch, worktreeDir string
 	if req.WorktreeBranch != "" {
-		wt, err := d.resolveWorktree(req.ProjectDir, req.WorktreeBranch)
+		wt, err := s.resolveWorktree(req.ProjectDir, req.WorktreeBranch)
 		if err != nil {
 			return nil, fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
 		}
@@ -805,7 +805,7 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 	// round-trip; today it's an in-process call but the call shape is
 	// already wire-correct.
 	id := ulid.Make().String()
-	backend, err := d.hostClient.CreateSession(d.ctx, id, req)
+	backend, err := s.hostClient.CreateSession(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
 	}
@@ -832,13 +832,13 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 		backend: backend,
 	}
 
-	d.mu.Lock()
-	d.sessions[id] = ms
-	d.persistSession(ms)
-	d.mu.Unlock()
+	s.mu.Lock()
+	s.sessions[id] = ms
+	s.persistSession(ms)
+	s.mu.Unlock()
 
 	// Broadcast session creation.
-	d.broadcast(agent.Event{
+	s.broadcast(agent.Event{
 		Type:      agent.EventSessionCreate,
 		SessionID: id,
 		Timestamp: now,
@@ -846,10 +846,10 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 	})
 
 	// Start the backend in a goroutine.
-	d.wg.Add(1)
+	s.wg.Add(1)
 	go func() {
-		defer d.wg.Done()
-		d.runBackend(id, ms, req)
+		defer s.wg.Done()
+		s.runBackend(id, ms, req)
 	}()
 
 	return &info, nil
@@ -857,7 +857,7 @@ func (d *Daemon) createSession(req agent.StartRequest) (*agent.SessionInfo, erro
 
 // HOST
 // runBackend starts the backend and relays its events.
-func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartRequest) {
+func (s *Service) runBackend(id string, ms *managedSession, req agent.StartRequest) {
 	// Start relaying events BEFORE calling Start(), because Start() blocks
 	// for the entire LLM response (Prompt() is synchronous). Events emitted
 	// by the backend's SSE goroutine during Start() must be relayed in real time.
@@ -867,38 +867,38 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 		defer close(done)
 		for evt := range events {
 			evt.SessionID = id
-			d.broadcast(evt)
+			s.broadcast(evt)
 
 			if evt.Type == agent.EventStatusChange {
 				if data, ok := evt.Data.(agent.StatusChangeData); ok {
-					d.updateSessionStatus(id, data.NewStatus)
+					s.updateSessionStatus(id, data.NewStatus)
 				}
 			}
 			if evt.Type == agent.EventTitleChange {
 				if data, ok := evt.Data.(agent.TitleChangeData); ok {
-					d.updateSessionTitle(id, data.Title)
+					s.updateSessionTitle(id, data.Title)
 				}
 			}
 			if evt.Type == agent.EventRevertChange {
 				if data, ok := evt.Data.(agent.RevertChangeData); ok {
-					d.updateSessionRevert(id, data.MessageID)
+					s.updateSessionRevert(id, data.MessageID)
 				}
 			}
 			if evt.Type == agent.EventPermission {
 				if data, ok := evt.Data.(agent.PermissionData); ok {
-					d.mu.Lock()
+					s.mu.Lock()
 					ms.pendingPerms = append(ms.pendingPerms, data)
-					d.mu.Unlock()
+					s.mu.Unlock()
 				}
 			}
 		}
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
 
-	if err := ms.backend.Start(d.ctx, req); err != nil {
-		d.log.Printf("session %s: backend start error: %v", id, err)
-		d.updateSessionStatus(id, agent.StatusError)
-		d.broadcast(agent.Event{
+	if err := ms.backend.Start(s.ctx, req); err != nil {
+		s.log.Printf("session %s: backend start error: %v", id, err)
+		s.updateSessionStatus(id, agent.StatusError)
+		s.broadcast(agent.Event{
 			Type:      agent.EventError,
 			SessionID: id,
 			Timestamp: time.Now(),
@@ -910,57 +910,57 @@ func (d *Daemon) runBackend(id string, ms *managedSession, req agent.StartReques
 	// After Start() returns, capture the backend's native session ID so
 	// future discover calls can deduplicate against it.
 	if extID := ms.backend.SessionID(); extID != "" {
-		d.mu.Lock()
-		if ms2, ok := d.sessions[id]; ok {
+		s.mu.Lock()
+		if ms2, ok := s.sessions[id]; ok {
 			ms2.info.ExternalID = extID
-			d.persistSession(ms2)
+			s.persistSession(ms2)
 		}
-		d.mu.Unlock()
+		s.mu.Unlock()
 	}
 
 	// Backend event channel closed — mark as dead if still busy.
-	d.mu.RLock()
-	ms2, ok := d.sessions[id]
-	d.mu.RUnlock()
+	s.mu.RLock()
+	ms2, ok := s.sessions[id]
+	s.mu.RUnlock()
 	if ok && ms2.backend != nil {
 		status := ms2.backend.Status()
 		if status == agent.StatusBusy || status == agent.StatusStarting {
-			d.updateSessionStatus(id, agent.StatusDead)
+			s.updateSessionStatus(id, agent.StatusDead)
 		}
 	}
 }
 
 // HUB
 // updateSessionStatus updates the cached status and UpdatedAt.
-func (d *Daemon) updateSessionStatus(id string, status agent.SessionStatus) {
-	d.mu.Lock()
-	if ms, ok := d.sessions[id]; ok {
+func (s *Service) updateSessionStatus(id string, status agent.SessionStatus) {
+	s.mu.Lock()
+	if ms, ok := s.sessions[id]; ok {
 		ms.info.Status = status
 		ms.info.UpdatedAt = time.Now()
-		d.persistSession(ms)
+		s.persistSession(ms)
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 }
 
 // HUB
 // updateSessionTitle updates the cached title and UpdatedAt.
-func (d *Daemon) updateSessionTitle(id string, title string) {
-	d.mu.Lock()
-	if ms, ok := d.sessions[id]; ok {
+func (s *Service) updateSessionTitle(id string, title string) {
+	s.mu.Lock()
+	if ms, ok := s.sessions[id]; ok {
 		ms.info.Title = title
 		ms.info.UpdatedAt = time.Now()
-		d.persistSession(ms)
+		s.persistSession(ms)
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 }
 
 // HUB
 // updateSessionRevert updates the cached revert message ID.
-func (d *Daemon) updateSessionRevert(id string, messageID string) {
-	d.mu.Lock()
-	if ms, ok := d.sessions[id]; ok {
+func (s *Service) updateSessionRevert(id string, messageID string) {
+	s.mu.Lock()
+	if ms, ok := s.sessions[id]; ok {
 		ms.info.RevertMessageID = messageID
-		d.persistSession(ms)
+		s.persistSession(ms)
 	}
-	d.mu.Unlock()
+	s.mu.Unlock()
 }
