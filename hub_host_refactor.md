@@ -348,6 +348,8 @@ Done when: types compile with unit tests for ID generation and `RepoRef` parsing
 
 ### Phase 1: Build `host.Service` + `host/mux` + `host/client` + `clank-host`; rewire daemon to use them
 
+**Status: ✅ COMPLETE** (2026-04-17)
+
 - Implement `host.Service` with the method set above (extract repo cache, worktree mgmt, BackendManager wiring out of the daemon).
 - Implement `host/mux` HTTP handlers wrapping the Service.
 - Implement `host/client` HTTP client as a **clean rewrite** — do not copy or rename `internal/daemon/client.go`. The old client hard-codes Unix-socket assumptions in its URL construction; the new one must be dialer-agnostic from the start.
@@ -357,6 +359,13 @@ Done when: types compile with unit tests for ID generation and `RepoRef` parsing
 - **The daemon keeps exposing its existing client-facing HTTP surface unchanged through Phase 1.** The TUI is oblivious to the host split — it still imports `internal/daemon/client` and sees the same endpoints. Only the daemon's *internals* now go through `hostclient` instead of in-process helpers. The TUI rename happens in Phase 2.
 
 Done when: full session lifecycle works end-to-end through Unix socket; existing TUI works identically; integration tests cover create-session / send / events / abort / fork via the host client.
+
+**Phase 1 deviations from spec:**
+- Decision #3 said `hostclient.HTTP` would be the only client. We added a `hostclient.Client` **interface** with two adapters (`InProcess`, `HTTP`) so tests can run end-to-end without spawning a subprocess. Rationale documented in `internal/host/client/client.go`. Production clankd uses `HTTP` over Unix socket.
+- `openCodeServerURLs` (in `daemon/agents_models.go`) still concrete-type-asserts `*host.OpenCodeBackendManager`. Deferred to Phase 2 (will be folded into `host.SessionInfo` reshape).
+- `daemon.BackendManagers` field retained as input-only bootstrap contract for tests (`d.BackendManagers[X] = mgr` ergonomic). Removed in Phase 2 when daemon stops constructing the host.
+- `host.Service.CreateSession` does NOT call `StartRequest.Validate()` because the watch-only activation path (re-attaching to a historical session) creates a backend without a prompt. Validation lives at the boundaries (mux HTTP handler + daemon's send-message path).
+- `handleDebugOpenCodeServers` removed entirely (debug-only; can be reimplemented later if needed).
 
 ### Phase 2: Extract `hub.Service`; daemon becomes pure composition
 
