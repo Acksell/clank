@@ -484,29 +484,6 @@ func (c *Client) ListReposOnHost(ctx context.Context, hostname host.Hostname) ([
 	return out, nil
 }
 
-// RegisterRepoOnHost asks the host to remember (RemoteURL → rootDir).
-// The TUI calls this right after ResolveRepo so that subsequent
-// CreateSession requests can be path-free: the host already knows
-// where the checkout lives.
-//
-// Today the wire endpoint only accepts remote-kind GitRefs (its body
-// shape predates GitRef). Local-kind support arrives with implicit
-// adoption (§7.5) in step 6.
-func (c *Client) RegisterRepoOnHost(ctx context.Context, hostname host.Hostname, ref host.GitRef, rootDir string) (host.Repo, error) {
-	if ref.Kind != host.GitRefRemote {
-		return host.Repo{}, fmt.Errorf("RegisterRepoOnHost currently only supports remote git refs, got kind=%q", ref.Kind)
-	}
-	var out host.Repo
-	body := map[string]string{
-		"remote_url": ref.URL,
-		"root_dir":   rootDir,
-	}
-	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos", body, &out); err != nil {
-		return host.Repo{}, err
-	}
-	return out, nil
-}
-
 // --- Voice methods ---
 
 // VoiceAudioStream opens a WebSocket connection for bidirectional PCM audio

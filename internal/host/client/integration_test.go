@@ -118,8 +118,8 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 	t.Cleanup(svc.Shutdown)
 
 	dir := initGitRepo(t)
-	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	if _, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
@@ -207,8 +207,8 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 	dir := initGitRepo(t)
-	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	if _, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	t.Cleanup(srv.Close)

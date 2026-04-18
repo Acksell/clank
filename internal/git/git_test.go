@@ -88,9 +88,10 @@ func TestRemoteURL(t *testing.T) {
 	dir := initTestRepo(t)
 
 	// Brand-new repos have no remote — RemoteURL must surface that
-	// rather than silently returning an empty string. ResolveRepo and
-	// the Hub backfill rely on a clear error here to know the cwd
-	// can't be mapped to a RepoRef.
+	// rather than silently returning an empty string. The TUI's
+	// resolveLocalRepo and the host's CreateSession verify-and-add
+	// path rely on a clear error here to know the cwd can't be
+	// mapped to a remote-kind GitRef.
 	if _, err := RemoteURL(dir, "origin"); err == nil {
 		t.Fatal("expected error for repo with no origin remote")
 	}

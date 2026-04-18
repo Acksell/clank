@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,11 +51,17 @@ type Service struct {
 	reposMu sync.RWMutex
 	repos   map[string]Repo // key: GitRef.Canonical()
 	// repoStore is the optional persistence layer for the repo registry.
-	// When non-nil, RegisterRepo writes through (in-memory map first,
+	// When non-nil, AddRepo writes through (in-memory map first,
 	// then store) and New() loads any pre-existing rows into the map at
 	// construction time. Tests that don't care about persistence leave
 	// it nil and get pure in-memory behaviour. See §7.6 / step 5.
 	repoStore RepoStore
+
+	// cloneRoot is the parent directory under which CreateSession clones
+	// repos when StartRequest.AllowClone is true. Each clone lands in
+	// `<cloneRoot>/<sanitized-canonical>/`. Defaults to ~/.clank/repos at
+	// construction time; tests override via Options.CloneRoot.
+	cloneRoot string
 }
 
 // RepoStore is the persistence contract for the host's repo registry.
@@ -78,10 +85,14 @@ type Options struct {
 	// "[clank-host]" prefix.
 	Log *log.Logger
 	// RepoStore is the optional repo persistence layer. When set, New
-	// preloads existing rows into the in-memory registry and RegisterRepo
+	// preloads existing rows into the in-memory registry and AddRepo
 	// write-throughs every change. Leave nil for pure in-memory operation
 	// (e.g. unit tests).
 	RepoStore RepoStore
+	// CloneRoot is the parent directory under which CreateSession clones
+	// repos when StartRequest.AllowClone is true. Defaults to
+	// ~/.clank/repos when empty. Tests should set this to a t.TempDir().
+	CloneRoot string
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -107,6 +118,15 @@ func New(opts Options) *Service {
 		sessions:        make(map[string]agent.SessionBackend),
 		repos:           make(map[string]Repo),
 		repoStore:       opts.RepoStore,
+		cloneRoot:       opts.CloneRoot,
+	}
+	if s.cloneRoot == "" {
+		// Best-effort default; if the home dir lookup fails the field
+		// stays empty and CreateSession will reject AllowClone with a
+		// loud error rather than guessing a path.
+		if home, err := os.UserHomeDir(); err == nil {
+			s.cloneRoot = filepath.Join(home, ".clank", "repos")
+		}
 	}
 	if opts.RepoStore != nil {
 		// Preload at construction time so the registry is hot before any
@@ -263,17 +283,23 @@ type CreateInfo struct {
 // under the given Hub-assigned session ID. The backend is NOT started —
 // callers call Start() or Watch() on the returned backend.
 //
-// Identity (Hostname, RepoRemoteURL, Branch) is path-free; the host
-// resolves a working directory by:
-//  1. canonicalizing req.RepoRemoteURL into a GitRef key,
-//  2. looking up the previously-registered rootDir,
-//  3. resolving (rootDir, Branch) → workDir via resolveWorktree when
-//     Branch is non-empty (otherwise workDir == rootDir).
+// Identity (Hostname, RepoRemoteURL, WorktreeBranch) is path-free; the
+// host implements the §7.5 resolution algorithm to map identity → workDir:
 //
-// The repo MUST have been registered via RegisterRepo (either directly
-// or through the host mux's POST /repos route) before CreateSession can
-// resolve the workDir. This is the explicit replacement for the legacy
-// auto-registration that piggy-backed on the path-bearing wire format.
+//  1. Canonicalize req.RepoRemoteURL into a GitRef key.
+//  2. If the key is already in the repo registry: use its rootDir.
+//     If the caller also passed req.Dir and it disagrees with the stored
+//     rootDir, error loudly — auto-rebind is YAGNI; operator must edit
+//     the host's repo store.
+//  3. Else if req.Dir is set: verify that req.Dir is a git repo whose
+//     remotes (any of them) canonicalize to the key, then add it to the
+//     registry. Mismatch → error.
+//  4. Else if req.AllowClone is true: clone the remote URL into
+//     <cloneRoot>/<sanitized-key>/ and add it.
+//  5. Else: error — the caller must say how to obtain the repo.
+//
+// Then resolve (rootDir, WorktreeBranch) → workDir via resolveWorktree
+// when WorktreeBranch is non-empty (otherwise workDir == rootDir).
 //
 // Note: this does not call req.Validate(). The watch-only activation
 // path (re-attaching to a historical session) creates a backend without
@@ -288,6 +314,9 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	if req.RepoRemoteURL == "" {
 		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url is required")
+	}
+	if req.Dir != "" && req.AllowClone {
+		return nil, CreateInfo{}, fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
@@ -304,11 +333,12 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	// will replace it with a full GitRef field). Construct a remote-kind
 	// GitRef on the fly so we can canonicalize and look up the registered
 	// repo via the same code path as the typed API.
-	canonical := GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}.Canonical()
+	ref := GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}
+	canonical := ref.Canonical()
 	if canonical == "" {
 		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url %q is not a recognized git URL", req.RepoRemoteURL)
 	}
-	rootDir, err := s.repoRoot(canonical)
+	rootDir, err := s.resolveRepoRoot(ref, canonical, req)
 	if err != nil {
 		return nil, CreateInfo{}, err
 	}
@@ -331,6 +361,104 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	s.mu.Unlock()
 
 	return b, CreateInfo{ProjectDir: rootDir, WorktreeDir: workDir}, nil
+}
+
+// resolveRepoRoot implements the §7.5 add/clone resolution. Returns the
+// rootDir for canonical, adding it to the registry if necessary.
+func (s *Service) resolveRepoRoot(ref GitRef, canonical string, req agent.StartRequest) (string, error) {
+	// Step 2: lookup.
+	if stored, ok := s.repoByCanonical(canonical); ok {
+		if req.Dir != "" && req.Dir != stored.RootDir {
+			return "", fmt.Errorf("host already knows repo %q at %q; remove the entry from the host's registry file if you moved the repo (auto-rebind is not supported)", canonical, stored.RootDir)
+		}
+		return stored.RootDir, nil
+	}
+	// Step 4: caller pinned a directory — verify-and-add.
+	if req.Dir != "" {
+		if err := s.verifyDirMatchesRef(req.Dir, canonical); err != nil {
+			return "", err
+		}
+		if _, err := s.AddRepo(ref, req.Dir); err != nil {
+			return "", err
+		}
+		return req.Dir, nil
+	}
+	// Step 5: clone if explicitly allowed.
+	if req.AllowClone {
+		dest, err := s.cloneRepo(ref, canonical)
+		if err != nil {
+			return "", err
+		}
+		if _, err := s.AddRepo(ref, dest); err != nil {
+			return "", err
+		}
+		return dest, nil
+	}
+	// Step 6: nothing to go on.
+	return "", fmt.Errorf("%w: repo %q unknown to host; pass `dir` to add an existing checkout or set `allow_clone=true` to clone", ErrNotFound, canonical)
+}
+
+// verifyDirMatchesRef confirms dir is a git repo whose `git remote` set
+// contains at least one URL that canonicalizes to want. People fork and
+// add upstream remotes all the time — accepting any matching remote
+// keeps the UX sane while still preventing the wrong-repo footgun.
+//
+// Path comparison evaluates symlinks on both sides because `git
+// rev-parse --show-toplevel` returns the realpath while callers
+// commonly pass the symlinked form (e.g. macOS /tmp → /private/tmp).
+func (s *Service) verifyDirMatchesRef(dir, want string) error {
+	root, err := git.RepoRoot(dir)
+	if err != nil {
+		return fmt.Errorf("verify dir %q: %w", dir, err)
+	}
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve repo root %q: %w", root, err)
+	}
+	dirResolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("resolve dir %q: %w", dir, err)
+	}
+	if rootResolved != dirResolved {
+		return fmt.Errorf("dir %q is inside repo %q but is not the repo root", dir, root)
+	}
+	remotes, err := git.RemoteURLs(dir)
+	if err != nil {
+		return fmt.Errorf("verify dir %q: %w", dir, err)
+	}
+	for _, url := range remotes {
+		if (GitRef{Kind: GitRefRemote, URL: url}).Canonical() == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("dir %q remotes (%v) do not match requested repo %q", dir, remotes, want)
+}
+
+// cloneRepo clones ref.URL into <cloneRoot>/<sanitized-canonical>/ and
+// returns the destination path. Errors when cloneRoot is unset or the
+// destination already exists (which would mean the registry lost track
+// of an existing clone — a louder failure than silently using it).
+func (s *Service) cloneRepo(ref GitRef, canonical string) (string, error) {
+	if s.cloneRoot == "" {
+		return "", fmt.Errorf("cannot clone repo %q: host has no clone_root configured", canonical)
+	}
+	dest := filepath.Join(s.cloneRoot, sanitizeCanonical(canonical))
+	if _, err := os.Stat(dest); err == nil {
+		return "", fmt.Errorf("clone destination %q already exists but repo is not in registry; remove the directory or add it manually", dest)
+	}
+	if err := git.Clone(ref.URL, dest); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
+// sanitizeCanonical maps a canonical GitRef string to a single
+// filesystem-safe path component. The canonical form is
+// "github.com/owner/repo" for remote refs; replace separators with
+// dashes so we get one directory per repo under cloneRoot.
+func sanitizeCanonical(canonical string) string {
+	r := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
+	return r.Replace(canonical)
 }
 
 // Session returns the SessionBackend registered under id, or nil and

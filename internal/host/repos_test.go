@@ -84,16 +84,16 @@ func initGitRepo(t *testing.T, remote string) string {
 	return dir
 }
 
-func TestService_RegisterRepoAndLookup(t *testing.T) {
+func TestService_AddRepoAndLookup(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
 	ref := host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}
 
-	repo, err := svc.RegisterRepo(ref, dir)
+	repo, err := svc.AddRepo(ref, dir)
 	if err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+		t.Fatalf("AddRepo: %v", err)
 	}
 	if got := repo.Ref.Canonical(); got != "github.com/acksell/clank" {
 		t.Errorf("Ref.Canonical = %q", got)
@@ -113,17 +113,17 @@ func TestService_RegisterRepoAndLookup(t *testing.T) {
 	}
 }
 
-func TestService_RegisterRepoValidation(t *testing.T) {
+func TestService_AddRepoValidation(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 
-	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:a/b.git"}, ""); err == nil {
+	if _, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:a/b.git"}, ""); err == nil {
 		t.Error("empty rootDir should error")
 	}
-	if _, err := svc.RegisterRepo(host.GitRef{}, "/tmp"); err == nil {
+	if _, err := svc.AddRepo(host.GitRef{}, "/tmp"); err == nil {
 		t.Error("empty GitRef should error")
 	}
-	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "://invalid"}, "/tmp"); err == nil {
+	if _, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: "://invalid"}, "/tmp"); err == nil {
 		t.Error("invalid URL should error")
 	}
 }
@@ -146,8 +146,8 @@ func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 		t.Fatal("CreateSession should error when repo not registered")
 	}
 
-	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	if _, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 
 	_, info, err := svc.CreateSession(context.Background(), "sid-1", req)
@@ -187,9 +187,9 @@ func TestService_ListBranchesByRepo(t *testing.T) {
 	svc := newTestService(t)
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
-	repo, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir)
+	repo, err := svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir)
 	if err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+		t.Fatalf("AddRepo: %v", err)
 	}
 
 	branches, err := svc.ListBranchesByRepo(context.Background(), repo.Ref.Canonical())
@@ -229,15 +229,15 @@ func TestService_RepoStore_PersistsAcrossRestart(t *testing.T) {
 		},
 		RepoStore: store1,
 	})
-	if _, err := svc1.RegisterRepo(ref, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	if _, err := svc1.AddRepo(ref, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 	svc1.Shutdown()
 	if err := store1.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
 
-	// Second service: same DB, no explicit RegisterRepo call. The repo
+	// Second service: same DB, no explicit AddRepo call. The repo
 	// should be hot in the in-memory registry by virtue of the preload.
 	store2, err := repostore.Open(dbPath)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestService_RepoStore_PersistsAcrossRestart(t *testing.T) {
 	}
 
 	// And the higher-level path that depends on the registry — CreateSession
-	// — succeeds without an intervening RegisterRepo.
+	// — succeeds without an intervening AddRepo.
 	req := agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: "git@github.com:acksell/clank.git",

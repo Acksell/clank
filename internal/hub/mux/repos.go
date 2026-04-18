@@ -55,38 +55,6 @@ func (m *Mux) handleListReposOnHost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, repos)
 }
 
-type registerRepoOnHostRequest struct {
-	// For now this endpoint only accepts remote URLs. Local-kind GitRefs
-	// will be added when implicit adoption (§7.5) lands in step 6; the
-	// endpoint itself is slated for deletion at that time.
-	RemoteURL string `json:"remote_url"`
-	RootDir   string `json:"root_dir"`
-}
-
-func (m *Mux) handleRegisterRepoOnHost(w http.ResponseWriter, r *http.Request) {
-	hostname, err := parseHostname(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	var body registerRepoOnHostRequest
-	if err := decodeJSON(r.Body, &body); err != nil {
-		writeBadRequest(w, "invalid JSON: "+err.Error())
-		return
-	}
-	if body.RemoteURL == "" || body.RootDir == "" {
-		writeBadRequest(w, "remote_url and root_dir are required")
-		return
-	}
-	ref := host.GitRef{Kind: host.GitRefRemote, URL: body.RemoteURL}
-	repo, err := m.svc.RegisterRepoOnHost(r.Context(), hostname, ref, body.RootDir)
-	if err != nil {
-		writeRepoErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, repo)
-}
-
 func (m *Mux) handleListBranchesOnRepo(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {

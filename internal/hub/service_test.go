@@ -334,6 +334,14 @@ func (f *hostTestFixture) close() {
 	f.svc.Shutdown()
 }
 
+// hostFixturesByHub maps a *hub.Service to the host fixture seeded by
+// ensureHostFixture so package-level helpers (registerTestRepoAt) can
+// reach the underlying *host.Service to call AddRepo directly. The
+// previous wire-level RegisterRepo path is gone (§7.5: the host adds
+// implicitly during CreateSession), so test seeding now goes through
+// the same in-process API tests would use.
+var hostFixturesByHub sync.Map // map[*hub.Service]*hostTestFixture
+
 // ensureHostFixture builds an HTTP-fronted host.Service from
 // s.BackendManagers and registers it as the local host on s. If the
 // caller already injected a host client (e.g. repos_test.go which
@@ -354,7 +362,10 @@ func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	c := hostclient.NewHTTP(srv.URL, nil)
 	s.SetHostClient(c)
-	return &hostTestFixture{svc: svc, srv: srv, client: c}
+	f := &hostTestFixture{svc: svc, srv: srv, client: c}
+	hostFixturesByHub.Store(s, f)
+	t.Cleanup(func() { hostFixturesByHub.Delete(s) })
+	return f
 }
 
 // testDaemon creates a daemon with mock backends, starts it, registers

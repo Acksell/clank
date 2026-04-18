@@ -49,6 +49,48 @@ func RemoteURL(dir, remote string) (string, error) {
 	return url, nil
 }
 
+// RemoteURLs returns every configured remote's URL, keyed by remote name.
+// Used by the host's CreateSession when a caller passes Dir: any remote
+// whose canonical form matches the requested GitRef counts as a valid
+// match (people fork-then-add-upstream all the time).
+func RemoteURLs(dir string) (map[string]string, error) {
+	out, err := gitCmd(dir, "remote", "-v")
+	if err != nil {
+		return nil, fmt.Errorf("list remotes: %w", err)
+	}
+	urls := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "<name>\t<url> (fetch|push)"
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		urls[fields[0]] = fields[1]
+	}
+	return urls, nil
+}
+
+// Clone runs `git clone <url> <destDir>`. destDir must not exist (git
+// creates it). Used by the host when a caller asks for implicit cloning
+// via StartRequest.AllowClone.
+func Clone(url, destDir string) error {
+	parent := filepath.Dir(destDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create clone parent %s: %w", parent, err)
+	}
+	cmd := exec.Command("git", "clone", url, destDir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone %s: %s (%w)", url, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
 // CurrentBranch returns the currently checked-out branch in dir.
 // Returns "HEAD" if in detached HEAD state.
 func CurrentBranch(dir string) (string, error) {

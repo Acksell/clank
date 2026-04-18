@@ -498,18 +498,6 @@ func (s *Service) ListReposOnHost(ctx context.Context, hostname host.Hostname) (
 	return hc.ListRepos(ctx)
 }
 
-// RegisterRepoOnHost registers (ref, rootDir) on the named host.
-//
-// TODO(refactor-step-6): this endpoint disappears once the Host adopts
-// implicitly during CreateSession.
-func (s *Service) RegisterRepoOnHost(ctx context.Context, hostname host.Hostname, ref host.GitRef, rootDir string) (host.Repo, error) {
-	hc, ok := s.Host(hostname)
-	if !ok {
-		return host.Repo{}, ErrHostNotRegistered(hostname)
-	}
-	return hc.RegisterRepo(ctx, ref, rootDir)
-}
-
 // ListBranchesOnRepo lists branches for a repo on a given host. The
 // gitRef parameter is the canonical GitRef string (URL key form).
 func (s *Service) ListBranchesOnRepo(ctx context.Context, hostname host.Hostname, gitRef string) ([]host.BranchInfo, error) {

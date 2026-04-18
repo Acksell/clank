@@ -62,3 +62,22 @@ func TestParseTimeParam(t *testing.T) {
 		}
 	})
 }
+
+// Regression: §7.5 forbids supplying both Dir (verify-and-add) and
+// AllowClone (clone-if-missing) on the same StartRequest. They represent
+// mutually exclusive resolution strategies; accepting both would force
+// the host to pick one silently.
+func TestStartRequest_Validate_DirAndAllowCloneMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	req := agent.StartRequest{
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: "git@github.com:acksell/clank.git",
+		Prompt:        "hi",
+		Dir:           "/tmp/clank",
+		AllowClone:    true,
+	}
+	err := req.Validate()
+	if err == nil {
+		t.Fatal("expected error when both Dir and AllowClone are set, got nil")
+	}
+}

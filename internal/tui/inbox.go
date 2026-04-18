@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
@@ -139,6 +140,32 @@ type InboxModel struct {
 	err    error
 }
 
+// resolveLocalRepo turns the user's current working directory into the
+// (hostname, canonical GitRef) the Hub expects on StartRequest. It is the
+// shell→API bridge: shells out to git for the repo root + origin URL.
+//
+// On any failure (cwd not in a git repo, no origin remote, invalid ref)
+// it returns zero values; callers surface the underlying problem via the
+// subsequent sidebar branch-load error rather than blocking startup.
+//
+// Hostname is currently always HostLocal; remote hosts will be plumbed
+// through when they exist.
+func resolveLocalRepo(cwd string) (host.Hostname, string) {
+	root, err := git.RepoRoot(cwd)
+	if err != nil {
+		return "", ""
+	}
+	url, err := git.RemoteURL(root, "origin")
+	if err != nil {
+		return "", ""
+	}
+	ref := host.GitRef{Kind: host.GitRefRemote, URL: url}
+	if err := ref.Validate(); err != nil {
+		return "", ""
+	}
+	return host.HostLocal, ref.Canonical()
+}
+
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
 func NewInboxModel(client *hubclient.Client) *InboxModel {
 	sp := spinner.New(
@@ -161,20 +188,9 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	cwd, _ := os.Getwd()
 	// Resolve cwd → (hostname, gitRef). On failure we leave both zero; the
 	// sidebar's branch load will then return a clear error to the user.
-	hostname, ref, root, _, err := hubclient.ResolveRepo(cwd)
-	var gitRef string
-	if err == nil && ref.URL != "" {
-		gitRef = ref.Canonical()
-		// Best-effort: tell the host where this checkout lives so that
-		// path-free StartRequests can be resolved by the host plane.
-		// Failures are non-fatal — the user will see a clear error
-		// from CreateSession if registration didn't take. Skip when
-		// client is nil (some TUI tests construct InboxModel
-		// without a daemon connection).
-		if client != nil {
-			_, _ = client.RegisterRepoOnHost(context.Background(), hostname, ref, root)
-		}
-	}
+	// The host adds the repo to its registry implicitly on the first
+	// CreateSession that carries Dir / AllowClone (§7.5).
+	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
 		client:      client,

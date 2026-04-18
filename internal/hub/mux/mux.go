@@ -79,7 +79,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// filesystem paths on the wire). Branch arrives in body or query
 	// because branch names contain "/".
 	mx.HandleFunc("GET /hosts/{hostname}/repos", m.handleListReposOnHost)
-	mx.HandleFunc("POST /hosts/{hostname}/repos", m.handleRegisterRepoOnHost)
 	mx.HandleFunc("GET /hosts/{hostname}/repos/{gitRef}/branches", m.handleListBranchesOnRepo)
 	mx.HandleFunc("POST /hosts/{hostname}/repos/{gitRef}/worktrees", m.handleCreateWorktreeOnRepo)
 	mx.HandleFunc("DELETE /hosts/{hostname}/repos/{gitRef}/worktrees", m.handleRemoveWorktreeOnRepo)

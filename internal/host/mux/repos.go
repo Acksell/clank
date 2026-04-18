@@ -2,8 +2,6 @@ package hostmux
 
 import (
 	"net/http"
-
-	"github.com/acksell/clank/internal/host"
 )
 
 // Repo-scoped routes. The wire shape carries the repo identity in the URL
@@ -17,28 +15,6 @@ func (m *Mux) handleListRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// RegisterRepoRequest is the body for POST /repos. Used by the Hub to seed
-// the host's (canonical → rootDir) map so subsequent CreateSession calls
-// can resolve a workDir from the path-free StartRequest.
-type RegisterRepoRequest struct {
-	Ref     host.GitRef `json:"ref"`
-	RootDir string      `json:"root_dir"`
-}
-
-func (m *Mux) handleRegisterRepo(w http.ResponseWriter, r *http.Request) {
-	var req RegisterRepoRequest
-	if err := decodeJSON(r.Body, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
-		return
-	}
-	repo, err := m.svc.RegisterRepo(req.Ref, req.RootDir)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, repo)
 }
 
 // pathRef extracts the canonical git-ref from the {ref} path parameter.

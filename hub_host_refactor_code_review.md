@@ -406,12 +406,12 @@ Trim is intentional — `CreateBackend` only spins the backend server up;
 
 1. `key := req.GitRef.Canonical()`.
 2. Lookup `key` in `repoStore`. If found:
-   - If `req.Dir != ""` and `req.Dir != stored.RootDir` → error: "host already knows this GitRef at `<stored>`; rebind via `POST /repos/{gitref}/rebind` if you moved it".
+   - If `req.Dir != ""` and `req.Dir != stored.RootDir` → error: "host already knows this GitRef at `<stored>`; remove the entry from the host's registry file if you moved the repo". Auto-rebind / move-detection is YAGNI for now; can be added later if it becomes a real problem.
    - Else use `stored.RootDir`.
-3. Not found, `req.GitRef.Kind == local` → adopt directly: `RootDir = req.GitRef.Path`. Verify it's a git repo. Persist.
-4. Not found, `req.GitRef.Kind == remote`, `req.Dir != ""` → adopt: verify `req.Dir` is a git repo whose remotes (any of them) canonicalize to `key`. Persist `(key → req.Dir)`. Mismatch → error.
+3. Not found, `req.GitRef.Kind == local` → add directly: `RootDir = req.GitRef.Path`. Verify it's a git repo. Persist. (Lands with §7.3's full `GitRef` wire field in step 8.)
+4. Not found, `req.GitRef.Kind == remote`, `req.Dir != ""` → add: verify `req.Dir` is a git repo whose remotes (any of them) canonicalize to `key`. Persist `(key → req.Dir)`. Mismatch → error.
 5. Not found, `req.GitRef.Kind == remote`, `req.AllowClone` → clone `req.GitRef.URL` into `~/.clank/repos/<sanitized-key>/`. Persist.
-6. Else → error: "repo unknown to host; pass `dir` to adopt or set `allow_clone=true` to clone".
+6. Else → error: "repo unknown to host; pass `dir` to add or set `allow_clone=true` to clone".
 
 Worktree resolution: call `git worktree list` on `RootDir` (already
 implemented as `git.ListWorktrees` / `git.FindWorktreeForBranch`). Git
@@ -501,9 +501,18 @@ methods take only the args genuinely scoped to that op.
    - `DeleteRepo` on an unknown canonical is a no-op, not an error: callers can issue safe retries.
    - For `GitRefRemote` rows we store only the canonical string; reconstruction sets `GitRef{Kind: GitRefRemote, URL: canonical}` because `Canonical()` is idempotent. For `GitRefLocal`, `URL` is empty and `Path == RootDir` by construction.
    - Tests: 11 unit tests in `internal/host/repostore` (real filesystem tmp files, incl. file-shape pin, missing-file, malformed-file, idempotent-delete) + `TestService_RepoStore_PersistsAcrossRestart` in `internal/host` exercising the full register → shutdown → reopen → preload → CreateSession round-trip.
-6. **Implicit adoption / clone in `CreateSession`** per §7.5. Add `POST /repos/{gitref}/rebind`. Delete `RegisterRepoOnHost` from wire, hub→host client, TUI. Delete `ResolveRepo` Hub endpoint; CLI/TUI inlines `git rev-parse --show-toplevel` + `git remote get-url origin`. Integration tests: adopt-local, adopt-remote-with-Dir, clone-with-AllowClone, rebind, mismatch errors, restart-and-rediscover-from-SQLite.
+6. **[DONE] Implicit add / clone in `CreateSession`** per §7.5.
+   - Added `Dir` and `AllowClone` fields to `agent.StartRequest` (carved out of step 8 — the algorithm needs them). `Validate()` rejects setting both. `RepoRemoteURL` stays for now; full `GitRef` wire field lands in step 8.
+   - Implemented §7.5 algorithm in `host.Service.CreateSession` via private helpers `resolveRepoRoot`, `verifyDirMatchesRef`, `cloneRepo`, `sanitizeCanonical`. Added `git.RemoteURLs` and `git.Clone`. Added `host.Options.CloneRoot` (defaults to `~/.clank/repos`).
+   - Local-kind add (§7.5 step 3) deferred to step 8 because it needs the full `GitRef` wire field.
+   - Renamed `host.Service.RegisterRepo` → `AddRepo` to match the §7.5 vocabulary; cascade through host mux/client and tests. `POST /repos` URL was deleted entirely (see next bullet).
+   - Deleted `RegisterRepoOnHost` from the wire: removed `hub.Service.RegisterRepoOnHost`, `hub/mux/repos.go::handleRegisterRepoOnHost` + route, `hub/client/client.go::Client.RegisterRepoOnHost`, `host/client/http.go::HTTP.RegisterRepo`, `host/mux/repos.go::handleRegisterRepo` + route + `RegisterRepoRequest`. TUI `inbox.go` eager-register call gone. Hub tests now seed via `*host.Service.AddRepo` through a package-level `hostFixturesByHub sync.Map` populated by `ensureHostFixture`.
+   - Deleted `internal/hub/client/resolve.go` (`hubclient.ResolveRepo`) and its test. TUI inlines `git.RepoRoot` + `git.RemoteURL` + GitRef construction in a private `resolveLocalRepo(cwd)` helper.
+   - **No rebind endpoint.** YAGNI — repos rarely move; if they do, operator edits `host.json`.
+   - `verifyDirMatchesRef` evaluates symlinks on both sides before comparing the repo root: `git rev-parse --show-toplevel` returns the realpath while callers commonly pass the symlinked form (e.g. macOS `/var/folders/...` → `/private/var/folders/...`). Caught by `TestCreateSession_AddByDir_NotRoot` red-then-green.
+   - Integration tests in `internal/host/createsession_test.go`: add-by-Dir success, add-by-Dir mismatch, add-by-Dir not-root, no-hint ErrNotFound, dir-disagrees-with-stored. The clone-with-AllowClone test currently skips because `GitRef.Canonical()` rejects bare paths and `file://` URLs; end-to-end coverage of the clone branch unblocks when step 8 lands local-kind GitRef as a first-class wire field, or when we add a hermetic git-daemon fixture.
 7. **Sub-client refactor** per §7.7. Walk all call sites.
-8. **`StartRequest` finalization + `BackendInvocation` DTO** per §7.3, §7.4. Add `Dir`/`AllowClone` to wire. Strip `ProjectDir`/`WorktreeDir`/`ProjectName` from `SessionInfo` and `host.CreateInfo`. Migrate TUI off deleted fields. `BackendManager.CreateBackend` takes only the DTO.
+8. **`StartRequest` finalization + `BackendInvocation` DTO** per §7.3, §7.4. Replace `RepoRemoteURL` (string) with `GitRef` (struct) on the wire. Strip `ProjectDir`/`WorktreeDir`/`ProjectName` from `SessionInfo` and `host.CreateInfo`. Add local-kind registration path (§7.5 step 3). Migrate TUI off deleted fields. `BackendManager.CreateBackend` takes only the DTO.
 9. **Voice** stays in `internal/voice/`. Ratify in design doc.
 10. **Design doc updates** ship in the same commit as each step that changes a load-bearing decision. No more godoc-rationalizations.
 

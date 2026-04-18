@@ -340,6 +340,24 @@ type StartRequest struct {
 	TicketID       string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
 	Agent          string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 	Model          *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
+
+	// Implicit add / clone hints for the host's CreateSession resolver
+	// (see §7.5 of hub_host_refactor_code_review.md). At most one of
+	// Dir / AllowClone may be set.
+	//
+	// Dir: absolute filesystem path on the host. When set, the host
+	// verifies the directory's `git remote get-url origin` matches
+	// RepoRemoteURL and adds (canonical → Dir) to its repo registry
+	// before resolving the workDir. Used by clankcli running on the
+	// same machine as the host.
+	//
+	// AllowClone: when true and the repo is not yet known, the host
+	// clones RepoRemoteURL into its managed clone root and adds the
+	// resulting directory to its registry. Used by remote callers
+	// (e.g. TUI talking to a hub on a different machine) where no
+	// pre-existing checkout is available.
+	Dir        string `json:"dir,omitempty"`
+	AllowClone bool   `json:"allow_clone,omitempty"`
 }
 
 // Validate checks that required fields are set.
@@ -355,6 +373,9 @@ func (r StartRequest) Validate() error {
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
+	}
+	if r.Dir != "" && r.AllowClone {
+		return fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
 	return nil
 }

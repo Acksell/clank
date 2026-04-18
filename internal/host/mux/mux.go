@@ -54,7 +54,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// query string (not path) because they contain "/" which would
 	// conflict with path-segment routing.
 	mx.HandleFunc("GET /repos", m.handleListRepos)
-	mx.HandleFunc("POST /repos", m.handleRegisterRepo)
 	mx.HandleFunc("GET /repos/{ref}/branches", m.handleListBranchesByRepo)
 	mx.HandleFunc("POST /repos/{ref}/worktrees", m.handleCreateWorktreeByRepo)
 	mx.HandleFunc("DELETE /repos/{ref}/worktrees", m.handleRemoveWorktreeByRepo)

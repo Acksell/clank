@@ -166,16 +166,6 @@ func (c *HTTP) ListRepos(ctx context.Context) ([]host.Repo, error) {
 	return out, err
 }
 
-func (c *HTTP) RegisterRepo(ctx context.Context, ref host.GitRef, rootDir string) (host.Repo, error) {
-	body := struct {
-		Ref     host.GitRef `json:"ref"`
-		RootDir string      `json:"root_dir"`
-	}{ref, rootDir}
-	var out host.Repo
-	err := c.do(ctx, http.MethodPost, "/repos", body, &out)
-	return out, err
-}
-
 // ListBranchesByRepo et al. take the canonical GitRef string used as the
 // repo's URL key (typically obtained from GitRef.Canonical() at the call
 // site or from a previously-returned host.Repo's Ref).

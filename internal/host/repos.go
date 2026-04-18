@@ -8,25 +8,22 @@ import (
 
 // Repo registry. The Host keeps a (canonical GitRef → RootDir) map so it
 // can serve `/repos/{gitref}/...` routes without callers having to send
-// filesystem paths over the wire. Populated exclusively via the explicit
-// RegisterRepo entry point — clients (TUI/CLI/tests) call
-// hubclient.RegisterRepoOnHost after resolving cwd → (GitRef, root).
-// CreateSession no longer auto-registers; if the host doesn't know the
-// repo, it returns ErrNotFound so the caller fails loudly instead of
-// silently inferring identity from a filesystem path.
+// filesystem paths over the wire. Populated implicitly by CreateSession
+// (which invokes AddRepo when given a Dir or AllowClone) per §7.5 of
+// hub_host_refactor_code_review.md.
 
-// RegisterRepo records a (canonical → rootDir) mapping derived from ref
-// and returns the resulting Repo. Idempotent: re-registering the same
+// AddRepo records a (canonical → rootDir) mapping derived from ref
+// and returns the resulting Repo. Idempotent: re-adding the same
 // canonical updates the rootDir (last writer wins) so a moved checkout
 // is picked up automatically.
 //
-// When a RepoStore is configured the registration is write-through: the
+// When a RepoStore is configured the add is write-through: the
 // in-memory map is updated first (so concurrent readers never see a
 // stale state) and the store is written second. If the store write
 // fails, the in-memory entry is rolled back to whatever was previously
 // there (or removed if it didn't exist) and the error is returned. This
 // keeps the in-memory and persisted states consistent across crashes.
-func (s *Service) RegisterRepo(ref GitRef, rootDir string) (Repo, error) {
+func (s *Service) AddRepo(ref GitRef, rootDir string) (Repo, error) {
 	if rootDir == "" {
 		return Repo{}, fmt.Errorf("root_dir is required")
 	}

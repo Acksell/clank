@@ -69,8 +69,8 @@ func TestHubReposEndToEnd(t *testing.T) {
 		},
 	})
 	t.Cleanup(hostSvc.Shutdown)
-	if _, err := hostSvc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: remote}, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	if _, err := hostSvc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: remote}, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 
 	hostHTTP := httptest.NewServer(hostmux.New(hostSvc, nil).Handler())

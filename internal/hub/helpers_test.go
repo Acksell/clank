@@ -1,7 +1,6 @@
 package hub_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/acksell/clank/internal/host"
@@ -36,13 +35,20 @@ func registerTestRepo(t *testing.T, s *hub.Service) string {
 // registerTestRepoAt registers an existing git repo dir on the hub's
 // local host. Useful for two-phase persistence tests that need to
 // register the same repo on the post-restart daemon.
+//
+// Bypasses the (now-deleted) hub→host wire path and calls
+// host.Service.AddRepo directly via the package-level fixture map. The
+// production call site (host.Service.CreateSession §7.5 implicit add)
+// is exercised by the dedicated integration tests in
+// internal/host/repos_test.go.
 func registerTestRepoAt(t *testing.T, s *hub.Service, dir string) {
 	t.Helper()
-	c, ok := s.Host(host.HostLocal)
+	v, ok := hostFixturesByHub.Load(s)
 	if !ok {
-		t.Fatal("local host not registered on hub.Service")
+		t.Fatal("registerTestRepoAt: no host fixture found for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
 	}
-	if _, err := c.RegisterRepo(context.Background(), host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
-		t.Fatalf("RegisterRepo: %v", err)
+	f := v.(*hostTestFixture)
+	if _, err := f.svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
+		t.Fatalf("AddRepo: %v", err)
 	}
 }
