@@ -57,8 +57,13 @@ func (s branchSessionStatus) IsArchived() bool {
 
 // SidebarModel displays local git branches in a navigation sidebar and allows selection.
 type SidebarModel struct {
-	client     *hubclient.Client
+	client *hubclient.Client
+	// projectDir is the cwd the inbox was launched from. Kept for display
+	// and for non-branch concerns (project filter); branch operations now
+	// route through hostID/repoID instead.
 	projectDir string
+	hostID     host.HostID
+	repoID     host.RepoID
 
 	branches []host.BranchInfo
 	cursor   int
@@ -79,8 +84,10 @@ type SidebarModel struct {
 	err     error
 }
 
-// NewSidebarModel creates a sidebar for the given project directory.
-func NewSidebarModel(client *hubclient.Client, projectDir string) SidebarModel {
+// NewSidebarModel creates a sidebar for the given repo identity.
+// projectDir is retained for display purposes only; branch/worktree ops
+// are addressed by (hostID, repoID).
+func NewSidebarModel(client *hubclient.Client, hostID host.HostID, repoID host.RepoID, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -93,6 +100,8 @@ func NewSidebarModel(client *hubclient.Client, projectDir string) SidebarModel {
 
 	return SidebarModel{
 		client:     client,
+		hostID:     hostID,
+		repoID:     repoID,
 		projectDir: projectDir,
 		input:      ti,
 		cursor:     0, // "All branches" selected by default
@@ -450,14 +459,15 @@ func (m *SidebarModel) ensureVisible() {
 	}
 }
 
-// loadBranches fetches branches from the daemon.
+// loadBranches fetches branches from the daemon for this sidebar's repo.
 func (m *SidebarModel) loadBranches() tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostID := m.hostID
+	repoID := m.repoID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		branches, err := client.ListBranches(ctx, projectDir)
+		branches, err := client.ListBranchesOnRepo(ctx, hostID, repoID)
 		if err != nil {
 			return branchLoadedMsg{err: err}
 		}
@@ -468,14 +478,12 @@ func (m *SidebarModel) loadBranches() tea.Cmd {
 // createWorktree asks the daemon to create a worktree for the given branch.
 func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostID := m.hostID
+	repoID := m.repoID
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.CreateWorktree(ctx, host.CreateWorktreeRequest{
-			ProjectDir: projectDir,
-			Branch:     branch,
-		})
+		_, err := client.CreateWorktreeOnRepo(ctx, hostID, repoID, branch)
 		return branchWorktreeCreatedMsg{branch: branch, err: err}
 	}
 }

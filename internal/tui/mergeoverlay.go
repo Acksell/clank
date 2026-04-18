@@ -26,9 +26,10 @@ type mergeResultMsg struct {
 // a branch merge. It shows branch info, diff stats, a commit log, and an
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
-	client     *hubclient.Client
-	projectDir string
-	branch     host.BranchInfo
+	client *hubclient.Client
+	hostID host.HostID
+	repoID host.RepoID
+	branch host.BranchInfo
 
 	commitMsg textarea.Model
 	merging   bool // true while the merge request is in flight
@@ -37,7 +38,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *hubclient.Client, projectDir string, branch host.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *hubclient.Client, hostID host.HostID, repoID host.RepoID, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."
@@ -58,10 +59,11 @@ func newMergeOverlay(client *hubclient.Client, projectDir string, branch host.Br
 	ta.Focus()
 
 	return mergeOverlayModel{
-		client:     client,
-		projectDir: projectDir,
-		branch:     branch,
-		commitMsg:  ta,
+		client:    client,
+		hostID:    hostID,
+		repoID:    repoID,
+		branch:    branch,
+		commitMsg: ta,
 	}
 }
 
@@ -125,16 +127,13 @@ func (m *mergeOverlayModel) Update(msg tea.Msg) tea.Cmd {
 
 func (m *mergeOverlayModel) doMerge(commitMsg string) tea.Cmd {
 	client := m.client
-	projectDir := m.projectDir
+	hostID := m.hostID
+	repoID := m.repoID
 	branch := m.branch.Name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := client.MergeWorktree(ctx, host.MergeWorktreeRequest{
-			ProjectDir:    projectDir,
-			Branch:        branch,
-			CommitMessage: commitMsg,
-		})
+		_, err := client.MergeBranchOnRepo(ctx, hostID, repoID, branch, commitMsg)
 		if err != nil {
 			return mergeResultMsg{merged: false, err: err, branch: branch}
 		}

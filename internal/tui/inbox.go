@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
@@ -102,6 +103,13 @@ type InboxModel struct {
 	projectName   string // basename of projectDir, used for display
 	projectFilter bool   // when true, only show sessions matching projectDir
 
+	// Repo identity for branch/worktree ops. Resolved from cwd at startup
+	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
+	// git repo with an origin remote), these stay zero and the sidebar will
+	// surface the underlying load error.
+	hostID host.HostID
+	repoID host.RepoID
+
 	// Pre-built display data.
 	displayLines []string
 	rowToLine    []int
@@ -151,7 +159,14 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	ti.SetStyles(styles)
 
 	cwd, _ := os.Getwd()
-	bp := NewSidebarModel(client, cwd)
+	// Resolve cwd → (hostID, repoID). On failure we leave both zero; the
+	// sidebar's branch load will then return a clear error to the user.
+	hostID, ref, _, _ := hubclient.ResolveRepo(cwd)
+	var repoID host.RepoID
+	if ref.RemoteURL != "" {
+		repoID, _ = ref.ID()
+	}
+	bp := NewSidebarModel(client, hostID, repoID, cwd)
 	return &InboxModel{
 		client:      client,
 		pane:        paneSessions,
@@ -160,6 +175,8 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		searchInput: ti,
 		projectDir:  cwd,
 		projectName: filepath.Base(cwd),
+		hostID:      hostID,
+		repoID:      repoID,
 	}
 }
 
@@ -1438,7 +1455,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
-			m.mergeOverlay = newMergeOverlay(m.client, m.sidebar.projectDir, *bi)
+			m.mergeOverlay = newMergeOverlay(m.client, m.hostID, m.repoID, *bi)
 			m.mergeOverlay.SetSize(m.width, m.height)
 			m.showMerge = true
 		}
