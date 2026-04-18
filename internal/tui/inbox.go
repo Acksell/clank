@@ -101,8 +101,8 @@ type InboxModel struct {
 
 	// Filter state — structured filters applied as pills in the search bar.
 	projectDir    string // absolute path of the cwd when the inbox was launched
-	projectName   string // basename of projectDir, used for display
-	projectFilter bool   // when true, only show sessions matching projectDir
+	projectName   string // basename of projectDir, used for the filter pill label
+	projectFilter bool   // when true, only show sessions whose canonical GitRef matches gitRef
 
 	// Repo identity for branch/worktree ops. Resolved from cwd at startup
 	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
@@ -625,25 +625,26 @@ func (m *InboxModel) exitSearch() tea.Cmd {
 func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	sessions := m.cachedSessions
 
-	// Filter by project directory.
-	if m.projectFilter && m.projectDir != "" {
+	// Filter by repo identity (canonical GitRef). Sessions without a
+	// GitRef (e.g. adopted backends with no origin remote) are dropped
+	// from the project view since they can't be attributed to this repo.
+	if m.projectFilter && m.gitRef != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == m.projectDir {
+			if s.GitRef.Canonical() == m.gitRef {
 				filtered = append(filtered, s)
 			}
 		}
 		sessions = filtered
 	}
 
-	// Filter by selected worktree. Matches sessions whose ProjectDir is the
-	// selected worktree's path — works for both Clank-created worktrees and
-	// the main working tree.
-	wtDir := m.sidebar.SelectedWorktreeDir()
-	if wtDir != "" {
+	// Filter by selected worktree branch. WorktreeBranch is the canonical
+	// identity on the wire (§7.1) — matching by branch name is correct
+	// regardless of where the host materialized the worktree on disk.
+	if branch := m.sidebar.SelectedBranch(); branch != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == wtDir {
+			if s.WorktreeBranch == branch {
 				filtered = append(filtered, s)
 			}
 		}
@@ -764,10 +765,10 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project) on top of
 	// the daemon's text search results.
-	if m.projectFilter && m.projectDir != "" {
+	if m.projectFilter && m.gitRef != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.ProjectDir == m.projectDir {
+			if s.GitRef.Canonical() == m.gitRef {
 				filtered = append(filtered, s)
 			}
 		}
@@ -1414,14 +1415,13 @@ func (m *InboxModel) sessionPaneWidth() int {
 
 // updateBranchSessionCounts computes per-branch session status summaries
 // from cachedSessions and passes them to the sidebar for display.
-// Sessions are attributed to branches by matching ProjectDir against
-// worktree paths, not by the WorktreeBranch field.
+// Sessions are attributed to branches by WorktreeBranch — the canonical
+// branch identity carried on the wire (§7.1).
 func (m *InboxModel) updateBranchSessionCounts() {
-	wtDirToBranch := m.sidebar.WorktreeDirToBranch()
 	statusMap := make(map[string]branchSessionStatus)
 	for _, s := range m.cachedSessions {
-		branch, ok := wtDirToBranch[s.ProjectDir]
-		if !ok {
+		branch := s.WorktreeBranch
+		if branch == "" {
 			continue
 		}
 		st := statusMap[branch]
@@ -1683,7 +1683,12 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	projectName := s.ProjectName
+	projectName := s.GitRef.DisplayName()
+	if projectName == "" {
+		// Adopted backends without a remote (or pre-GitRef sessions) fall
+		// back to the legacy ProjectName for display.
+		projectName = s.ProjectName
+	}
 	if len(projectName) > 12 {
 		projectName = projectName[:11] + "…"
 	}

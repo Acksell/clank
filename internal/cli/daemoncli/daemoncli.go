@@ -251,7 +251,11 @@ func runStatus() error {
 			if len(prompt) > 50 {
 				prompt = prompt[:47] + "..."
 			}
-			fmt.Printf("  [%s] %-8s %-12s %s\n", s.ID[:8], s.Status, s.ProjectName, prompt)
+			project := s.GitRef.DisplayName()
+			if project == "" {
+				project = s.ProjectName
+			}
+			fmt.Printf("  [%s] %-8s %-12s %s\n", s.ID[:8], s.Status, project, prompt)
 		}
 	}
 	return nil

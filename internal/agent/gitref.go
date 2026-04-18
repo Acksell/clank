@@ -93,6 +93,36 @@ func (g GitRef) Canonical() string {
 	}
 }
 
+// DisplayName returns a short human-readable label for UIs and logs.
+//
+// remote: the last path segment of the canonical form (e.g. "clank" for
+//
+//	"github.com/acksell/clank").
+//
+// local : filepath.Base of the absolute path.
+//
+// Returns "" for invalid refs; callers that need errors should call Validate.
+func (g GitRef) DisplayName() string {
+	switch g.Kind {
+	case GitRefRemote:
+		c := g.Canonical()
+		if c == "" {
+			return ""
+		}
+		if i := strings.LastIndex(c, "/"); i >= 0 {
+			return c[i+1:]
+		}
+		return c
+	case GitRefLocal:
+		if !filepath.IsAbs(g.Path) {
+			return ""
+		}
+		return filepath.Base(g.Path)
+	default:
+		return ""
+	}
+}
+
 // Equal reports whether two refs identify the same repository per their
 // canonical form. CommitSHA is intentionally ignored — it pins a revision,
 // not a repo identity.

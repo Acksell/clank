@@ -2200,16 +2200,20 @@ func TestProjectFilterToggle(t *testing.T) {
 func TestFilteredSessionsByProject(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
+	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
+		gitRef:      alpha.Canonical(),
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
-			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now},
-			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", UpdatedAt: now.Add(-time.Hour)},
-			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", UpdatedAt: now.Add(-2 * time.Hour)},
+			{ID: "s1", GitRef: alpha, UpdatedAt: now},
+			{ID: "s2", GitRef: beta, UpdatedAt: now.Add(-time.Hour)},
+			{ID: "s3", GitRef: alpha, UpdatedAt: now.Add(-2 * time.Hour)},
 		},
 	}
 
@@ -2226,8 +2230,8 @@ func TestFilteredSessionsByProject(t *testing.T) {
 		t.Fatalf("expected 2 sessions with project filter, got %d", len(filtered))
 	}
 	for _, s := range filtered {
-		if s.ProjectDir != "/home/user/alpha" {
-			t.Errorf("expected all filtered sessions to have projectDir /home/user/alpha, got %s", s.ProjectDir)
+		if !s.GitRef.Equal(alpha) {
+			t.Errorf("expected all filtered sessions to match alpha gitref, got %+v", s.GitRef)
 		}
 	}
 }
@@ -2235,16 +2239,20 @@ func TestFilteredSessionsByProject(t *testing.T) {
 func TestProjectFilterRebuildsGroups(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
+	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
+		gitRef:      alpha.Canonical(),
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
-			{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now},
-			{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Status: agent.StatusIdle, UpdatedAt: now},
-			{ID: "s3", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Status: agent.StatusIdle, UpdatedAt: now.Add(-time.Hour)},
+			{ID: "s1", GitRef: alpha, Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s2", GitRef: beta, Status: agent.StatusIdle, UpdatedAt: now},
+			{ID: "s3", GitRef: alpha, Status: agent.StatusIdle, UpdatedAt: now.Add(-time.Hour)},
 		},
 	}
 
@@ -2464,18 +2472,22 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
 
+	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
+	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:    "/home/user/alpha",
 		projectName:   "alpha",
+		gitRef:        alpha.Canonical(),
 		projectFilter: true,
 		width:         120,
 		height:        40,
 	}
 
 	sessions := []agent.SessionInfo{
-		{ID: "s1", ProjectDir: "/home/user/alpha", ProjectName: "alpha", Prompt: "fix bug", UpdatedAt: now},
-		{ID: "s2", ProjectDir: "/home/user/beta", ProjectName: "beta", Prompt: "fix bug", UpdatedAt: now},
+		{ID: "s1", GitRef: alpha, Prompt: "fix bug", UpdatedAt: now},
+		{ID: "s2", GitRef: beta, Prompt: "fix bug", UpdatedAt: now},
 	}
 
 	m.buildSearchResults(sessions)
