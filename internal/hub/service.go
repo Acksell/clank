@@ -86,7 +86,7 @@ type Service struct {
 
 	// primaryAgentsRefreshMu guards primaryAgentsRefreshInFlight.
 	primaryAgentsRefreshMu       sync.Mutex
-	primaryAgentsRefreshInFlight map[string]bool // keyed by "backend\x00projectDir"
+	primaryAgentsRefreshInFlight map[string]bool // keyed by catalogKey (backend, hostname, gitRef)
 
 	// voice is the singleton voice session (nil when inactive).
 	voice          *voice.Session

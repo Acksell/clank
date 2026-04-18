@@ -444,34 +444,42 @@ func (s *Service) PendingPermissions(sessionID string) ([]agent.PermissionData, 
 
 // --- Agents / Models ---
 
-// ListAgents returns the primary-agent list for (backend, projectDir).
+// ListAgents returns the primary-agent list for (backend, hostname, gitRef).
 // Serves from cache when available and refreshes in the background;
 // falls back to a synchronous host call on cache miss.
-func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) ([]agent.AgentInfo, error) {
 	if s.Store != nil {
-		cached, err := s.Store.LoadPrimaryAgents(bt, projectDir)
+		cached, err := s.Store.LoadPrimaryAgents(bt, string(hostname), ref)
 		if err != nil {
 			s.log.Printf("warning: load cached primary agents: %v", err)
 		}
 		if cached != nil {
-			s.refreshPrimaryAgentsInBackground(bt, projectDir)
+			s.refreshPrimaryAgentsInBackground(bt, hostname, ref)
 			return cached, nil
 		}
 	}
-	agents, err := s.hostClient.Backend(bt).Agents(ctx, projectDir)
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return nil, ErrHostNotRegistered(hostname)
+	}
+	agents, err := hc.Backend(bt).Agents(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	if agents == nil {
 		agents = []agent.AgentInfo{}
 	}
-	s.persistPrimaryAgents(bt, projectDir, agents)
+	s.persistPrimaryAgents(bt, hostname, ref, agents)
 	return agents, nil
 }
 
-// ListModels returns available models for (backend, projectDir).
-func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.ModelInfo, error) {
-	models, err := s.hostClient.Backend(bt).Models(ctx, projectDir)
+// ListModels returns available models for (backend, hostname, gitRef).
+func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) ([]agent.ModelInfo, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return nil, ErrHostNotRegistered(hostname)
+	}
+	models, err := hc.Backend(bt).Models(ctx, ref)
 	if err != nil {
 		return nil, err
 	}

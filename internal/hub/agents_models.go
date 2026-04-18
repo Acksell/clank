@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -31,24 +30,34 @@ func (s *Service) openCodeServerURLs() map[string]string {
 }
 
 // HUB
+// catalogKey produces a stable map key for the primary-agent in-flight
+// refresh dedup table. The catalog is keyed on (backend, hostname, repo)
+// per §7.8 — branches deliberately share the same catalog because
+// opencode/claude config is committed to git.
+func catalogKey(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) string {
+	return string(bt) + "\x00" + string(hostname) + "\x00" + ref.Canonical()
+}
+
+// HUB
 // persistPrimaryAgents writes the primary agent list to the store for future cache hits.
-func (s *Service) persistPrimaryAgents(bt agent.BackendType, projectDir string, agents []agent.AgentInfo) {
+func (s *Service) persistPrimaryAgents(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef, agents []agent.AgentInfo) {
 	if s.Store == nil {
 		return
 	}
-	if err := s.Store.UpsertPrimaryAgents(bt, projectDir, agents); err != nil {
-		s.log.Printf("warning: persist primary agents for %s/%s: %v", bt, projectDir, err)
+	if err := s.Store.UpsertPrimaryAgents(bt, string(hostname), ref, agents); err != nil {
+		s.log.Printf("warning: persist primary agents for %s/%s/%s: %v", bt, hostname, ref.Canonical(), err)
 	}
 }
 
 // HUB
-// refreshPrimaryAgentsInBackground kicks off an async refresh of the primary
-// agent list for the given backend/project. The result is persisted to SQLite
-// so that subsequent requests get the updated list. Safe to call multiple
-// times — concurrent refreshes for the same key are deduplicated.
-func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, projectDir string) {
+// refreshPrimaryAgentsInBackground kicks off an async refresh of the
+// primary agent list for the given (backend, host, repo). The result is
+// persisted to SQLite so that subsequent requests get the updated list.
+// Safe to call multiple times — concurrent refreshes for the same key
+// are deduplicated.
+func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) {
+	key := catalogKey(bt, hostname, ref)
 	s.primaryAgentsRefreshMu.Lock()
-	key := string(bt) + "\x00" + projectDir
 	if s.primaryAgentsRefreshInFlight[key] {
 		s.primaryAgentsRefreshMu.Unlock()
 		return
@@ -66,45 +75,43 @@ func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, project
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 
-		agents, err := s.hostClient.Backend(bt).Agents(ctx, projectDir)
+		hc, ok := s.Host(hostname)
+		if !ok {
+			s.log.Printf("background primary agent refresh: host %q not registered", hostname)
+			return
+		}
+		agents, err := hc.Backend(bt).Agents(ctx, ref)
 		if err != nil {
-			s.log.Printf("background primary agent refresh for %s/%s: %v", bt, projectDir, err)
+			s.log.Printf("background primary agent refresh for %s/%s/%s: %v", bt, hostname, ref.Canonical(), err)
 			return
 		}
 		if agents == nil {
 			agents = []agent.AgentInfo{}
 		}
-		s.persistPrimaryAgents(bt, projectDir, agents)
+		s.persistPrimaryAgents(bt, hostname, ref, agents)
 	}()
 }
 
 // HUB
-// warmPrimaryAgentCaches fetches and persists primary agent lists for all
-// known project directories. Called once on daemon startup after the
-// reconciler has been started. The refreshPrimaryAgentsInBackground calls
-// use GetOrStartServer which will wait for the reconciler to provide a
-// running server — this method does NOT start servers itself.
+// warmPrimaryAgentCaches fetches and persists primary agent lists for
+// every (backend, host, repo) target derived from the sessions table.
+// Called once on daemon startup after the reconciler has been started.
+// Targets whose host is not currently registered are skipped — the
+// catalog will warm next time that host registers (best-effort).
 func (s *Service) warmPrimaryAgentCaches() {
 	if s.Store == nil {
 		return
 	}
-	backends, err := s.hostClient.Backends(s.ctx)
+	targets, err := s.Store.KnownAgentTargets()
 	if err != nil {
-		s.log.Printf("warning: list backends: %v", err)
+		s.log.Printf("warning: load known agent targets: %v", err)
 		return
 	}
-	for _, bi := range backends {
-		bt := bi.Name
-		dirs, err := s.Store.KnownProjectDirs(bt)
-		if err != nil {
-			s.log.Printf("warning: load project dirs for %s: %v", bt, err)
+	for _, t := range targets {
+		hostname := host.Hostname(t.Hostname)
+		if _, ok := s.Host(hostname); !ok {
 			continue
 		}
-		for _, dir := range dirs {
-			if _, err := os.Stat(dir); os.IsNotExist(err) {
-				continue
-			}
-			s.refreshPrimaryAgentsInBackground(bt, dir)
-		}
+		s.refreshPrimaryAgentsInBackground(t.Backend, hostname, t.GitRef)
 	}
 }

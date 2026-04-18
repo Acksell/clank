@@ -32,6 +32,11 @@ type sessionCreateResultMsg struct {
 
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
+//
+// The gitRef is resolved eagerly from projectDir's `origin` remote so the
+// background fetchAgents/fetchModels prefetch can target it. If the
+// project isn't a git repo, gitRef stays empty and the prefetch becomes
+// a no-op (the user will see the failure on launch).
 func NewSessionViewComposing(client *hubclient.Client, projectDir string) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
@@ -39,12 +44,18 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
+	var ref agent.GitRef
+	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
+		ref = agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL}
+	}
 	return &SessionViewModel{
 		client:      client,
 		composing:   true,
 		inputActive: true,
 		backend:     agent.BackendOpenCode,
 		projectDir:  projectDir,
+		hostname:    host.HostLocal,
+		gitRef:      ref,
 		follow:      true,
 		input:       ta,
 		spinner:     sp,

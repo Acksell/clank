@@ -6,9 +6,26 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
+
+// testRef is the GitRef used in catalog tests. The host doesn't have a
+// real repo registered for this ref — but the host's catalog endpoint
+// only invokes the BackendManager's lister with the (ref→workdir)
+// resolution result, and our mock listers ignore the workdir. The host
+// still resolves the ref to a workdir via repoRoot, which fails when the
+// ref is unknown. Tests that exercise the wire path therefore register a
+// repo on the local host fixture before calling. (Below we use the "no
+// repo" ref directly — the lister returns its canned response without
+// touching workdir, but the host's catalog implementation actually walks
+// through repoRoot first. We register repos via the host fixture helper.)
+//
+// Keeping this as a package-level fixture avoids re-deriving it in every
+// test and documents the intent: catalog identity = (backend, host, ref),
+// branch deliberately omitted.
+var testRef = agent.GitRef{Kind: agent.GitRefRemote, URL: "https://example.com/test.git"}
 
 func TestDaemonListAgents(t *testing.T) {
 	t.Parallel()
@@ -32,10 +49,14 @@ func TestDaemonListAgents(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
+	// The host's catalog handler resolves ref→workdir via repoRoot, so
+	// we must register the repo on the local host fixture first.
+	registerTestRepoAtWithRef(t, s, testRef, "/tmp/test")
+
 	ctx := context.Background()
 
 	// List agents for OpenCode backend.
-	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -47,7 +68,7 @@ func TestDaemonListAgents(t *testing.T) {
 	}
 
 	// List agents for Claude Code (no agent lister support).
-	agents, err = client.Backend(agent.BackendClaudeCode).Agents(ctx, "/tmp/test")
+	agents, err = client.Backend(agent.BackendClaudeCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
 		t.Fatalf("ListAgents for Claude Code: %v", err)
 	}
@@ -63,7 +84,7 @@ func TestDaemonListAgentsMissingParams(t *testing.T) {
 
 	ctx := context.Background()
 	// Missing backend param — should return an error.
-	_, err := client.Backend("").Agents(ctx, "/tmp/test")
+	_, err := client.Backend("").Agents(ctx, host.HostLocal, testRef)
 	if err == nil {
 		t.Error("expected error for missing backend param")
 	}
@@ -84,7 +105,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 		{Name: "build", Description: "Cached build", Mode: "primary"},
 		{Name: "plan", Description: "Cached plan", Mode: "primary"},
 	}
-	if err := st.UpsertPrimaryAgents(agent.BackendOpenCode, "/tmp/test-proj", cachedAgents); err != nil {
+	if err := st.UpsertPrimaryAgents(agent.BackendOpenCode, string(host.HostLocal), testRef, cachedAgents); err != nil {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
 
@@ -111,14 +132,12 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
+	registerTestRepoAtWithRef(t, s, testRef, "/tmp/test-proj")
+
 	ctx := context.Background()
 
-	// Drain any background refresh triggered by warmAgentCaches (from
-	// KnownProjectDirs finding sessions in the store — but we didn't
-	// create any sessions, so this shouldn't fire).
-
 	// Request agents — should return cached data immediately.
-	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test-proj")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -142,7 +161,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	// After the refresh completes, subsequent requests should get the fresh data.
 	time.Sleep(200 * time.Millisecond)
 
-	agents, err = client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test-proj")
+	agents, err = client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
 		t.Fatalf("ListAgents (2nd call): %v", err)
 	}
@@ -182,10 +201,12 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
+	registerTestRepoAtWithRef(t, s, testRef, "/tmp/uncached-proj")
+
 	ctx := context.Background()
 
 	// No cache — should fall back to synchronous lister call.
-	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/uncached-proj")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -194,7 +215,7 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	}
 
 	// After the synchronous call, the result should be persisted.
-	cached, err := st.LoadPrimaryAgents(agent.BackendOpenCode, "/tmp/uncached-proj")
+	cached, err := st.LoadPrimaryAgents(agent.BackendOpenCode, string(host.HostLocal), testRef)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
 	}

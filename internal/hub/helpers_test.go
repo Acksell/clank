@@ -43,12 +43,21 @@ func registerTestRepo(t *testing.T, s *hub.Service) string {
 // internal/host/repos_test.go.
 func registerTestRepoAt(t *testing.T, s *hub.Service, dir string) {
 	t.Helper()
+	registerTestRepoAtWithRef(t, s, host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir)
+}
+
+// registerTestRepoAtWithRef registers an existing dir on the hub's local
+// host under an arbitrary GitRef. Used by catalog tests that key on
+// (backend, hostname, ref) and need to register a synthetic ref without
+// going through git.RemoteURL.
+func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref host.GitRef, dir string) {
+	t.Helper()
 	v, ok := hostFixturesByHub.Load(s)
 	if !ok {
-		t.Fatal("registerTestRepoAt: no host fixture found for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
+		t.Fatal("registerTestRepoAtWithRef: no host fixture found for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
 	}
 	f := v.(*hostTestFixture)
-	if _, err := f.svc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
+	if _, err := f.svc.AddRepo(ref, dir); err != nil {
 		t.Fatalf("AddRepo: %v", err)
 	}
 }

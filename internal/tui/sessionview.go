@@ -18,6 +18,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
@@ -215,7 +216,9 @@ type SessionViewModel struct {
 	// first prompt. After sending, this transitions to the normal session view.
 	composing      bool
 	backend        agent.BackendType
-	projectDir     string
+	projectDir     string // local on-disk path; used for display + relPath stripping. Wire identity is hostname+gitRef below.
+	hostname       host.Hostname
+	gitRef         agent.GitRef
 	worktreeBranch string // optional worktree branch to create the session on
 
 	// Agent selection — populated eagerly when compose view loads.
@@ -439,16 +442,21 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	}
 }
 
-// fetchAgents loads the available agents for the current backend/project.
+// fetchAgents loads the available agents for the current backend/repo.
 // Fired eagerly on compose init; the result arrives before the user finishes typing.
+// Skipped when gitRef is unresolved — the wire surface requires a real ref (§7.3).
 func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	client := m.client
 	backend := m.backend
-	projectDir := m.projectDir
+	hostname := m.hostname
+	ref := m.gitRef
+	if ref.Kind == "" {
+		return func() tea.Msg { return agentsResultMsg{} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		agents, err := client.Backend(backend).Agents(ctx, projectDir)
+		agents, err := client.Backend(backend).Agents(ctx, hostname, ref)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no agent selector.
 			return agentsResultMsg{}
@@ -457,16 +465,20 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	}
 }
 
-// fetchModels loads available models for the current backend/project.
+// fetchModels loads available models for the current backend/repo.
 // Fired eagerly on compose init alongside fetchAgents.
 func (m *SessionViewModel) fetchModels() tea.Cmd {
 	client := m.client
 	backend := m.backend
-	projectDir := m.projectDir
+	hostname := m.hostname
+	ref := m.gitRef
+	if ref.Kind == "" {
+		return func() tea.Msg { return modelsResultMsg{} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		models, err := client.Backend(backend).Models(ctx, projectDir)
+		models, err := client.Backend(backend).Models(ctx, hostname, ref)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no model selector.
 			return modelsResultMsg{}
@@ -610,9 +622,14 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// before the complete conversation renders.
 
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.ProjectDir != "" {
+		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.GitRef.Kind != "" {
 			m.backend = m.info.Backend
 			m.projectDir = m.info.ProjectDir
+			m.hostname = host.Hostname(m.info.Hostname)
+			if m.hostname == "" {
+				m.hostname = host.HostLocal
+			}
+			m.gitRef = m.info.GitRef
 			// Restore the selected agent from session info.
 			if m.info.Agent != "" {
 				// Will be matched against the fetched list in agentsResultMsg.

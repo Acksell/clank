@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
 )
@@ -223,19 +224,36 @@ func (tp *hubToolProvider) KnownProjectDirs(ctx context.Context) ([]string, erro
 	if tp.s.Store == nil {
 		return nil, nil
 	}
-	seen := make(map[string]struct{})
-	backends, err := tp.s.hostClient.Backends(ctx)
+	targets, err := tp.s.Store.KnownAgentTargets()
 	if err != nil {
-		return nil, fmt.Errorf("list backends: %w", err)
+		return nil, fmt.Errorf("known agent targets: %w", err)
 	}
-	for _, bi := range backends {
-		dirs, err := tp.s.Store.KnownProjectDirs(bi.Name)
-		if err != nil {
-			return nil, fmt.Errorf("known dirs for %s: %w", bi.Name, err)
+	// Voice tools only operate on local on-disk paths. Filter to
+	// local-host targets and resolve each repo's root via the local
+	// host. Non-local targets and unknown repos are skipped (best-effort
+	// surface for the model — see voice.tools §createSession).
+	hc, ok := tp.s.Host(host.HostLocal)
+	if !ok {
+		return nil, nil
+	}
+	repos, err := hc.Repos(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list local repos: %w", err)
+	}
+	rootByRef := make(map[string]string, len(repos))
+	for _, r := range repos {
+		rootByRef[r.Ref.Canonical()] = r.RootDir
+	}
+	seen := make(map[string]struct{})
+	for _, t := range targets {
+		if host.Hostname(t.Hostname) != host.HostLocal {
+			continue
 		}
-		for _, dir := range dirs {
-			seen[dir] = struct{}{}
+		root, ok := rootByRef[t.GitRef.Canonical()]
+		if !ok || root == "" {
+			continue
 		}
+		seen[root] = struct{}{}
 	}
 	dirs := make([]string, 0, len(seen))
 	for dir := range seen {

@@ -220,14 +220,15 @@ func (s *Service) ListBackends(_ context.Context) ([]BackendInfo, error) {
 	return out, nil
 }
 
-// ListAgents returns the agents supported by the given backend for a
-// project directory. Not every backend manager implements agent listing;
-// callers get an empty slice and no error when a manager lacks the
-// capability.
+// ListAgents returns the agents supported by the given backend for the
+// repo identified by ref. Per §7.3 of hub_host_refactor_code_review.md
+// the wire is path-free: callers send a GitRef and the host resolves it
+// to a working directory via its repo registry.
+//
 // Returns (nil, nil) when the backend is unknown to this host or its
 // manager does not implement listing — both are normal "this host does
 // not surface that capability" answers, not errors.
-func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]AgentInfo, error) {
+func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]AgentInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -236,12 +237,17 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, projectD
 	if !ok {
 		return nil, nil
 	}
-	return lister.ListAgents(ctx, projectDir)
+	workDir, err := s.repoRoot(ref.Canonical())
+	if err != nil {
+		return nil, err
+	}
+	return lister.ListAgents(ctx, workDir)
 }
 
 // ListModels mirrors ListAgents for model catalogs. Same nil/nil
-// semantics for unknown backends and non-listing managers.
-func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]ModelInfo, error) {
+// semantics for unknown backends and non-listing managers; same
+// path-free wire contract (caller sends GitRef, host resolves).
+func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]ModelInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -250,7 +256,11 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, projectD
 	if !ok {
 		return nil, nil
 	}
-	return lister.ListModels(ctx, projectDir)
+	workDir, err := s.repoRoot(ref.Canonical())
+	if err != nil {
+		return nil, err
+	}
+	return lister.ListModels(ctx, workDir)
 }
 
 // DiscoverSessions asks the given backend manager for historical sessions

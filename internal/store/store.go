@@ -183,6 +183,32 @@ func (s *Store) migrate() error {
 		}
 		version = 12
 	}
+	if version < 13 {
+		// Step 8e-2a: rekey the primary_agents catalog cache from
+		// (backend, project_dir) to (backend, host_id, git_ref) per §7.8
+		// of hub_host_refactor_code_review.md. The wire identity is now
+		// (Hostname, GitRef); the cache must follow. We drop the table
+		// outright (no migration of stale rows) — the cache is a
+		// pure-derived warmup and will be repopulated on next list call.
+		_, err := s.db.Exec(`
+			DROP TABLE IF EXISTS primary_agents;
+			CREATE TABLE primary_agents (
+				backend             TEXT NOT NULL,
+				host_id             TEXT NOT NULL,
+				git_ref_kind        TEXT NOT NULL,
+				git_ref_url         TEXT NOT NULL DEFAULT '',
+				git_ref_path        TEXT NOT NULL DEFAULT '',
+				primary_agents_json TEXT NOT NULL DEFAULT '[]',
+				updated_at          DATETIME NOT NULL,
+				PRIMARY KEY (backend, host_id, git_ref_kind, git_ref_url, git_ref_path)
+			);
+			PRAGMA user_version = 13;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v13: %w", err)
+		}
+		version = 13
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
@@ -321,64 +347,98 @@ func (s *Store) DeleteSession(id string) error {
 	return nil
 }
 
-// LoadPrimaryAgents returns the cached primary agent list for the given
-// backend and project directory. Returns nil (not an error) if no cached
-// entry exists.
-func (s *Store) LoadPrimaryAgents(backend agent.BackendType, projectDir string) ([]agent.AgentInfo, error) {
+// AgentTarget identifies the (backend, host, repo) triple that the
+// primary-agent catalog cache is keyed on. Returned by KnownAgentTargets
+// for cache warmup. Per §7.8 of hub_host_refactor_code_review.md, the
+// catalog is per-repo (branch deliberately dropped) because opencode /
+// claude-code config is committed to git and shared across branches.
+type AgentTarget struct {
+	Backend  agent.BackendType
+	Hostname string
+	GitRef   agent.GitRef
+}
+
+// LoadPrimaryAgents returns the cached primary agent list for the
+// (backend, hostname, gitRef) tuple. Returns nil (not an error) if no
+// cached entry exists. Hostname defaults to "local" when empty (matches
+// the sessions table convention).
+func (s *Store) LoadPrimaryAgents(backend agent.BackendType, hostname string, ref agent.GitRef) ([]agent.AgentInfo, error) {
+	if hostname == "" {
+		hostname = "local"
+	}
 	var agentsJSON string
 	err := s.db.QueryRow(`
-		SELECT primary_agents_json FROM primary_agents WHERE backend = ? AND project_dir = ?
-	`, string(backend), projectDir).Scan(&agentsJSON)
+		SELECT primary_agents_json FROM primary_agents
+		WHERE backend = ? AND host_id = ?
+		  AND git_ref_kind = ? AND git_ref_url = ? AND git_ref_path = ?
+	`, string(backend), hostname, string(ref.Kind), ref.URL, ref.Path).Scan(&agentsJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load primary agents for %s/%s: %w", backend, projectDir, err)
+		return nil, fmt.Errorf("load primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
 	}
 	var agents []agent.AgentInfo
 	if err := json.Unmarshal([]byte(agentsJSON), &agents); err != nil {
-		return nil, fmt.Errorf("decode primary agents for %s/%s: %w", backend, projectDir, err)
+		return nil, fmt.Errorf("decode primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
 	}
 	return agents, nil
 }
 
-// UpsertPrimaryAgents stores the primary agent list for the given backend
-// and project directory.
-func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, projectDir string, agents []agent.AgentInfo) error {
+// UpsertPrimaryAgents stores the primary agent list for the
+// (backend, hostname, gitRef) tuple. Hostname defaults to "local" when
+// empty.
+func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, ref agent.GitRef, agents []agent.AgentInfo) error {
+	if hostname == "" {
+		hostname = "local"
+	}
+	if ref.Kind == "" {
+		return fmt.Errorf("upsert primary agents: git ref is required")
+	}
 	data, err := json.Marshal(agents)
 	if err != nil {
 		return fmt.Errorf("encode primary agents: %w", err)
 	}
 	_, err = s.db.Exec(`
-		INSERT OR REPLACE INTO primary_agents (backend, project_dir, primary_agents_json, updated_at)
-		VALUES (?, ?, ?, ?)
-	`, string(backend), projectDir, string(data), time.Now())
+		INSERT OR REPLACE INTO primary_agents
+			(backend, host_id, git_ref_kind, git_ref_url, git_ref_path,
+			 primary_agents_json, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, string(backend), hostname, string(ref.Kind), ref.URL, ref.Path, string(data), time.Now())
 	if err != nil {
-		return fmt.Errorf("upsert primary agents for %s/%s: %w", backend, projectDir, err)
+		return fmt.Errorf("upsert primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
 	}
 	return nil
 }
 
-// KnownProjectDirs returns the distinct project directories that have at
-// least one session for the given backend type. Used to know which projects
-// to pre-warm primary agent caches for.
-func (s *Store) KnownProjectDirs(backend agent.BackendType) ([]string, error) {
+// KnownAgentTargets returns the distinct (backend, hostname, gitRef)
+// tuples derived from the sessions table. Used by the hub to warm the
+// primary-agent catalog cache for every (host, repo) pair that has at
+// least one known session. Sessions without a resolved GitRef are
+// skipped — they are not addressable as catalog targets yet.
+func (s *Store) KnownAgentTargets() ([]AgentTarget, error) {
 	rows, err := s.db.Query(`
-		SELECT DISTINCT project_dir FROM sessions WHERE backend = ?
-	`, string(backend))
+		SELECT DISTINCT backend, host_id, git_ref_kind, git_ref_url, git_ref_path
+		FROM sessions
+		WHERE git_ref_kind != ''
+	`)
 	if err != nil {
-		return nil, fmt.Errorf("query project dirs: %w", err)
+		return nil, fmt.Errorf("query agent targets: %w", err)
 	}
 	defer rows.Close()
-	var dirs []string
+	var out []AgentTarget
 	for rows.Next() {
-		var dir string
-		if err := rows.Scan(&dir); err != nil {
-			return nil, fmt.Errorf("scan project dir: %w", err)
+		var t AgentTarget
+		var be, host, kind, url, path string
+		if err := rows.Scan(&be, &host, &kind, &url, &path); err != nil {
+			return nil, fmt.Errorf("scan agent target: %w", err)
 		}
-		dirs = append(dirs, dir)
+		t.Backend = agent.BackendType(be)
+		t.Hostname = host
+		t.GitRef = agent.GitRef{Kind: agent.GitRefKind(kind), URL: url, Path: path}
+		out = append(out, t)
 	}
-	return dirs, rows.Err()
+	return out, rows.Err()
 }
 
 // FindByExternalID returns the persisted session matching the given
