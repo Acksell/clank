@@ -19,6 +19,13 @@ import (
 // and returns the resulting Repo. Idempotent: re-registering the same
 // canonical updates the rootDir (last writer wins) so a moved checkout
 // is picked up automatically.
+//
+// When a RepoStore is configured the registration is write-through: the
+// in-memory map is updated first (so concurrent readers never see a
+// stale state) and the store is written second. If the store write
+// fails, the in-memory entry is rolled back to whatever was previously
+// there (or removed if it didn't exist) and the error is returned. This
+// keeps the in-memory and persisted states consistent across crashes.
 func (s *Service) RegisterRepo(ref GitRef, rootDir string) (Repo, error) {
 	if rootDir == "" {
 		return Repo{}, fmt.Errorf("root_dir is required")
@@ -28,9 +35,26 @@ func (s *Service) RegisterRepo(ref GitRef, rootDir string) (Repo, error) {
 	}
 	canonical := ref.Canonical()
 	repo := Repo{Ref: ref, RootDir: rootDir}
+
 	s.reposMu.Lock()
+	prev, hadPrev := s.repos[canonical]
 	s.repos[canonical] = repo
 	s.reposMu.Unlock()
+
+	if s.repoStore != nil {
+		if err := s.repoStore.SaveRepo(repo); err != nil {
+			// Roll back the in-memory update so callers don't see a
+			// registration that won't survive restart.
+			s.reposMu.Lock()
+			if hadPrev {
+				s.repos[canonical] = prev
+			} else {
+				delete(s.repos, canonical)
+			}
+			s.reposMu.Unlock()
+			return Repo{}, fmt.Errorf("persist repo %q: %w", canonical, err)
+		}
+	}
 	return repo, nil
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/host/repostore"
 )
 
 // noopBackendManager is a fixture (not a mock) used to construct a
@@ -200,5 +201,78 @@ func TestService_ListBranchesByRepo(t *testing.T) {
 	}
 	if branches[0].Name != "main" {
 		t.Errorf("branches[0].Name = %q, want main", branches[0].Name)
+	}
+}
+
+// TestService_RepoStore_PersistsAcrossRestart verifies the end-to-end
+// write-through path through host.Service: register a repo on a fresh
+// service backed by a real SQLite store, shut it down, re-open a new
+// service against the same DB, and confirm the in-memory registry was
+// preloaded so subsequent lookups (and CreateSession's repoRoot
+// resolution) succeed without re-registration. This is the core
+// behavioural contract for §7.6 / step 5.
+func TestService_RepoStore_PersistsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "host.json")
+	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
+	ref := host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}
+
+	// First service: register, persist, shut down.
+	store1, err := repostore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	svc1 := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		RepoStore: store1,
+	})
+	if _, err := svc1.RegisterRepo(ref, dir); err != nil {
+		t.Fatalf("RegisterRepo: %v", err)
+	}
+	svc1.Shutdown()
+	if err := store1.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Second service: same DB, no explicit RegisterRepo call. The repo
+	// should be hot in the in-memory registry by virtue of the preload.
+	store2, err := repostore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = store2.Close() })
+	svc2 := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		RepoStore: store2,
+	})
+	t.Cleanup(svc2.Shutdown)
+
+	got, ok := svc2.Repo(ref)
+	if !ok {
+		t.Fatal("repo should be preloaded after restart")
+	}
+	if got.RootDir != dir {
+		t.Errorf("preloaded RootDir = %q, want %q", got.RootDir, dir)
+	}
+	if got.Ref.Canonical() != ref.Canonical() {
+		t.Errorf("preloaded canonical = %q, want %q", got.Ref.Canonical(), ref.Canonical())
+	}
+
+	// And the higher-level path that depends on the registry — CreateSession
+	// — succeeds without an intervening RegisterRepo.
+	req := agent.StartRequest{
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: "git@github.com:acksell/clank.git",
+		Prompt:        "hi",
+	}
+	if _, info, err := svc2.CreateSession(context.Background(), "sid-after-restart", req); err != nil {
+		t.Fatalf("CreateSession after restart: %v", err)
+	} else if info.ProjectDir != dir {
+		t.Errorf("CreateSession.ProjectDir = %q, want %q", info.ProjectDir, dir)
 	}
 }

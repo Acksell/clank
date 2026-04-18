@@ -49,6 +49,23 @@ type Service struct {
 
 	reposMu sync.RWMutex
 	repos   map[string]Repo // key: GitRef.Canonical()
+	// repoStore is the optional persistence layer for the repo registry.
+	// When non-nil, RegisterRepo writes through (in-memory map first,
+	// then store) and New() loads any pre-existing rows into the map at
+	// construction time. Tests that don't care about persistence leave
+	// it nil and get pure in-memory behaviour. See §7.6 / step 5.
+	repoStore RepoStore
+}
+
+// RepoStore is the persistence contract for the host's repo registry.
+// internal/host/repostore.Store satisfies it; tests can supply their own
+// in-memory implementation if they need to assert on persisted state
+// without the SQLite cost. The interface is intentionally narrow — the
+// host owns the canonical-derivation rules; the store is dumb storage.
+type RepoStore interface {
+	SaveRepo(repo Repo) error
+	ListRepos() ([]Repo, error)
+	ForgetRepo(canonical string) error
 }
 
 // Options configures a Service at construction time.
@@ -60,6 +77,11 @@ type Options struct {
 	// Log is the logger. Defaults to a logger writing to stderr with the
 	// "[clank-host]" prefix.
 	Log *log.Logger
+	// RepoStore is the optional repo persistence layer. When set, New
+	// preloads existing rows into the in-memory registry and RegisterRepo
+	// write-throughs every change. Leave nil for pure in-memory operation
+	// (e.g. unit tests).
+	RepoStore RepoStore
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -77,14 +99,33 @@ func New(opts Options) *Service {
 	if lg == nil {
 		lg = log.New(os.Stderr, "[clank-host] ", log.LstdFlags|log.Lmsgprefix)
 	}
-	return &Service{
+	s := &Service{
 		id:              id,
 		startedAt:       time.Now(),
 		backendManagers: opts.BackendManagers,
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
 		repos:           make(map[string]Repo),
+		repoStore:       opts.RepoStore,
 	}
+	if opts.RepoStore != nil {
+		// Preload at construction time so the registry is hot before any
+		// HTTP handler dispatches. A failure here is logged but
+		// non-fatal: the host can still serve registrations and accept
+		// new repos; the operator gets one loud line in the log.
+		existing, err := opts.RepoStore.ListRepos()
+		if err != nil {
+			lg.Printf("warning: load persisted repos: %v", err)
+		} else {
+			for _, r := range existing {
+				s.repos[r.Ref.Canonical()] = r
+			}
+			if len(existing) > 0 {
+				lg.Printf("loaded %d persisted repos", len(existing))
+			}
+		}
+	}
+	return s
 }
 
 // ID returns the host's ID.

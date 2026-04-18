@@ -18,7 +18,10 @@ require (
 	modernc.org/sqlite v1.47.0
 )
 
-require github.com/gen2brain/malgo v0.11.24 // indirect
+require (
+	github.com/gen2brain/malgo v0.11.24 // indirect
+	github.com/google/renameio/v2 v2.0.2 // indirect
+)
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect

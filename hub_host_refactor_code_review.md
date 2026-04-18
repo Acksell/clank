@@ -413,32 +413,44 @@ Trim is intentional — `CreateBackend` only spins the backend server up;
 5. Not found, `req.GitRef.Kind == remote`, `req.AllowClone` → clone `req.GitRef.URL` into `~/.clank/repos/<sanitized-key>/`. Persist.
 6. Else → error: "repo unknown to host; pass `dir` to adopt or set `allow_clone=true` to clone".
 
-Worktree resolution: lookup `(key, req.WorktreeBranch)` in `worktrees`.
-If `WorktreeBranch == ""` use repo root. If set but no worktree exists,
+Worktree resolution: call `git worktree list` on `RootDir` (already
+implemented as `git.ListWorktrees` / `git.FindWorktreeForBranch`). Git
+is the source of truth for worktrees; we don't cache them. If
+`WorktreeBranch == ""` use repo root. If set but no worktree exists,
 error (auto-provision deferred). Then build `BackendInvocation` and
 invoke the backend manager.
 
 ### 7.6 Storage schema
 
-```sql
-CREATE TABLE repos (
-    git_ref     TEXT PRIMARY KEY,    -- GitRef.Canonical()
-    kind        TEXT NOT NULL,       -- "remote" or "local"
-    root_dir    TEXT NOT NULL,
-    created_at  INTEGER NOT NULL
-);
+The host's repo registry persists to a single JSON file. SQLite was the
+original plan but is overkill for a `(canonical → rootDir)` map of <50
+entries that is read once at startup and rewritten on register/delete.
+Atomic durability uses `github.com/google/renameio/v2` (temp file +
+fsync + rename, with parent-dir fsync on Linux).
 
-CREATE TABLE worktrees (
-    git_ref         TEXT NOT NULL,
-    worktree_branch TEXT NOT NULL,
-    worktree_dir    TEXT NOT NULL,
-    created_at      INTEGER NOT NULL,
-    PRIMARY KEY (git_ref, worktree_branch),
-    FOREIGN KEY (git_ref) REFERENCES repos(git_ref) ON DELETE CASCADE
-);
+File layout (versioned envelope so future migrations are a `switch`):
+
+```json
+{
+  "version": 1,
+  "repos": [
+    {
+      "git_ref":    "github.com/acksell/clank",
+      "kind":       "remote",
+      "root_dir":   "/Users/me/work/clank",
+      "created_at": 1737200000
+    }
+  ]
+}
 ```
 
-Real SQLite in tests, isolated tmp DB per test.
+Worktrees are intentionally **not** persisted. Every existing host
+operation (`listBranches`, `resolveWorktree`, `removeWorktree`,
+`mergeBranch`) already shells out to git for ground truth; a persisted
+mirror would only let us lie when the user mutates worktrees outside
+clank. `git worktree list` is sub-millisecond on local disk.
+
+Real filesystem in tests, isolated tmp file per test.
 
 ### 7.7 Sub-client API shape
 
@@ -477,7 +489,18 @@ methods take only the args genuinely scoped to that op.
    - HTTP route params: hub mux `{repoID}` → `{gitRef}`; host mux `{id}` → `{ref}`. URL-encoded canonical strings (`url.PathEscape`) round-trip cleanly through Go's `net/http.ServeMux` `r.PathValue`.
    - Wire body for `POST /hosts/{hostname}/repos` (`registerRepoOnHostRequest`) keeps `{remote_url, root_dir}` for now and rejects non-remote `GitRef.Kind` at the hub client. Full local-kind support arrives with §7.5 (step 6).
    - `host.GitRef.Canonical()` is whitespace-trimmed via `strings.TrimSpace`; the `Validate`/`Canonical` paths reject `://invalid`-style URLs that fail `url.Parse` to keep the canonical form deterministic.
-5. **Host persistent storage.** `repoStore` w/ SQLite per §7.6. Wire `cmd/clank-host` to open DB. Behavior unchanged (write-through from existing in-memory path).
+5. **[DONE] Host persistent storage.** `repoStore` w/ JSON file per §7.6. Wire `cmd/clank-host` to open it. Behavior unchanged (write-through from existing in-memory path).
+   - **JSON, not SQLite.** A `(canonical → rootDir)` map of <50 entries read once at startup and rewritten on mutation does not justify SQLite. JSON file via `github.com/google/renameio/v2` for atomic write (temp + fsync + rename, parent-dir fsync on Linux). Stays human-readable: `cat ~/.clank/host/host.json`. Hub's session store keeps SQLite — different cardinality, different access pattern.
+   - Versioned envelope (`{"version": 1, "repos": [...]}`) so future format changes are a `switch` on the version field. Pinned in `TestStore_FileShape`.
+   - Schema persists only the `repos` table equivalent. Worktrees are git's domain; see §7.6 rationale.
+   - `RepoStore` is an **interface** in `internal/host` (`SaveRepo`, `ListRepos`, `DeleteRepo`); `internal/host/repostore.Store` is the JSON-file implementation. Tests can supply in-memory implementations. Host owns canonical-derivation rules; the store is dumb storage.
+   - `RegisterRepo` is in-memory-first, store-second with **rollback on store failure**: if `SaveRepo` errors, the in-memory map is reverted to the prior state (or the entry deleted) so callers never see a registration that won't survive restart.
+   - `host.New` preloads existing rows at construction time. A load failure logs a warning and proceeds; a successful preload logs `loaded N persisted repos`.
+   - `cmd/clank-host` adds `--db` flag (kept the name despite no longer being a DB; renaming the flag is cosmetic and would break operators); default is `<socket-dir>/host.json` (co-located with the Unix socket since hub owns the socket dir's lifecycle).
+   - Malformed file on `Open` is a hard error: refusing to start beats silently zeroing out persisted state. Missing file is empty (cold start).
+   - `DeleteRepo` on an unknown canonical is a no-op, not an error: callers can issue safe retries.
+   - For `GitRefRemote` rows we store only the canonical string; reconstruction sets `GitRef{Kind: GitRefRemote, URL: canonical}` because `Canonical()` is idempotent. For `GitRefLocal`, `URL` is empty and `Path == RootDir` by construction.
+   - Tests: 11 unit tests in `internal/host/repostore` (real filesystem tmp files, incl. file-shape pin, missing-file, malformed-file, idempotent-delete) + `TestService_RepoStore_PersistsAcrossRestart` in `internal/host` exercising the full register → shutdown → reopen → preload → CreateSession round-trip.
 6. **Implicit adoption / clone in `CreateSession`** per §7.5. Add `POST /repos/{gitref}/rebind`. Delete `RegisterRepoOnHost` from wire, hub→host client, TUI. Delete `ResolveRepo` Hub endpoint; CLI/TUI inlines `git rev-parse --show-toplevel` + `git remote get-url origin`. Integration tests: adopt-local, adopt-remote-with-Dir, clone-with-AllowClone, rebind, mismatch errors, restart-and-rediscover-from-SQLite.
 7. **Sub-client refactor** per §7.7. Walk all call sites.
 8. **`StartRequest` finalization + `BackendInvocation` DTO** per §7.3, §7.4. Add `Dir`/`AllowClone` to wire. Strip `ProjectDir`/`WorktreeDir`/`ProjectName` from `SessionInfo` and `host.CreateInfo`. Migrate TUI off deleted fields. `BackendManager.CreateBackend` takes only the DTO.

@@ -22,16 +22,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/acksell/clank/internal/host/repostore"
 )
 
 func main() {
 	socket := flag.String("socket", "", "Path to Unix socket to listen on (required)")
+	dbPath := flag.String("db", "", "Path to host repo registry JSON file (default: <socket-dir>/host.json)")
 	flag.Parse()
 
 	if *socket == "" {
@@ -39,16 +42,31 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*socket); err != nil {
+	resolvedDB := *dbPath
+	if resolvedDB == "" {
+		// Co-locate the registry file with the socket. The Hub owns the
+		// socket dir's lifecycle, so the registry lives and dies with the
+		// host's runtime state. Operators that want a different layout
+		// pass --db.
+		resolvedDB = filepath.Join(filepath.Dir(*socket), "host.json")
+	}
+
+	if err := run(*socket, resolvedDB); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
 }
 
-func run(socket string) error {
+func run(socket, dbPath string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
 	// Remove stale socket file from a prior crashed run. Best-effort.
 	_ = os.Remove(socket)
+
+	rs, err := repostore.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open repo store: %w", err)
+	}
+	defer rs.Close()
 
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
@@ -62,7 +80,8 @@ func run(socket string) error {
 			agent.BackendOpenCode:   host.NewOpenCodeBackendManager(),
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
-		Log: lg,
+		Log:       lg,
+		RepoStore: rs,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
