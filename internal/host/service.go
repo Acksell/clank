@@ -352,7 +352,10 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		workDir = wt.WorktreeDir
 	}
 
-	b, err := mgr.CreateBackend(req, workDir)
+	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
+		WorkDir:          workDir,
+		ResumeExternalID: req.SessionID,
+	})
 	if err != nil {
 		return nil, CreateInfo{}, err
 	}

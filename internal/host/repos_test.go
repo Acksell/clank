@@ -18,12 +18,12 @@ import (
 // host.Service in tests that exercise non-backend code paths
 // (CreateSession registration, repo registry).
 type noopBackendManager struct {
-	created agent.StartRequest
+	createdWorkDir string
 }
 
 func (m *noopBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
-func (m *noopBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
-	m.created = req
+func (m *noopBackendManager) CreateBackend(_ context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
+	m.createdWorkDir = inv.WorkDir
 	return &noopBackend{}, nil
 }
 func (m *noopBackendManager) Shutdown() {}

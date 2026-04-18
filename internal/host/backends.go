@@ -55,18 +55,18 @@ func (m *OpenCodeBackendManager) Init(ctx context.Context, knownDirs func() ([]s
 }
 
 // CreateBackend creates an OpenCode SessionBackend. It ensures an OpenCode
-// server is running at workDir before creating the backend.
+// server is running at inv.WorkDir before creating the backend.
 // The backend receives a resolver closure that re-resolves the server URL
 // on reconnect (handles server restarts on new ports).
-func (m *OpenCodeBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
-	serverURL, err := m.serverMgr.GetOrStartServer(context.Background(), workDir)
+func (m *OpenCodeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
+	serverURL, err := m.serverMgr.GetOrStartServer(ctx, inv.WorkDir)
 	if err != nil {
-		return nil, fmt.Errorf("start opencode server for %s: %w", workDir, err)
+		return nil, fmt.Errorf("start opencode server for %s: %w", inv.WorkDir, err)
 	}
 	resolver := func(ctx context.Context) (string, error) {
-		return m.serverMgr.GetOrStartServer(ctx, workDir)
+		return m.serverMgr.GetOrStartServer(ctx, inv.WorkDir)
 	}
-	return agent.NewOpenCodeBackend(serverURL, req.SessionID, resolver), nil
+	return agent.NewOpenCodeBackend(serverURL, inv.ResumeExternalID, resolver), nil
 }
 
 // Shutdown stops all managed OpenCode servers.
@@ -152,8 +152,8 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 }
 
 // CreateBackend creates a Claude Code SessionBackend.
-func (m *ClaudeBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
-	return agent.NewClaudeCodeBackend(workDir), nil
+func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
+	return agent.NewClaudeCodeBackend(inv.WorkDir), nil
 }
 
 // Init is a no-op for Claude — there are no long-lived servers to manage.

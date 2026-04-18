@@ -173,9 +173,9 @@ func (m *mockBackend) RespondPermission(ctx context.Context, permissionID string
 // a creation function so tests can intercept and track created backends.
 type mockBackendManager struct {
 	mu      sync.Mutex
-	create  func(req agent.StartRequest) *mockBackend // custom creation logic; nil = newMockBackend()
-	latest  *mockBackend                              // last created backend
-	all     []*mockBackend                            // all created backends
+	create  func(inv agent.BackendInvocation) *mockBackend // custom creation logic; nil = newMockBackend()
+	latest  *mockBackend                                   // last created backend
+	all     []*mockBackend                                 // all created backends
 	stopped bool
 }
 
@@ -183,12 +183,12 @@ func newMockBackendManager() *mockBackendManager {
 	return &mockBackendManager{}
 }
 
-func (m *mockBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
+func (m *mockBackendManager) CreateBackend(_ context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var b *mockBackend
 	if m.create != nil {
-		b = m.create(req)
+		b = m.create(inv)
 	} else {
 		b = newMockBackend()
 	}
@@ -440,9 +440,9 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*h
 		snapshots: snapshots,
 	}
 	// Custom create func to propagate sessionID from the request.
-	discMgr.create = func(req agent.StartRequest) *mockBackend {
+	discMgr.create = func(inv agent.BackendInvocation) *mockBackend {
 		b := newMockBackend()
-		b.sessionID = req.SessionID
+		b.sessionID = inv.ResumeExternalID
 		return b
 	}
 	s.BackendManagers[agent.BackendOpenCode] = discMgr

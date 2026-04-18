@@ -549,6 +549,22 @@ type SessionBackend interface {
 	RespondPermission(ctx context.Context, permissionID string, allow bool) error
 }
 
+// BackendInvocation is the host-resolved, backend-only view of a session
+// start. It is constructed inside host.Service.CreateSession after the
+// (GitRef, WorktreeBranch) → workDir resolution; it never appears on the
+// wire. See §7.4 of hub_host_refactor_code_review.md.
+type BackendInvocation struct {
+	// WorkDir is the resolved filesystem path where the backend should run
+	// (a repo root, or a worktree path when WorktreeBranch was set).
+	WorkDir string
+
+	// ResumeExternalID is the backend's own session ID for resume; empty
+	// means start a new backend session. Currently this is sourced from
+	// StartRequest.SessionID (which doubles as the host-side session ID).
+	// A future split may decouple the two.
+	ResumeExternalID string
+}
+
 // BackendManager creates and manages SessionBackend instances for a specific
 // backend type. Each implementation handles its own resource sharing (e.g.,
 // OpenCode shares one server per project directory, Claude manages
@@ -561,13 +577,12 @@ type BackendManager interface {
 	// knownDirs returns project directories previously seen for this backend.
 	Init(ctx context.Context, knownDirs func() ([]string, error)) error
 
-	// CreateBackend creates a new SessionBackend for the given request.
-	// workDir is the host-resolved filesystem path where the session
-	// should run (e.g. a worktree path). The wire StartRequest is
-	// path-free; the Host resolves (RepoRef, Branch) → workDir before
-	// invoking this method.
+	// CreateBackend creates a new SessionBackend from a host-resolved
+	// invocation. The wire StartRequest is path-free; the Host resolves
+	// (RepoRef, Branch) → workDir and constructs a BackendInvocation
+	// before invoking this method. See §7.4 of hub_host_refactor_code_review.md.
 	// The backend is not started — call Start() or Watch() on it.
-	CreateBackend(req StartRequest, workDir string) (SessionBackend, error)
+	CreateBackend(ctx context.Context, inv BackendInvocation) (SessionBackend, error)
 
 	// Shutdown cleans up all managed resources (servers, connections, etc.).
 	Shutdown()

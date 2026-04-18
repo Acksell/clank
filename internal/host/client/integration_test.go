@@ -66,7 +66,7 @@ type stubManager struct {
 }
 
 func (m *stubManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
-func (m *stubManager) CreateBackend(_ agent.StartRequest, _ string) (agent.SessionBackend, error) {
+func (m *stubManager) CreateBackend(_ context.Context, _ agent.BackendInvocation) (agent.SessionBackend, error) {
 	return m.next, nil
 }
 func (m *stubManager) Shutdown() {}

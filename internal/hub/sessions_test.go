@@ -1032,7 +1032,7 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 			},
 		},
 	}
-	discMgr.create = func(req agent.StartRequest) *mockBackend {
+	discMgr.create = func(inv agent.BackendInvocation) *mockBackend {
 		b := newMockBackend()
 		b.sessionID = "oc-real-session"
 		return b

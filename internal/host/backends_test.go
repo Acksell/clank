@@ -21,10 +21,9 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 	mgr := host.NewClaudeBackendManager()
 	defer mgr.Shutdown()
 
-	backend, err := mgr.CreateBackend(agent.StartRequest{
-		Backend:   agent.BackendClaudeCode,
-		SessionID: "",
-	}, "/tmp/test")
+	backend, err := mgr.CreateBackend(context.Background(), agent.BackendInvocation{
+		WorkDir: "/tmp/test",
+	})
 	if err != nil {
 		t.Fatalf("CreateBackend: %v", err)
 	}
