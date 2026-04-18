@@ -4,11 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
 )
+
+// initGitRepoForVoice creates a real git repo with an "origin" remote so
+// the voice tool can resolve the repo identity from a path.
+func initGitRepoForVoice(t *testing.T, remote string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("git", "init", "-b", "main")
+	run("git", "config", "user.email", "t@t")
+	run("git", "config", "user.name", "T")
+	run("git", "remote", "add", "origin", remote)
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", ".")
+	run("git", "commit", "-m", "initial")
+	return dir
+}
 
 // stubToolProvider implements ToolProvider for testing. Only the methods
 // needed by the tests are filled in — everything else panics so we catch
@@ -168,19 +195,20 @@ func TestCreateSessionTool_RejectsUnknownDir(t *testing.T) {
 func TestCreateSessionTool_AcceptsKnownDir(t *testing.T) {
 	t.Parallel()
 
+	dir := initGitRepoForVoice(t, "git@github.com:acksell/clank.git")
 	tp := &stubToolProvider{
-		knownDirs: []string{"/home/user/projects/clank"},
+		knownDirs: []string{dir},
 		createdSession: &agent.SessionInfo{
 			ID:          "01ABCDEF01ABCDEF01ABCDEF01",
 			ProjectName: "clank",
-			ProjectDir:  "/home/user/projects/clank",
+			ProjectDir:  dir,
 		},
 	}
 	tool := createSessionTool(tp)
 
 	input, _ := json.Marshal(map[string]string{
 		"backend":     "opencode",
-		"project_dir": "/home/user/projects/clank",
+		"project_dir": dir,
 		"prompt":      "fix the bug",
 	})
 

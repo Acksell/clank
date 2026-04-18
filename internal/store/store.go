@@ -200,7 +200,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&followUp,
 			&info.ProjectDir,
 			&info.ProjectName,
-			&info.WorktreeBranch,
+			&info.Branch,
 			&info.WorktreeDir,
 			&info.HostID,
 			&info.RepoRemoteURL,
@@ -217,9 +217,6 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
 		info.FollowUp = followUp != 0
-		// Branch is the new canonical name; mirror from the legacy
-		// worktree_branch column so callers can read either.
-		info.Branch = info.WorktreeBranch
 		if lastReadAt.Valid {
 			info.LastReadAt = lastReadAt.Time
 		}
@@ -249,9 +246,6 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 
 	// Prefer the new Branch field; fall back to legacy WorktreeBranch.
 	branch := info.Branch
-	if branch == "" {
-		branch = info.WorktreeBranch
-	}
 	hostID := info.HostID
 	if hostID == "" {
 		hostID = "local"
@@ -385,7 +379,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&followUp,
 		&info.ProjectDir,
 		&info.ProjectName,
-		&info.WorktreeBranch,
+		&info.Branch,
 		&info.WorktreeDir,
 		&info.HostID,
 		&info.RepoRemoteURL,
@@ -405,7 +399,6 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		return nil, fmt.Errorf("find session by external_id %s: %w", externalID, err)
 	}
 	info.FollowUp = followUp != 0
-	info.Branch = info.WorktreeBranch
 	if lastReadAt.Valid {
 		info.LastReadAt = lastReadAt.Time
 	}

@@ -8,10 +8,12 @@ import (
 
 // Repo registry. Phase 3B introduces a RepoID → RootDir map so the host
 // can serve `/repos/{id}/...` routes without callers having to send
-// filesystem paths over the wire. Auto-populated by CreateSession (when
-// the request carries both RepoRemoteURL and ProjectDir) and by the
-// explicit RegisterRepo entry point used from tests / future Hub
-// startup-time backfill.
+// filesystem paths over the wire. Populated exclusively via the
+// explicit RegisterRepo entry point — clients (TUI/CLI/tests) call
+// hubclient.RegisterRepoOnHost after resolving cwd → (RemoteURL, root).
+// CreateSession no longer auto-registers; if the host doesn't know the
+// repo, it returns ErrNotFound so the caller fails loudly instead of
+// silently inferring identity from a filesystem path.
 
 // RegisterRepo records a (RepoID → rootDir) mapping derived from ref and
 // returns the resulting Repo. Idempotent: re-registering the same RepoID
@@ -74,7 +76,7 @@ func (s *Service) ListBranchesByRepo(ctx context.Context, id RepoID) ([]BranchIn
 	if err != nil {
 		return nil, err
 	}
-	return s.ListBranches(ctx, root)
+	return s.listBranches(ctx, root)
 }
 
 // ResolveWorktreeByRepo is the RepoID-scoped variant of ResolveWorktree.
@@ -83,7 +85,7 @@ func (s *Service) ResolveWorktreeByRepo(ctx context.Context, id RepoID, branch s
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
-	return s.ResolveWorktree(ctx, root, branch)
+	return s.resolveWorktree(ctx, root, branch)
 }
 
 // RemoveWorktreeByRepo is the RepoID-scoped variant of RemoveWorktree.
@@ -92,7 +94,7 @@ func (s *Service) RemoveWorktreeByRepo(ctx context.Context, id RepoID, branch st
 	if err != nil {
 		return err
 	}
-	return s.RemoveWorktree(ctx, root, branch, force)
+	return s.removeWorktree(ctx, root, branch, force)
 }
 
 // MergeBranchByRepo is the RepoID-scoped variant of MergeBranch.
@@ -101,5 +103,5 @@ func (s *Service) MergeBranchByRepo(ctx context.Context, id RepoID, branch, comm
 	if err != nil {
 		return MergeResult{}, err
 	}
-	return s.MergeBranch(ctx, root, branch, commitMessage)
+	return s.mergeBranch(ctx, root, branch, commitMessage)
 }

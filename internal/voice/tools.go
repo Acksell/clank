@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/mindmouth/tools"
 )
 
@@ -324,10 +326,18 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
+			// Derive the canonical repo identity from the validated path.
+			// The voice tool still takes a path (matches user mental model);
+			// the wire identity is path-free per Phase 3D-2.
+			remote, err := git.RemoteURL(args.ProjectDir, "origin")
+			if err != nil {
+				return "", fmt.Errorf("derive repo remote for %s: %w", args.ProjectDir, err)
+			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
-				Backend:    agent.BackendType(args.Backend),
-				ProjectDir: args.ProjectDir,
-				Prompt:     args.Prompt,
+				Backend:       agent.BackendType(args.Backend),
+				HostID:        string(host.HostLocal),
+				RepoRemoteURL: remote,
+				Prompt:        args.Prompt,
 			})
 			if err != nil {
 				return "", fmt.Errorf("create session: %w", err)

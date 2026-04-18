@@ -43,15 +43,13 @@ type Client interface {
 	ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]host.ModelInfo, error)
 	DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error)
 
-	ListBranches(ctx context.Context, projectDir string) ([]host.BranchInfo, error)
-	ResolveWorktree(ctx context.Context, projectDir, branch string) (host.WorktreeInfo, error)
-	RemoveWorktree(ctx context.Context, projectDir, branch string, force bool) error
-	MergeBranch(ctx context.Context, projectDir, branch, commitMessage string) (host.MergeResult, error)
-
-	// Phase 3B: RepoID-scoped variants. The Hub uses these once the TUI
-	// is on the host-scoped API. The legacy path-style methods above
-	// stick around until Phase 3D removes them.
+	// Phase 3B: RepoID-scoped variants. The legacy path-style methods
+	// were removed in Phase 3D-1.
 	ListRepos(ctx context.Context) ([]host.Repo, error)
+	// RegisterRepo seeds the host's (RepoID → rootDir) map. Required
+	// before CreateSession can resolve a workDir from a path-free
+	// StartRequest. Idempotent (last writer wins).
+	RegisterRepo(ctx context.Context, ref host.RepoRef, rootDir string) (host.Repo, error)
 	ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error)
 	ResolveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string) (host.WorktreeInfo, error)
 	RemoveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string, force bool) error
@@ -62,7 +60,13 @@ type Client interface {
 	// were the real backend. With InProcess, the returned object IS the
 	// real backend; with HTTP, it is a thin adapter that translates
 	// each method call to HTTP/SSE.
-	CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error)
+	//
+	// The returned host.CreateInfo carries the runtime metadata the
+	// Host resolved for this session — concretely, the rootDir and
+	// workDir it derived from (RepoRemoteURL, Branch). The Hub uses it
+	// to populate SessionInfo.{ProjectDir, WorktreeDir} without having
+	// to know about host-side filesystem layout.
+	CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error)
 
 	// StopSession stops the SessionBackend registered under sessionID
 	// and releases it from the Host's registry.

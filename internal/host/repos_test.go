@@ -21,7 +21,7 @@ type noopBackendManager struct {
 }
 
 func (m *noopBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
-func (m *noopBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
+func (m *noopBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
 	m.created = req
 	return &noopBackend{}, nil
 }
@@ -127,31 +127,34 @@ func TestService_RegisterRepoValidation(t *testing.T) {
 	}
 }
 
-// TestService_CreateSessionAutoRegistersRepo verifies the lazy
-// auto-registration path: when CreateSession sees both RepoRemoteURL
-// and ProjectDir, it records the repo so subsequent /repos/{id}/...
-// routes can resolve the host's filesystem path.
-func TestService_CreateSessionAutoRegistersRepo(t *testing.T) {
+// TestService_CreateSessionRequiresRegisteredRepo verifies that CreateSession
+// errors when the repo hasn't been pre-registered, and succeeds once it is.
+// This replaces the legacy lazy auto-registration path (Phase 3D-2).
+func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
-	_, err := svc.CreateSession(context.Background(), "sid-1", agent.StartRequest{
+	req := agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		ProjectDir:    dir,
 		RepoRemoteURL: "git@github.com:acksell/clank.git",
 		Prompt:        "hi",
-	})
+	}
+
+	if _, _, err := svc.CreateSession(context.Background(), "sid-1", req); err == nil {
+		t.Fatal("CreateSession should error when repo not registered")
+	}
+
+	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: "git@github.com:acksell/clank.git"}, dir); err != nil {
+		t.Fatalf("RegisterRepo: %v", err)
+	}
+
+	_, info, err := svc.CreateSession(context.Background(), "sid-1", req)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-
-	repo, ok := svc.Repo("github.com/acksell/clank")
-	if !ok {
-		t.Fatal("repo not auto-registered")
-	}
-	if repo.RootDir != dir {
-		t.Errorf("RootDir = %q, want %q", repo.RootDir, dir)
+	if info.ProjectDir != dir {
+		t.Errorf("CreateInfo.ProjectDir = %q, want %q", info.ProjectDir, dir)
 	}
 }
 

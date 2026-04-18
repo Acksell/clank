@@ -161,10 +161,19 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	cwd, _ := os.Getwd()
 	// Resolve cwd → (hostID, repoID). On failure we leave both zero; the
 	// sidebar's branch load will then return a clear error to the user.
-	hostID, ref, _, _ := hubclient.ResolveRepo(cwd)
+	hostID, ref, root, _, err := hubclient.ResolveRepo(cwd)
 	var repoID host.RepoID
-	if ref.RemoteURL != "" {
+	if err == nil && ref.RemoteURL != "" {
 		repoID, _ = ref.ID()
+		// Best-effort: tell the host where this checkout lives so that
+		// path-free StartRequests can be resolved by the host plane.
+		// Failures are non-fatal — the user will see a clear error
+		// from CreateSession if registration didn't take. Skip when
+		// client is nil (some TUI tests construct InboxModel
+		// without a daemon connection).
+		if client != nil {
+			_, _ = client.RegisterRepoOnHost(context.Background(), hostID, ref, root)
+		}
 	}
 	bp := NewSidebarModel(client, hostID, repoID, cwd)
 	return &InboxModel{
@@ -1644,8 +1653,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	const branchBadgeWidth = 12
 	branchBadge := ""
 	branchExtra := 0
-	if m.sidebar.SelectedBranch() == "" && s.WorktreeBranch != "" {
-		branchLabel := s.WorktreeBranch
+	if m.sidebar.SelectedBranch() == "" && s.Branch != "" {
+		branchLabel := s.Branch
 		if len(branchLabel) > branchBadgeWidth-2 {
 			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
 		}

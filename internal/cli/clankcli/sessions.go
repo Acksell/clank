@@ -11,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 )
 
 func sessionsCmd() *cobra.Command {
@@ -228,11 +230,16 @@ func sessionsNewCmd() *cobra.Command {
 			defer cancel()
 
 			prompt := strings.Join(args, " ")
+			remoteURL, err := git.RemoteURL(projectDir, "origin")
+			if err != nil {
+				return fmt.Errorf("resolve repo remote: %w", err)
+			}
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:        bt,
-				ProjectDir:     projectDir,
-				WorktreeBranch: worktreeBranch,
-				Prompt:         prompt,
+				Backend:       bt,
+				HostID:        string(host.HostLocal),
+				RepoRemoteURL: remoteURL,
+				Branch:        worktreeBranch,
+				Prompt:        prompt,
 			})
 			if err != nil {
 				return fmt.Errorf("create session: %w", err)

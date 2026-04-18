@@ -56,6 +56,40 @@ func (s *Service) handleListReposOnHost(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, repos)
 }
 
+type registerRepoOnHostRequest struct {
+	RemoteURL string `json:"remote_url"`
+	RootDir   string `json:"root_dir"`
+}
+
+// handleRegisterRepoOnHost lets the TUI / CLI tell the host plane
+// "this checkout on disk corresponds to this remote URL". The Hub is
+// a pure pass-through here — it never inspects the rootDir itself.
+// Tests, daemon startup backfills, and the inbox session-creation flow
+// all funnel through this endpoint instead of inlining hostclient
+// calls.
+func (s *Service) handleRegisterRepoOnHost(w http.ResponseWriter, r *http.Request) {
+	hostID, ok := s.lookupHost(w, r)
+	if !ok {
+		return
+	}
+	var req registerRepoOnHostRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.RemoteURL == "" || req.RootDir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "remote_url and root_dir are required"})
+		return
+	}
+	hc, _ := s.Host(hostID)
+	repo, err := hc.RegisterRepo(r.Context(), host.RepoRef{RemoteURL: req.RemoteURL}, req.RootDir)
+	if err != nil {
+		writeRepoErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, repo)
+}
+
 func (s *Service) handleListBranchesOnRepo(w http.ResponseWriter, r *http.Request) {
 	hostID, ok := s.lookupHost(w, r)
 	if !ok {
@@ -157,5 +191,9 @@ func (s *Service) handleMergeBranchOnRepo(w http.ResponseWriter, r *http.Request
 		writeRepoErr(w, err)
 		return
 	}
+	// Mark hub-side sessions attached to (repoID, branch) as done.
+	// Parity with the legacy /worktrees/merge handler, but without
+	// dragging path identity into the merge flow.
+	s.markBranchSessionsDone(repoID, req.Branch)
 	writeJSON(w, http.StatusOK, res)
 }

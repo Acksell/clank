@@ -23,7 +23,7 @@ type noopHostBackendManager struct{}
 func (m *noopHostBackendManager) Init(_ context.Context, _ func() ([]string, error)) error {
 	return nil
 }
-func (m *noopHostBackendManager) CreateBackend(_ agent.StartRequest) (agent.SessionBackend, error) {
+func (m *noopHostBackendManager) CreateBackend(_ agent.StartRequest, _ string) (agent.SessionBackend, error) {
 	return nil, nil
 }
 func (m *noopHostBackendManager) Shutdown() {}

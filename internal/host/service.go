@@ -210,60 +210,82 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 	return disc.DiscoverSessions(ctx, seedDir)
 }
 
+// CreateInfo is the host-resolved runtime metadata for a session
+// backend. The hub uses it to populate SessionInfo.{ProjectDir,
+// WorktreeDir} without having to know about host filesystem layout.
+type CreateInfo struct {
+	ProjectDir  string // Repo root directory on the host's filesystem.
+	WorktreeDir string // Worktree path; equals ProjectDir when no branch was requested.
+}
+
 // CreateSession creates a fresh SessionBackend for req and registers it
 // under the given Hub-assigned session ID. The backend is NOT started —
 // callers call Start() or Watch() on the returned backend.
 //
-// The Service holds the backend reference until StopSession(id) is
-// called. Looking up the backend later via Session(id) is safe across
-// goroutines.
+// Identity (HostID, RepoRemoteURL, Branch) is path-free; the host
+// resolves a working directory by:
+//  1. deriving RepoID from req.RepoRemoteURL,
+//  2. looking up the previously-registered rootDir,
+//  3. resolving (rootDir, Branch) → workDir via resolveWorktree when
+//     Branch is non-empty (otherwise workDir == rootDir).
 //
-// Phase 1 preserves the path-centric StartRequest shape. Phase 3 will
-// reshape to RepoRef + Branch.
-// Phase 1 preserves the path-centric StartRequest shape. Phase 3 will
-// reshape to RepoRef + Branch.
+// The repo MUST have been registered via RegisterRepo (either directly
+// or through the host mux's POST /repos route) before CreateSession can
+// resolve the workDir. This is the explicit replacement for the legacy
+// auto-registration that piggy-backed on the path-bearing wire format.
 //
-// Note: this does not call req.Validate(). The watch-only activation path
-// (re-attaching to a historical session) creates a backend without a
-// prompt, which Validate() would reject. Callers that send prompts (the
-// daemon's createSession / handleSendMessage handlers, and the mux HTTP
-// handler) validate at their own boundary.
-func (s *Service) CreateSession(_ context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
+// Note: this does not call req.Validate(). The watch-only activation
+// path (re-attaching to a historical session) creates a backend without
+// a prompt, which Validate() would reject. Callers that send prompts
+// validate at their own boundary.
+func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, CreateInfo, error) {
 	if sessionID == "" {
-		return nil, fmt.Errorf("session id is required")
+		return nil, CreateInfo{}, fmt.Errorf("session id is required")
 	}
 	if req.Backend == "" {
-		return nil, fmt.Errorf("backend is required")
+		return nil, CreateInfo{}, fmt.Errorf("backend is required")
+	}
+	if req.RepoRemoteURL == "" {
+		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url is required")
 	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
-		return nil, fmt.Errorf("no backend manager for %s", req.Backend)
+		return nil, CreateInfo{}, fmt.Errorf("no backend manager for %s", req.Backend)
 	}
 	s.mu.Lock()
 	if _, exists := s.sessions[sessionID]; exists {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("session %s already registered", sessionID)
+		return nil, CreateInfo{}, fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.mu.Unlock()
 
-	b, err := mgr.CreateBackend(req)
+	repoID, err := RepoRef{RemoteURL: req.RepoRemoteURL}.ID()
 	if err != nil {
-		return nil, err
+		return nil, CreateInfo{}, fmt.Errorf("derive repo id: %w", err)
+	}
+	rootDir, err := s.repoRoot(repoID)
+	if err != nil {
+		return nil, CreateInfo{}, err
+	}
+
+	workDir := rootDir
+	if req.Branch != "" {
+		wt, err := s.resolveWorktree(ctx, rootDir, req.Branch)
+		if err != nil {
+			return nil, CreateInfo{}, fmt.Errorf("resolve worktree for branch %q: %w", req.Branch, err)
+		}
+		workDir = wt.WorktreeDir
+	}
+
+	b, err := mgr.CreateBackend(req, workDir)
+	if err != nil {
+		return nil, CreateInfo{}, err
 	}
 	s.mu.Lock()
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
-	// Lazy auto-registration: when the request carries both the canonical
-	// remote URL and a local path, record the (RepoID → rootDir) mapping
-	// so subsequent /repos/{id}/... routes can find it. Best-effort —
-	// failures don't block session creation, only get logged.
-	if req.RepoRemoteURL != "" && req.ProjectDir != "" {
-		if _, err := s.RegisterRepo(RepoRef{RemoteURL: req.RepoRemoteURL}, req.ProjectDir); err != nil {
-			s.log.Printf("warning: auto-register repo for session %s: %v", sessionID, err)
-		}
-	}
-	return b, nil
+	return b, CreateInfo{ProjectDir: rootDir, WorktreeDir: workDir}, nil
 }
 
 // Session returns the SessionBackend registered under id, or nil and
@@ -292,9 +314,9 @@ func (s *Service) StopSession(id string) error {
 
 // --- Worktree / branch ops ----------------------------------------------
 
-// ListBranches returns the branches (and their checked-out worktrees)
+// listBranches returns the branches (and their checked-out worktrees)
 // for the repository at projectDir. Skips bare and detached entries.
-func (s *Service) ListBranches(_ context.Context, projectDir string) ([]BranchInfo, error) {
+func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchInfo, error) {
 	worktrees, err := git.ListWorktrees(projectDir)
 	if err != nil {
 		return nil, err
@@ -329,11 +351,11 @@ func (s *Service) ListBranches(_ context.Context, projectDir string) ([]BranchIn
 	return result, nil
 }
 
-// ResolveWorktree ensures a git worktree exists for (projectDir, branch).
+// resolveWorktree ensures a git worktree exists for (projectDir, branch).
 // If the branch has a worktree, returns its path; otherwise creates one.
 // If the branch does not exist locally, creates a new branch from the
 // repo's default branch.
-func (s *Service) ResolveWorktree(_ context.Context, projectDir, branch string) (WorktreeInfo, error) {
+func (s *Service) resolveWorktree(_ context.Context, projectDir, branch string) (WorktreeInfo, error) {
 	wt, err := git.FindWorktreeForBranch(projectDir, branch)
 	if err != nil {
 		return WorktreeInfo{}, err
@@ -370,9 +392,9 @@ func (s *Service) ResolveWorktree(_ context.Context, projectDir, branch string) 
 	return WorktreeInfo{Branch: branch, WorktreeDir: wtDir}, nil
 }
 
-// RemoveWorktree removes the worktree for (projectDir, branch). Returns
+// removeWorktree removes the worktree for (projectDir, branch). Returns
 // an error if there is no such worktree.
-func (s *Service) RemoveWorktree(_ context.Context, projectDir, branch string, force bool) error {
+func (s *Service) removeWorktree(_ context.Context, projectDir, branch string, force bool) error {
 	wt, err := git.FindWorktreeForBranch(projectDir, branch)
 	if err != nil {
 		return err
@@ -395,7 +417,7 @@ type MergeResult struct {
 	BranchDeleted   bool
 }
 
-// MergeBranch merges `branch` into the repo's default branch. Before
+// mergeBranch merges `branch` into the repo's default branch. Before
 // merging, it `git add -A`s the feature worktree; if there are staged
 // changes, commitMessage is used to commit them first (required in that
 // case).
@@ -403,7 +425,7 @@ type MergeResult struct {
 // Returns an error with a stable sentinel (via errors.Is) for each
 // user-facing failure mode so handlers can translate to appropriate HTTP
 // status codes.
-func (s *Service) MergeBranch(_ context.Context, projectDir, branch, commitMessage string) (MergeResult, error) {
+func (s *Service) mergeBranch(_ context.Context, projectDir, branch, commitMessage string) (MergeResult, error) {
 	defaultBranch, err := git.DefaultBranch(projectDir)
 	if err != nil {
 		return MergeResult{}, fmt.Errorf("determine default branch: %w", err)

@@ -47,24 +47,12 @@ func (c *InProcess) DiscoverSessions(ctx context.Context, bt agent.BackendType, 
 	return c.svc.DiscoverSessions(ctx, bt, seedDir)
 }
 
-func (c *InProcess) ListBranches(ctx context.Context, projectDir string) ([]host.BranchInfo, error) {
-	return c.svc.ListBranches(ctx, projectDir)
-}
-
-func (c *InProcess) ResolveWorktree(ctx context.Context, projectDir, branch string) (host.WorktreeInfo, error) {
-	return c.svc.ResolveWorktree(ctx, projectDir, branch)
-}
-
-func (c *InProcess) RemoveWorktree(ctx context.Context, projectDir, branch string, force bool) error {
-	return c.svc.RemoveWorktree(ctx, projectDir, branch, force)
-}
-
-func (c *InProcess) MergeBranch(ctx context.Context, projectDir, branch, commitMessage string) (host.MergeResult, error) {
-	return c.svc.MergeBranch(ctx, projectDir, branch, commitMessage)
-}
-
 func (c *InProcess) ListRepos(ctx context.Context) ([]host.Repo, error) {
 	return c.svc.ListRepos(ctx)
+}
+
+func (c *InProcess) RegisterRepo(_ context.Context, ref host.RepoRef, rootDir string) (host.Repo, error) {
+	return c.svc.RegisterRepo(ref, rootDir)
 }
 
 func (c *InProcess) ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error) {
@@ -83,7 +71,7 @@ func (c *InProcess) MergeBranchByRepo(ctx context.Context, id host.RepoID, branc
 	return c.svc.MergeBranchByRepo(ctx, id, branch, commitMessage)
 }
 
-func (c *InProcess) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
+func (c *InProcess) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error) {
 	return c.svc.CreateSession(ctx, sessionID, req)
 }
 

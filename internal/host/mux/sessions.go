@@ -22,10 +22,16 @@ type CreateSessionRequest struct {
 // SessionSnapshot summarizes a registered session for HTTP responses. It
 // is not the same as agent.SessionInfo (Hub-side metadata); it carries
 // only what the Host knows about its own backend instance.
+//
+// ProjectDir/WorktreeDir are populated on POST /sessions responses so
+// the Hub learns the host-resolved paths it needs for SessionInfo
+// metadata. Other endpoints (GET /sessions/{id}) leave them empty.
 type SessionSnapshot struct {
-	SessionID  string              `json:"session_id"`
-	ExternalID string              `json:"external_id"`
-	Status     agent.SessionStatus `json:"status"`
+	SessionID   string              `json:"session_id"`
+	ExternalID  string              `json:"external_id"`
+	Status      agent.SessionStatus `json:"status"`
+	ProjectDir  string              `json:"project_dir,omitempty"`
+	WorktreeDir string              `json:"worktree_dir,omitempty"`
 }
 
 // HOST
@@ -39,15 +45,17 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "session_id is required"})
 		return
 	}
-	b, err := m.svc.CreateSession(r.Context(), req.SessionID, req.Request)
+	b, info, err := m.svc.CreateSession(r.Context(), req.SessionID, req.Request)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, SessionSnapshot{
-		SessionID:  req.SessionID,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		SessionID:   req.SessionID,
+		ExternalID:  b.SessionID(),
+		Status:      b.Status(),
+		ProjectDir:  info.ProjectDir,
+		WorktreeDir: info.WorktreeDir,
 	})
 }
 

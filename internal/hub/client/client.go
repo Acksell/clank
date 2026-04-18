@@ -429,41 +429,6 @@ func (c *Client) GetPendingPermissions(ctx context.Context, sessionID string) ([
 	return perms, nil
 }
 
-// --- Worktree / Branch methods (Hub-facing surface; Hub forwards to Host) ---
-
-// ListBranches returns local branches for the given project directory.
-func (c *Client) ListBranches(ctx context.Context, projectDir string) ([]host.BranchInfo, error) {
-	var branches []host.BranchInfo
-	if err := c.get(ctx, "/branches?project_dir="+url.QueryEscape(projectDir), &branches); err != nil {
-		return nil, err
-	}
-	return branches, nil
-}
-
-// CreateWorktree creates (or reuses) a git worktree for the given branch.
-func (c *Client) CreateWorktree(ctx context.Context, req host.CreateWorktreeRequest) (*host.WorktreeInfo, error) {
-	var info host.WorktreeInfo
-	if err := c.post(ctx, "/worktrees", req, &info); err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
-// RemoveWorktree removes the git worktree for the given branch.
-func (c *Client) RemoveWorktree(ctx context.Context, req host.RemoveWorktreeRequest) error {
-	return c.do(ctx, "DELETE", "/worktrees", req, nil)
-}
-
-// MergeWorktree merges a branch into the default branch (--no-ff), then
-// cleans up the worktree and branch. Sessions on the worktree are marked done.
-func (c *Client) MergeWorktree(ctx context.Context, req host.MergeWorktreeRequest) (*host.MergeWorktreeResponse, error) {
-	var resp host.MergeWorktreeResponse
-	if err := c.post(ctx, "/worktrees/merge", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 // --- Phase 3B: host- and repo-scoped methods ---
 
 // ListBranchesOnRepo returns the branches/worktrees for (hostID, repoID).
@@ -514,6 +479,22 @@ func (c *Client) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]hos
 	var out []host.Repo
 	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos", &out); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// RegisterRepoOnHost asks the host to remember (RemoteURL → rootDir).
+// The TUI calls this right after ResolveRepo so that subsequent
+// CreateSession requests can be path-free: the host already knows
+// where the checkout lives.
+func (c *Client) RegisterRepoOnHost(ctx context.Context, hostID host.HostID, ref host.RepoRef, rootDir string) (host.Repo, error) {
+	var out host.Repo
+	body := map[string]string{
+		"remote_url": ref.RemoteURL,
+		"root_dir":   rootDir,
+	}
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos", body, &out); err != nil {
+		return host.Repo{}, err
 	}
 	return out, nil
 }

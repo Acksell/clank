@@ -178,7 +178,7 @@ func newMockBackendManager() *mockBackendManager {
 	return &mockBackendManager{}
 }
 
-func (m *mockBackendManager) CreateBackend(req agent.StartRequest) (agent.SessionBackend, error) {
+func (m *mockBackendManager) CreateBackend(req agent.StartRequest, workDir string) (agent.SessionBackend, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var b *mockBackend
@@ -298,8 +298,11 @@ func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient
 	return client, cleanup
 }
 
-// testDaemon creates a daemon with mock backends, starts it, and returns
-// the daemon, a connected client, and a cleanup function.
+// testDaemon creates a daemon with mock backends, starts it, registers
+// a default test repo on the local host, and returns the daemon, a
+// connected client, and a cleanup function. Tests that issue
+// CreateSession can use the package-level testRemoteURL constant
+// without having to set up the repo themselves.
 func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 	t.Helper()
 
@@ -309,6 +312,7 @@ func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	client, _, cleanup := startHubOnSocket(t, s)
+	registerTestRepo(t, s)
 	return s, client, cleanup
 }
 
@@ -323,6 +327,7 @@ func testDaemonWithBackendAccess(t *testing.T) (*hub.Service, *hubclient.Client,
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	client, _, cleanup := startHubOnSocket(t, s)
+	registerTestRepo(t, s)
 	getBackend := func() *mockBackend { return mgr.getLatest() }
 	return s, client, getBackend, cleanup
 }
@@ -356,7 +361,7 @@ func eventTypes(events []agent.Event) []string {
 	return types
 }
 
-func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
+func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *hubclient.Client, func() *mockBackend, string, func()) {
 	t.Helper()
 
 	s := hub.New()
@@ -374,8 +379,9 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*h
 	s.BackendManagers[agent.BackendClaudeCode] = &discMgr.mockBackendManager
 
 	client, _, cleanup := startHubOnSocket(t, s)
+	repoDir := registerTestRepo(t, s)
 	getBackend := func() *mockBackend { return discMgr.getLatest() }
-	return s, client, getBackend, cleanup
+	return s, client, getBackend, repoDir, cleanup
 }
 
 // testDaemonWithStore is the persistence variant: it allocates a temp
@@ -387,7 +393,7 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*h
 // PID file path is intentionally NOT returned: hub.Service no longer
 // touches a PID file (Phase 2F lifted that into daemoncli), so tests
 // have nothing to clean up there.
-func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, dbPath string, cleanup func()) {
+func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, dbPath, repoDir string, cleanup func()) {
 	t.Helper()
 
 	if dir == "" {
@@ -410,6 +416,7 @@ func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubc
 	s.BackendManagers[agent.BackendClaudeCode] = mgr
 
 	client, cleanup = startHubAtSocket(t, s, sockPath)
+	repoDir = registerTestRepo(t, s)
 	return
 }
 

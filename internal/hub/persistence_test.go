@@ -18,16 +18,16 @@ func TestPersistence_RoundTrip(t *testing.T) {
 
 	// --- Phase 1: create sessions and mutate user-owned fields ---
 
-	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, repoDir, cleanup1 := testDaemonWithStore(t, dir)
 	_ = d1
 	ctx := context.Background()
 
 	// Create a session.
 	info, err := client1.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/myproject",
-		Prompt:     "fix the bug",
-		TicketID:   "TICKET-42",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "fix the bug",
+		TicketID:      "TICKET-42",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -72,6 +72,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
 
 	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
+	registerTestRepoAt(t, d2, repoDir)
 	defer cleanup2()
 
 	// The session should survive the restart.
@@ -105,8 +106,8 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	}
 
 	// Verify backend-owned fields survived.
-	if after.ProjectDir != "/tmp/myproject" {
-		t.Errorf("ProjectDir = %q, want %q", after.ProjectDir, "/tmp/myproject")
+	if after.ProjectDir != repoDir {
+		t.Errorf("ProjectDir = %q, want %q", after.ProjectDir, repoDir)
 	}
 	if after.TicketID != "TICKET-42" {
 		t.Errorf("TicketID = %q, want %q", after.TicketID, "TICKET-42")
@@ -119,13 +120,13 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	dir := shortTempDir(t)
 
 	// Phase 1: create and delete a session.
-	_, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	_, client1, sockPath, dbPath, repoDir, cleanup1 := testDaemonWithStore(t, dir)
 	ctx := context.Background()
 
 	info, err := client1.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/proj",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -147,6 +148,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	d2.Store = st2
 
 	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
+	registerTestRepoAt(t, d2, repoDir)
 	defer func() {
 		cleanup2()
 		st2.Close()
@@ -171,14 +173,14 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	dir := shortTempDir(t)
 
 	// Phase 1: create a session and leave it in a busy state.
-	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, repoDir, cleanup1 := testDaemonWithStore(t, dir)
 	_ = d1
 	ctx := context.Background()
 
 	info, err := client1.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/stale-proj",
-		Prompt:     "do something",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "do something",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -209,6 +211,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	d2.BackendManagers[agent.BackendClaudeCode] = mgr2
 
 	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
+	registerTestRepoAt(t, d2, repoDir)
 	defer func() {
 		cleanup2()
 		st2.Close()
@@ -349,9 +352,9 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/proj",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -385,7 +388,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 		},
 	}
 
-	d1, client1, sockPath, dbPath, cleanup1 := testDaemonWithStore(t, dir)
+	d1, client1, sockPath, dbPath, repoDir, cleanup1 := testDaemonWithStore(t, dir)
 	discMgr1 := &mockDiscovererManager{snapshots: snapshots}
 	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
 	ctx := context.Background()
@@ -438,6 +441,7 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	d2.BackendManagers[agent.BackendClaudeCode] = &discMgr2.mockBackendManager
 
 	client2, cleanup2 := startHubAtSocket(t, d2, sockPath)
+	registerTestRepoAt(t, d2, repoDir)
 	defer func() {
 		cleanup2()
 		st2.Close()

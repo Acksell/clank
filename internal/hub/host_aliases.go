@@ -8,10 +8,6 @@ package hub
 import "github.com/acksell/clank/internal/host"
 
 type (
-	BranchInfo            = host.BranchInfo
-	WorktreeInfo          = host.WorktreeInfo
-	CreateWorktreeRequest = host.CreateWorktreeRequest
-	RemoveWorktreeRequest = host.RemoveWorktreeRequest
-	MergeWorktreeRequest  = host.MergeWorktreeRequest
-	MergeWorktreeResponse = host.MergeWorktreeResponse
+	BranchInfo   = host.BranchInfo
+	WorktreeInfo = host.WorktreeInfo
 )

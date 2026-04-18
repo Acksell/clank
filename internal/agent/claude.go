@@ -76,11 +76,14 @@ type ClaudeCodeBackend struct {
 	ClientFactory func(opts ...claudecode.Option) claudecode.Client
 }
 
-// NewClaudeCodeBackend creates a new Claude Code backend.
-func NewClaudeCodeBackend() *ClaudeCodeBackend {
+// NewClaudeCodeBackend creates a new Claude Code backend. workDir is
+// the host-resolved working directory (worktree or repo root) the
+// claude CLI will be launched in.
+func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
+		projectDir:       workDir,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]activeToolBlock),
 		ctx:              ctx,
@@ -90,11 +93,11 @@ func NewClaudeCodeBackend() *ClaudeCodeBackend {
 
 func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	b.mu.Lock()
-	b.projectDir = req.ProjectDir
+	workDir := b.projectDir
 	b.mu.Unlock()
 
 	opts := []claudecode.Option{
-		claudecode.WithCwd(req.ProjectDir),
+		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
 		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
 	}

@@ -20,6 +20,28 @@ func (m *Mux) handleListRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// RegisterRepoRequest is the body for POST /repos. Used by the Hub to
+// seed the host's (RepoID → rootDir) map so subsequent CreateSession
+// calls can resolve a workDir from the path-free StartRequest.
+type RegisterRepoRequest struct {
+	Ref     host.RepoRef `json:"ref"`
+	RootDir string       `json:"root_dir"`
+}
+
+func (m *Mux) handleRegisterRepo(w http.ResponseWriter, r *http.Request) {
+	var req RegisterRepoRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	repo, err := m.svc.RegisterRepo(req.Ref, req.RootDir)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, repo)
+}
+
 func (m *Mux) handleListBranchesByRepo(w http.ResponseWriter, r *http.Request) {
 	id := host.RepoID(r.PathValue("id"))
 	if id == "" {

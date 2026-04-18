@@ -14,6 +14,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/tui"
 )
@@ -100,12 +102,19 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
+			remoteURL, err := git.RemoteURL(projectDir, "origin")
+			if err != nil {
+				sseCancel()
+				return fmt.Errorf("resolve repo remote: %w", err)
+			}
+
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:        bt,
-				ProjectDir:     projectDir,
-				WorktreeBranch: worktreeBranch,
-				Prompt:         prompt,
-				TicketID:       ticketID,
+				Backend:       bt,
+				HostID:        string(host.HostLocal),
+				RepoRemoteURL: remoteURL,
+				Branch:        worktreeBranch,
+				Prompt:        prompt,
+				TicketID:      ticketID,
 			})
 			if err != nil {
 				sseCancel()

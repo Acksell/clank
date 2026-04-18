@@ -160,48 +160,19 @@ func (c *HTTP) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedD
 	return out, err
 }
 
-func (c *HTTP) ListBranches(ctx context.Context, projectDir string) ([]host.BranchInfo, error) {
-	q := url.Values{"project_dir": {projectDir}}
-	var out []host.BranchInfo
-	err := c.do(ctx, http.MethodGet, "/branches?"+q.Encode(), nil, &out)
-	return out, err
-}
-
-func (c *HTTP) ResolveWorktree(ctx context.Context, projectDir, branch string) (host.WorktreeInfo, error) {
-	body := struct {
-		ProjectDir string `json:"project_dir"`
-		Branch     string `json:"branch"`
-	}{projectDir, branch}
-	var out host.WorktreeInfo
-	err := c.do(ctx, http.MethodPost, "/worktrees", body, &out)
-	return out, err
-}
-
-func (c *HTTP) RemoveWorktree(ctx context.Context, projectDir, branch string, force bool) error {
-	q := url.Values{
-		"project_dir": {projectDir},
-		"branch":      {branch},
-		"force":       {strconv.FormatBool(force)},
-	}
-	return c.do(ctx, http.MethodDelete, "/worktrees?"+q.Encode(), nil, nil)
-}
-
-func (c *HTTP) MergeBranch(ctx context.Context, projectDir, branch, commitMessage string) (host.MergeResult, error) {
-	body := struct {
-		ProjectDir    string `json:"project_dir"`
-		Branch        string `json:"branch"`
-		CommitMessage string `json:"commit_message,omitempty"`
-	}{projectDir, branch, commitMessage}
-	var out host.MergeResult
-	err := c.do(ctx, http.MethodPost, "/worktrees/merge", body, &out)
-	return out, err
-}
-
-// --- Phase 3B: RepoID-scoped methods ---
-
 func (c *HTTP) ListRepos(ctx context.Context) ([]host.Repo, error) {
 	var out []host.Repo
 	err := c.do(ctx, http.MethodGet, "/repos", nil, &out)
+	return out, err
+}
+
+func (c *HTTP) RegisterRepo(ctx context.Context, ref host.RepoRef, rootDir string) (host.Repo, error) {
+	body := struct {
+		Ref     host.RepoRef `json:"ref"`
+		RootDir string       `json:"root_dir"`
+	}{ref, rootDir}
+	var out host.Repo
+	err := c.do(ctx, http.MethodPost, "/repos", body, &out)
 	return out, err
 }
 
@@ -238,20 +209,25 @@ func (c *HTTP) MergeBranchByRepo(ctx context.Context, id host.RepoID, branch, co
 	return out, err
 }
 
-func (c *HTTP) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, error) {
+func (c *HTTP) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error) {
 	body := struct {
 		SessionID string             `json:"session_id"`
 		Request   agent.StartRequest `json:"request"`
 	}{sessionID, req}
 	var snap struct {
-		SessionID  string              `json:"session_id"`
-		ExternalID string              `json:"external_id"`
-		Status     agent.SessionStatus `json:"status"`
+		SessionID   string              `json:"session_id"`
+		ExternalID  string              `json:"external_id"`
+		Status      agent.SessionStatus `json:"status"`
+		ProjectDir  string              `json:"project_dir"`
+		WorktreeDir string              `json:"worktree_dir"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/sessions", body, &snap); err != nil {
-		return nil, err
+		return nil, host.CreateInfo{}, err
 	}
-	return newHTTPSessionBackend(c, sessionID, snap.ExternalID, snap.Status), nil
+	return newHTTPSessionBackend(c, sessionID, snap.ExternalID, snap.Status), host.CreateInfo{
+		ProjectDir:  snap.ProjectDir,
+		WorktreeDir: snap.WorktreeDir,
+	}, nil
 }
 
 func (c *HTTP) StopSession(ctx context.Context, sessionID string) error {

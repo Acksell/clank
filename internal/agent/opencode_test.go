@@ -237,7 +237,6 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "Fix the bug in main.go",
 	})
 	if err != nil {
@@ -288,7 +287,6 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "Continue working",
 		SessionID:  "existing-session",
 	})
@@ -321,7 +319,6 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "Start task",
 	})
 	if err != nil {
@@ -365,7 +362,6 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "Do stuff",
 	})
 	if err != nil {
@@ -429,7 +425,6 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -520,7 +515,6 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -595,7 +589,6 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -968,7 +961,6 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 
 			err := b.Start(context.Background(), agent.StartRequest{
 				Backend:    agent.BackendOpenCode,
-				ProjectDir: "/tmp/test",
 				Prompt:     "test",
 			})
 			if err != nil {
@@ -1053,7 +1045,6 @@ func TestAgentFieldThreadedInSendMessage(t *testing.T) {
 	ctx := context.Background()
 	err := b.Start(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "initial prompt",
 		Agent:      "plan",
 	})
@@ -1117,7 +1108,6 @@ func TestOpenCodeBackendSSELargePayload(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1237,7 +1227,6 @@ func TestOpenCodeBackendSSEReconnectAfterDrop(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1352,7 +1341,6 @@ func TestOpenCodeBackendSSEReconnectWithURLChange(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1401,7 +1389,6 @@ func TestOpenCodeBackendSSEGivesUpAfterMaxRetries(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {
@@ -1480,7 +1467,6 @@ func TestOpenCodeBackendMessagesRetryOnConnectionError(t *testing.T) {
 
 	err := b.Start(context.Background(), agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
 		Prompt:     "test",
 	})
 	if err != nil {

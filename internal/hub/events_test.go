@@ -37,9 +37,9 @@ func TestDaemonStatus(t *testing.T) {
 
 	// Create a session.
 	_, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -70,22 +70,23 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	// Note: cleanup is NOT deferred — this test triggers shutdown
 	// inline to verify backends are stopped during graceful shutdown.
+	registerTestRepo(t, s)
 
 	ctx := context.Background()
 
 	// Create two sessions.
 	_, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/a",
-		Prompt:     "task a",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "task a",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession a: %v", err)
 	}
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendClaudeCode,
-		ProjectDir: "/tmp/b",
-		Prompt:     "task b",
+		Backend:       agent.BackendClaudeCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "task b",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession b: %v", err)
@@ -122,9 +123,9 @@ func TestDaemonEventStream(t *testing.T) {
 
 	// Create a session — should generate events.
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -184,9 +185,9 @@ func TestDaemonMultipleEventSubscribers(t *testing.T) {
 
 	// Create a session.
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "test",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -221,9 +222,9 @@ func TestEventRoundTrip_StatusChange(t *testing.T) {
 	}
 
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -396,9 +397,9 @@ func TestEventRoundTrip_InjectedEvents(t *testing.T) {
 			}
 
 			_, err = client.CreateSession(ctx, agent.StartRequest{
-				Backend:    agent.BackendOpenCode,
-				ProjectDir: "/tmp/test",
-				Prompt:     "hello",
+				Backend:       agent.BackendOpenCode,
+				RepoRemoteURL: testRemoteURL,
+				Prompt:        "hello",
 			})
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
@@ -441,9 +442,9 @@ func TestEventRoundTrip_StreamingTextDeltas(t *testing.T) {
 	}
 
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -507,9 +508,9 @@ func TestEventRoundTrip_SessionID(t *testing.T) {
 	}
 
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -556,9 +557,9 @@ func TestEventRoundTrip_TitleChange(t *testing.T) {
 	}
 
 	_, err = client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "hello",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

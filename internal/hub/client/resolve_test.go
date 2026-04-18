@@ -47,7 +47,7 @@ func TestResolveRepo(t *testing.T) {
 	const remote = "git@github.com:acksell/clank.git"
 	dir := initTestRepoWithRemote(t, remote)
 
-	hostID, ref, branch, err := ResolveRepo(dir)
+	hostID, ref, root, branch, err := ResolveRepo(dir)
 	if err != nil {
 		t.Fatalf("ResolveRepo: %v", err)
 	}
@@ -56,6 +56,9 @@ func TestResolveRepo(t *testing.T) {
 	}
 	if ref.RemoteURL != remote {
 		t.Errorf("RemoteURL = %q, want %q", ref.RemoteURL, remote)
+	}
+	if root == "" {
+		t.Error("root is empty")
 	}
 	id, err := ref.ID()
 	if err != nil {
@@ -81,7 +84,7 @@ func TestResolveRepoNoRemote(t *testing.T) {
 	mustRun(t, dir, "git", "add", ".")
 	mustRun(t, dir, "git", "commit", "-m", "initial")
 
-	if _, _, _, err := ResolveRepo(dir); err == nil {
+	if _, _, _, _, err := ResolveRepo(dir); err == nil {
 		t.Fatal("ResolveRepo without origin: expected error, got nil")
 	}
 }

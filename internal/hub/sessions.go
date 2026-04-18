@@ -95,9 +95,9 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
 			// Backfill worktree attribution if not already set.
-			if existingMS.info.WorktreeBranch == "" {
+			if existingMS.info.Branch == "" {
 				if branch, ok := wtPathToBranch[snap.Directory]; ok {
-					existingMS.info.WorktreeBranch = branch
+					existingMS.info.Branch = branch
 					existingMS.info.WorktreeDir = snap.Directory
 				}
 			}
@@ -119,14 +119,21 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 		}
 
 		id := ulid.Make().String()
+		// Derive RepoRemoteURL so that lazy backend activation
+		// (activateBackend) can reach the host plane without paths.
+		// Best-effort: discovered sessions whose Directory is not a
+		// git repo (or has no `origin`) will have empty RepoRemoteURL
+		// and won't be re-attachable, which matches today's UX.
+		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
 			Backend:         agent.BackendOpenCode,
 			Status:          agent.StatusIdle,
+			RepoRemoteURL:   remoteURL,
 			ProjectDir:      snap.Directory,
 			ProjectName:     filepath.Base(snap.Directory),
-			WorktreeBranch:  wtBranch,
+			Branch:          wtBranch,
 			WorktreeDir:     wtDir,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
@@ -236,10 +243,12 @@ func (s *Service) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
-	backend, err := s.hostClient.CreateSession(s.ctx, id, agent.StartRequest{
-		Backend:    ms.info.Backend,
-		ProjectDir: ms.info.ProjectDir,
-		SessionID:  ms.info.ExternalID,
+	backend, _, err := s.hostClient.CreateSession(s.ctx, id, agent.StartRequest{
+		Backend:       ms.info.Backend,
+		HostID:        ms.info.HostID,
+		RepoRemoteURL: ms.info.RepoRemoteURL,
+		Branch:        ms.info.Branch,
+		SessionID:     ms.info.ExternalID,
 	})
 	if err != nil {
 		return fmt.Errorf("activate backend: %w", err)
@@ -364,14 +373,16 @@ func (s *Service) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		// the follow-up prompt. Start() handles resume: it skips Session.New()
 		// because sessionID is already set, starts SSE, then sends the prompt.
 		req := agent.StartRequest{
-			Backend:    ms.info.Backend,
-			ProjectDir: ms.info.ProjectDir,
-			SessionID:  ms.info.ExternalID,
-			Prompt:     body.Text,
-			Agent:      body.Agent,
-			Model:      body.Model,
+			Backend:       ms.info.Backend,
+			HostID:        ms.info.HostID,
+			RepoRemoteURL: ms.info.RepoRemoteURL,
+			Branch:        ms.info.Branch,
+			SessionID:     ms.info.ExternalID,
+			Prompt:        body.Text,
+			Agent:         body.Agent,
+			Model:         body.Model,
 		}
-		backend, err := s.hostClient.CreateSession(s.ctx, id, req)
+		backend, _, err := s.hostClient.CreateSession(s.ctx, id, req)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -783,77 +794,47 @@ func parseTimeParam(s string) (time.Time, error) {
 
 // HUB
 // createSession creates a new managed session and starts the backend.
-// When req.WorktreeBranch is set, a git worktree is created (or reused) for
-// that branch, and the backend is started in the worktree directory instead of
-// the original ProjectDir.
+// Identity is path-free post Phase 3D-2: callers send (HostID,
+// RepoRemoteURL, Branch); the Host resolves a workDir on the way down
+// and returns it to us as host.CreateInfo so we can populate
+// SessionInfo.{ProjectDir, WorktreeDir} for the TUI.
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
-	// Phase 3A backfill: callers may send only the legacy {ProjectDir,
-	// WorktreeBranch} pair, only the new {RepoRemoteURL, Branch} pair, or
-	// both. Normalise so downstream code (and persistence) sees both shapes
-	// when the information is recoverable.
 	if req.HostID == "" {
 		req.HostID = string(host.HostLocal)
 	}
-	if req.Branch == "" && req.WorktreeBranch != "" {
-		req.Branch = req.WorktreeBranch
-	}
-	if req.WorktreeBranch == "" && req.Branch != "" {
-		req.WorktreeBranch = req.Branch
-	}
-	if req.RepoRemoteURL == "" && req.ProjectDir != "" {
-		// Best-effort: a missing or unconfigured remote shouldn't block
-		// session creation while the legacy path-centric flow is still in use.
-		if remote, err := git.RemoteURL(req.ProjectDir, "origin"); err == nil {
-			req.RepoRemoteURL = remote
-		}
-	}
-
-	// Resolve worktree if a branch is requested.
-	var wtBranch, worktreeDir string
-	if req.WorktreeBranch != "" {
-		wt, err := s.resolveWorktree(req.ProjectDir, req.WorktreeBranch)
-		if err != nil {
-			return nil, fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
-		}
-		wtBranch = req.WorktreeBranch
-		worktreeDir = wt
-		// Point the backend at the worktree directory so the agent
-		// operates on the correct branch.
-		req.ProjectDir = wt
-	}
 
 	// Hub assigns the session ID up front, then asks the Host to create
-	// and register a backend under it. After Phase 2 this is an HTTP
-	// round-trip; today it's an in-process call but the call shape is
-	// already wire-correct.
+	// and register a backend under it. The Host resolves
+	// (RepoRemoteURL, Branch) → workDir and reports it back via
+	// CreateInfo so the Hub can populate SessionInfo paths without
+	// having to compute filesystem layout itself.
 	id := ulid.Make().String()
-	backend, err := s.hostClient.CreateSession(s.ctx, id, req)
+	backend, info, err := s.hostClient.CreateSession(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
 	}
 
 	now := time.Now()
 
-	info := agent.SessionInfo{
-		ID:             id,
-		Backend:        req.Backend,
-		Status:         agent.StatusStarting,
-		HostID:         req.HostID,
-		RepoRemoteURL:  req.RepoRemoteURL,
-		Branch:         wtBranch,
-		ProjectDir:     req.ProjectDir,
-		ProjectName:    filepath.Base(req.ProjectDir),
-		WorktreeBranch: wtBranch,
-		WorktreeDir:    worktreeDir,
-		Prompt:         req.Prompt,
-		TicketID:       req.TicketID,
-		Agent:          req.Agent,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+	sessInfo := agent.SessionInfo{
+		ID:            id,
+		Backend:       req.Backend,
+		Status:        agent.StatusStarting,
+		HostID:        req.HostID,
+		RepoRemoteURL: req.RepoRemoteURL,
+		Branch:        req.Branch,
+		ProjectDir:    info.ProjectDir,
+		ProjectName:   filepath.Base(info.ProjectDir),
+		WorktreeDir:   info.WorktreeDir,
+		Prompt:        req.Prompt,
+		TicketID:      req.TicketID,
+		Agent:         req.Agent,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	ms := &managedSession{
-		info:    info,
+		info:    sessInfo,
 		backend: backend,
 	}
 
@@ -867,7 +848,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		Type:      agent.EventSessionCreate,
 		SessionID: id,
 		Timestamp: now,
-		Data:      info,
+		Data:      sessInfo,
 	})
 
 	// Start the backend in a goroutine.
@@ -877,7 +858,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		s.runBackend(id, ms, req)
 	}()
 
-	return &info, nil
+	return &sessInfo, nil
 }
 
 // HOST

@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,10 +66,36 @@ type stubManager struct {
 }
 
 func (m *stubManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
-func (m *stubManager) CreateBackend(_ agent.StartRequest) (agent.SessionBackend, error) {
+func (m *stubManager) CreateBackend(_ agent.StartRequest, _ string) (agent.SessionBackend, error) {
 	return m.next, nil
 }
 func (m *stubManager) Shutdown() {}
+
+const testRemoteURL = "git@github.com:acksell/clank.git"
+
+// initGitRepo creates a real git repo with an "origin" remote so the host
+// can resolve the RepoRef → RepoID and pass CreateSession's checks.
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("git", "init", "-b", "main")
+	run("git", "config", "user.email", "t@t")
+	run("git", "config", "user.name", "T")
+	run("git", "remote", "add", "origin", testRemoteURL)
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", ".")
+	run("git", "commit", "-m", "initial")
+	return dir
+}
 
 // TestHTTPRoundTrip_CreateSessionAndEvents validates the full wire
 // path: Service → hostmux → httptest server → HTTP hostclient →
@@ -87,6 +117,11 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 	})
 	t.Cleanup(svc.Shutdown)
 
+	dir := initGitRepo(t)
+	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: testRemoteURL}, dir); err != nil {
+		t.Fatalf("RegisterRepo: %v", err)
+	}
+
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	t.Cleanup(srv.Close)
 
@@ -96,10 +131,10 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	be, err := c.CreateSession(ctx, "sid-1", agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/x",
-		Prompt:     "hi",
+	be, _, err := c.CreateSession(ctx, "sid-1", agent.StartRequest{
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "hi",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -171,14 +206,18 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 		},
 	})
 	t.Cleanup(svc.Shutdown)
+	dir := initGitRepo(t)
+	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: testRemoteURL}, dir); err != nil {
+		t.Fatalf("RegisterRepo: %v", err)
+	}
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	t.Cleanup(srv.Close)
 	c := hostclient.NewHTTP(srv.URL, nil)
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := context.Background()
-	be, err := c.CreateSession(ctx, "sid-2", agent.StartRequest{
-		Backend: agent.BackendOpenCode, ProjectDir: "/tmp/x", Prompt: "hi",
+	be, _, err := c.CreateSession(ctx, "sid-2", agent.StartRequest{
+		Backend: agent.BackendOpenCode, RepoRemoteURL: testRemoteURL, Prompt: "hi",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

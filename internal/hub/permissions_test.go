@@ -18,12 +18,13 @@ func TestDaemonPermissionReply(t *testing.T) {
 
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
+	registerTestRepo(t, s)
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "do stuff",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -69,9 +70,9 @@ func TestDaemonPendingPermission(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "do stuff",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -159,9 +160,9 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "read two dirs",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "read two dirs",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -246,9 +247,9 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.CreateSession(ctx, agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/tmp/test",
-		Prompt:     "read two dirs",
+		Backend:       agent.BackendOpenCode,
+		RepoRemoteURL: testRemoteURL,
+		Prompt:        "read two dirs",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

@@ -17,6 +17,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
@@ -197,11 +199,19 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
+	remoteURL, err := git.RemoteURL(m.projectDir, "origin")
+	if err != nil {
+		m.err = fmt.Errorf("resolve repo remote: %w", err)
+		m.submitting = false
+		return m, nil
+	}
+
 	req := agent.StartRequest{
-		Backend:        m.backend,
-		ProjectDir:     m.projectDir,
-		WorktreeBranch: m.worktreeBranch,
-		Prompt:         prompt,
+		Backend:       m.backend,
+		HostID:        string(host.HostLocal),
+		RepoRemoteURL: remoteURL,
+		Branch:        m.worktreeBranch,
+		Prompt:        prompt,
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name

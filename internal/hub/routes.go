@@ -32,16 +32,12 @@ func (s *Service) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents", s.handleListAgents)
 	mux.HandleFunc("GET /models", s.handleListModels)
 	mux.HandleFunc("POST /sessions/discover", s.handleDiscoverSessions)
-	// Worktree / branch endpoints.
-	mux.HandleFunc("GET /branches", s.handleListBranches)
-	mux.HandleFunc("POST /worktrees", s.handleCreateWorktree)
-	mux.HandleFunc("DELETE /worktrees", s.handleRemoveWorktree)
-	mux.HandleFunc("POST /worktrees/merge", s.handleMergeWorktree)
 
 	// Phase 3B: host- and repo-scoped routes. Path parameters carry
 	// the identity (no filesystem paths on the wire). Branch arrives
 	// in body or query because branch names contain "/".
 	mux.HandleFunc("GET /hosts/{hostID}/repos", s.handleListReposOnHost)
+	mux.HandleFunc("POST /hosts/{hostID}/repos", s.handleRegisterRepoOnHost)
 	mux.HandleFunc("GET /hosts/{hostID}/repos/{repoID}/branches", s.handleListBranchesOnRepo)
 	mux.HandleFunc("POST /hosts/{hostID}/repos/{repoID}/worktrees", s.handleCreateWorktreeOnRepo)
 	mux.HandleFunc("DELETE /hosts/{hostID}/repos/{repoID}/worktrees", s.handleRemoveWorktreeOnRepo)
