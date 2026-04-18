@@ -55,10 +55,10 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// conflict with path-segment routing.
 	mx.HandleFunc("GET /repos", m.handleListRepos)
 	mx.HandleFunc("POST /repos", m.handleRegisterRepo)
-	mx.HandleFunc("GET /repos/{id}/branches", m.handleListBranchesByRepo)
-	mx.HandleFunc("POST /repos/{id}/worktrees", m.handleCreateWorktreeByRepo)
-	mx.HandleFunc("DELETE /repos/{id}/worktrees", m.handleRemoveWorktreeByRepo)
-	mx.HandleFunc("POST /repos/{id}/worktrees/merge", m.handleMergeBranchByRepo)
+	mx.HandleFunc("GET /repos/{ref}/branches", m.handleListBranchesByRepo)
+	mx.HandleFunc("POST /repos/{ref}/worktrees", m.handleCreateWorktreeByRepo)
+	mx.HandleFunc("DELETE /repos/{ref}/worktrees", m.handleRemoveWorktreeByRepo)
+	mx.HandleFunc("POST /repos/{ref}/worktrees/merge", m.handleMergeBranchByRepo)
 
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
 	mx.HandleFunc("POST /sessions/{id}/start", m.handleStartSession)

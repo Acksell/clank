@@ -429,55 +429,56 @@ func (c *Client) GetPendingPermissions(ctx context.Context, sessionID string) ([
 	return perms, nil
 }
 
-// --- Phase 3B: host- and repo-scoped methods ---
+// --- Host- and repo-scoped methods ---
 
-// ListBranchesOnRepo returns the branches/worktrees for (hostID, repoID).
-func (c *Client) ListBranchesOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID) ([]host.BranchInfo, error) {
+// ListBranchesOnRepo returns the branches/worktrees for (hostname, gitRef).
+// gitRef is the canonical GitRef string (URL key form).
+func (c *Client) ListBranchesOnRepo(ctx context.Context, hostname host.Hostname, gitRef string) ([]host.BranchInfo, error) {
 	var out []host.BranchInfo
-	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/branches", &out); err != nil {
+	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos/"+url.PathEscape(gitRef)+"/branches", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// CreateWorktreeOnRepo creates (or reuses) a worktree for branch on (hostID, repoID).
-func (c *Client) CreateWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string) (*host.WorktreeInfo, error) {
+// CreateWorktreeOnRepo creates (or reuses) a worktree for branch on (hostname, gitRef).
+func (c *Client) CreateWorktreeOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch string) (*host.WorktreeInfo, error) {
 	body := struct {
 		Branch string `json:"branch"`
 	}{branch}
 	var out host.WorktreeInfo
-	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees", body, &out); err != nil {
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos/"+url.PathEscape(gitRef)+"/worktrees", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// RemoveWorktreeOnRepo removes the worktree for branch on (hostID, repoID).
-func (c *Client) RemoveWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string, force bool) error {
+// RemoveWorktreeOnRepo removes the worktree for branch on (hostname, gitRef).
+func (c *Client) RemoveWorktreeOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch string, force bool) error {
 	q := url.Values{
 		"branch": {branch},
 		"force":  {strconv.FormatBool(force)},
 	}
-	return c.do(ctx, "DELETE", "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees?"+q.Encode(), nil, nil)
+	return c.do(ctx, "DELETE", "/hosts/"+url.PathEscape(string(hostname))+"/repos/"+url.PathEscape(gitRef)+"/worktrees?"+q.Encode(), nil, nil)
 }
 
-// MergeBranchOnRepo merges branch into the default branch on (hostID, repoID).
-func (c *Client) MergeBranchOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch, commitMessage string) (*host.MergeResult, error) {
+// MergeBranchOnRepo merges branch into the default branch on (hostname, gitRef).
+func (c *Client) MergeBranchOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch, commitMessage string) (*host.MergeResult, error) {
 	body := struct {
 		Branch        string `json:"branch"`
 		CommitMessage string `json:"commit_message,omitempty"`
 	}{branch, commitMessage}
 	var out host.MergeResult
-	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos/"+url.PathEscape(string(repoID))+"/worktrees/merge", body, &out); err != nil {
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos/"+url.PathEscape(gitRef)+"/worktrees/merge", body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // ListReposOnHost returns the repos registered on the given host.
-func (c *Client) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]host.Repo, error) {
+func (c *Client) ListReposOnHost(ctx context.Context, hostname host.Hostname) ([]host.Repo, error) {
 	var out []host.Repo
-	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos", &out); err != nil {
+	if err := c.get(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -487,13 +488,20 @@ func (c *Client) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]hos
 // The TUI calls this right after ResolveRepo so that subsequent
 // CreateSession requests can be path-free: the host already knows
 // where the checkout lives.
-func (c *Client) RegisterRepoOnHost(ctx context.Context, hostID host.HostID, ref host.RepoRef, rootDir string) (host.Repo, error) {
+//
+// Today the wire endpoint only accepts remote-kind GitRefs (its body
+// shape predates GitRef). Local-kind support arrives with implicit
+// adoption (§7.5) in step 6.
+func (c *Client) RegisterRepoOnHost(ctx context.Context, hostname host.Hostname, ref host.GitRef, rootDir string) (host.Repo, error) {
+	if ref.Kind != host.GitRefRemote {
+		return host.Repo{}, fmt.Errorf("RegisterRepoOnHost currently only supports remote git refs, got kind=%q", ref.Kind)
+	}
 	var out host.Repo
 	body := map[string]string{
-		"remote_url": ref.RemoteURL,
+		"remote_url": ref.URL,
 		"root_dir":   rootDir,
 	}
-	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostID))+"/repos", body, &out); err != nil {
+	if err := c.post(ctx, "/hosts/"+url.PathEscape(string(hostname))+"/repos", body, &out); err != nil {
 		return host.Repo{}, err
 	}
 	return out, nil

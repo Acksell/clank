@@ -6,10 +6,9 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-// Phase 3B: RepoID-scoped routes parallel to the legacy path-style
-// `/branches` and `/worktrees` endpoints. The wire shape moves the repo
-// identity into the URL (`/repos/{id}/...`) so callers no longer need to
-// send filesystem paths over the wire.
+// Repo-scoped routes. The wire shape carries the repo identity in the URL
+// (`/repos/{ref}/...`) using the canonical GitRef form (URL-encoded) so
+// callers no longer need to send filesystem paths over the wire.
 
 func (m *Mux) handleListRepos(w http.ResponseWriter, r *http.Request) {
 	out, err := m.svc.ListRepos(r.Context())
@@ -20,12 +19,12 @@ func (m *Mux) handleListRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// RegisterRepoRequest is the body for POST /repos. Used by the Hub to
-// seed the host's (RepoID → rootDir) map so subsequent CreateSession
-// calls can resolve a workDir from the path-free StartRequest.
+// RegisterRepoRequest is the body for POST /repos. Used by the Hub to seed
+// the host's (canonical → rootDir) map so subsequent CreateSession calls
+// can resolve a workDir from the path-free StartRequest.
 type RegisterRepoRequest struct {
-	Ref     host.RepoRef `json:"ref"`
-	RootDir string       `json:"root_dir"`
+	Ref     host.GitRef `json:"ref"`
+	RootDir string      `json:"root_dir"`
 }
 
 func (m *Mux) handleRegisterRepo(w http.ResponseWriter, r *http.Request) {
@@ -42,13 +41,20 @@ func (m *Mux) handleRegisterRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, repo)
 }
 
+// pathRef extracts the canonical git-ref from the {ref} path parameter.
+// The handler chain rejects empty values uniformly so individual handlers
+// don't have to repeat the check.
+func pathRef(r *http.Request) string {
+	return r.PathValue("ref")
+}
+
 func (m *Mux) handleListBranchesByRepo(w http.ResponseWriter, r *http.Request) {
-	id := host.RepoID(r.PathValue("id"))
-	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "repo id is required"})
+	ref := pathRef(r)
+	if ref == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "git ref is required"})
 		return
 	}
-	out, err := m.svc.ListBranchesByRepo(r.Context(), id)
+	out, err := m.svc.ListBranchesByRepo(r.Context(), ref)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -56,15 +62,15 @@ func (m *Mux) handleListBranchesByRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// CreateWorktreeByRepoRequest is the body for POST /repos/{id}/worktrees.
+// CreateWorktreeByRepoRequest is the body for POST /repos/{ref}/worktrees.
 type CreateWorktreeByRepoRequest struct {
 	Branch string `json:"branch"`
 }
 
 func (m *Mux) handleCreateWorktreeByRepo(w http.ResponseWriter, r *http.Request) {
-	id := host.RepoID(r.PathValue("id"))
-	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "repo id is required"})
+	ref := pathRef(r)
+	if ref == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "git ref is required"})
 		return
 	}
 	var req CreateWorktreeByRepoRequest
@@ -76,7 +82,7 @@ func (m *Mux) handleCreateWorktreeByRepo(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "branch is required"})
 		return
 	}
-	wt, err := m.svc.ResolveWorktreeByRepo(r.Context(), id, req.Branch)
+	wt, err := m.svc.ResolveWorktreeByRepo(r.Context(), ref, req.Branch)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -87,30 +93,30 @@ func (m *Mux) handleCreateWorktreeByRepo(w http.ResponseWriter, r *http.Request)
 // Branch arrives via query string because branch names contain "/" which
 // would conflict with path-segment routing.
 func (m *Mux) handleRemoveWorktreeByRepo(w http.ResponseWriter, r *http.Request) {
-	id := host.RepoID(r.PathValue("id"))
+	ref := pathRef(r)
 	branch := r.URL.Query().Get("branch")
 	force := r.URL.Query().Get("force") == "true"
-	if id == "" || branch == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "repo id and branch are required"})
+	if ref == "" || branch == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "git ref and branch are required"})
 		return
 	}
-	if err := m.svc.RemoveWorktreeByRepo(r.Context(), id, branch, force); err != nil {
+	if err := m.svc.RemoveWorktreeByRepo(r.Context(), ref, branch, force); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// MergeBranchByRepoRequest is the body for POST /repos/{id}/worktrees/merge.
+// MergeBranchByRepoRequest is the body for POST /repos/{ref}/worktrees/merge.
 type MergeBranchByRepoRequest struct {
 	Branch        string `json:"branch"`
 	CommitMessage string `json:"commit_message,omitempty"`
 }
 
 func (m *Mux) handleMergeBranchByRepo(w http.ResponseWriter, r *http.Request) {
-	id := host.RepoID(r.PathValue("id"))
-	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "repo id is required"})
+	ref := pathRef(r)
+	if ref == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: "git ref is required"})
 		return
 	}
 	var req MergeBranchByRepoRequest
@@ -122,7 +128,7 @@ func (m *Mux) handleMergeBranchByRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "branch is required"})
 		return
 	}
-	res, err := m.svc.MergeBranchByRepo(r.Context(), id, req.Branch, req.CommitMessage)
+	res, err := m.svc.MergeBranchByRepo(r.Context(), ref, req.Branch, req.CommitMessage)
 	if err != nil {
 		writeError(w, err)
 		return

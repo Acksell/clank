@@ -207,11 +207,11 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	req := agent.StartRequest{
-		Backend:       m.backend,
-		HostID:        string(host.HostLocal),
-		RepoRemoteURL: remoteURL,
-		Branch:        m.worktreeBranch,
-		Prompt:        prompt,
+		Backend:        m.backend,
+		Hostname:       string(host.HostLocal),
+		RepoRemoteURL:  remoteURL,
+		WorktreeBranch: m.worktreeBranch,
+		Prompt:         prompt,
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name

@@ -47,25 +47,21 @@ func TestResolveRepo(t *testing.T) {
 	const remote = "git@github.com:acksell/clank.git"
 	dir := initTestRepoWithRemote(t, remote)
 
-	hostID, ref, root, branch, err := ResolveRepo(dir)
+	hostname, ref, root, branch, err := ResolveRepo(dir)
 	if err != nil {
 		t.Fatalf("ResolveRepo: %v", err)
 	}
-	if hostID != host.HostLocal {
-		t.Errorf("hostID = %q, want %q", hostID, host.HostLocal)
+	if hostname != host.HostLocal {
+		t.Errorf("hostname = %q, want %q", hostname, host.HostLocal)
 	}
-	if ref.RemoteURL != remote {
-		t.Errorf("RemoteURL = %q, want %q", ref.RemoteURL, remote)
+	if ref.URL != remote {
+		t.Errorf("URL = %q, want %q", ref.URL, remote)
 	}
 	if root == "" {
 		t.Error("root is empty")
 	}
-	id, err := ref.ID()
-	if err != nil {
-		t.Fatalf("ref.ID: %v", err)
-	}
-	if string(id) != "github.com/acksell/clank" {
-		t.Errorf("ref.ID = %q, want github.com/acksell/clank", id)
+	if got := ref.Canonical(); got != "github.com/acksell/clank" {
+		t.Errorf("ref.Canonical = %q, want github.com/acksell/clank", got)
 	}
 	if branch == "" {
 		t.Error("branch is empty")

@@ -109,12 +109,12 @@ The daemon is auto-started if not already running.`,
 			}
 
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:       bt,
-				HostID:        string(host.HostLocal),
-				RepoRemoteURL: remoteURL,
-				Branch:        worktreeBranch,
-				Prompt:        prompt,
-				TicketID:      ticketID,
+				Backend:        bt,
+				Hostname:       string(host.HostLocal),
+				RepoRemoteURL:  remoteURL,
+				WorktreeBranch: worktreeBranch,
+				Prompt:         prompt,
+				TicketID:       ticketID,
 			})
 			if err != nil {
 				sseCancel()

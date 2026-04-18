@@ -40,9 +40,9 @@ import (
 // which most session/permission/event code still routes through.
 // Phase 3+ removes that field in favour of per-request catalog lookup.
 //
-// Re-registering the same HostID replaces the previous entry without
+// Re-registering the same Hostname replaces the previous entry without
 // closing it (the caller is responsible).
-func (s *Service) RegisterHost(id host.HostID, c *hostclient.HTTP) error {
+func (s *Service) RegisterHost(id host.Hostname, c *hostclient.HTTP) error {
 	if id == "" {
 		return fmt.Errorf("host id is required")
 	}
@@ -61,7 +61,7 @@ func (s *Service) RegisterHost(id host.HostID, c *hostclient.HTTP) error {
 
 // UnregisterHost removes a host from the catalog. Returns the client so the
 // caller can decide whether to Close it. Returns nil if not registered.
-func (s *Service) UnregisterHost(id host.HostID) *hostclient.HTTP {
+func (s *Service) UnregisterHost(id host.Hostname) *hostclient.HTTP {
 	s.hostsMu.Lock()
 	defer s.hostsMu.Unlock()
 	c, ok := s.hosts[id]
@@ -75,9 +75,9 @@ func (s *Service) UnregisterHost(id host.HostID) *hostclient.HTTP {
 	return c
 }
 
-// Host returns the client for the given HostID. The boolean is false if
+// Host returns the client for the given Hostname. The boolean is false if
 // the host is not registered.
-func (s *Service) Host(id host.HostID) (*hostclient.HTTP, bool) {
+func (s *Service) Host(id host.Hostname) (*hostclient.HTTP, bool) {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
 	c, ok := s.hosts[id]
@@ -85,10 +85,10 @@ func (s *Service) Host(id host.HostID) (*hostclient.HTTP, bool) {
 }
 
 // Hosts returns a snapshot of all registered host IDs.
-func (s *Service) Hosts() []host.HostID {
+func (s *Service) Hosts() []host.Hostname {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
-	ids := make([]host.HostID, 0, len(s.hosts))
+	ids := make([]host.Hostname, 0, len(s.hosts))
 	for id := range s.hosts {
 		ids = append(ids, id)
 	}
@@ -97,10 +97,10 @@ func (s *Service) Hosts() []host.HostID {
 
 // snapshotHosts returns a copy of the host map, taken under the read lock,
 // so callers can iterate without holding the lock during external calls.
-func (s *Service) snapshotHosts() map[host.HostID]*hostclient.HTTP {
+func (s *Service) snapshotHosts() map[host.Hostname]*hostclient.HTTP {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
-	out := make(map[host.HostID]*hostclient.HTTP, len(s.hosts))
+	out := make(map[host.Hostname]*hostclient.HTTP, len(s.hosts))
 	for id, c := range s.hosts {
 		out[id] = c
 	}

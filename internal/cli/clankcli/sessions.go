@@ -235,11 +235,11 @@ func sessionsNewCmd() *cobra.Command {
 				return fmt.Errorf("resolve repo remote: %w", err)
 			}
 			info, err := client.CreateSession(ctx, agent.StartRequest{
-				Backend:       bt,
-				HostID:        string(host.HostLocal),
-				RepoRemoteURL: remoteURL,
-				Branch:        worktreeBranch,
-				Prompt:        prompt,
+				Backend:        bt,
+				Hostname:       string(host.HostLocal),
+				RepoRemoteURL:  remoteURL,
+				WorktreeBranch: worktreeBranch,
+				Prompt:         prompt,
 			})
 			if err != nil {
 				return fmt.Errorf("create session: %w", err)

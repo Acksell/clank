@@ -36,12 +36,12 @@ import (
 // (a Unix domain socket in production).
 type Service struct {
 	// hosts is the catalog of registered Host endpoints, keyed by
-	// HostID. Phase 2 only uses a single "local" host whose client is
+	// Hostname. Phase 2 only uses a single "local" host whose client is
 	// also mirrored into hostClient below for the legacy single-host
 	// fast path; multi-host dispatch arrives with the TCP+TLS transport
 	// in Phase 4.
 	hostsMu sync.RWMutex
-	hosts   map[host.HostID]*hostclient.HTTP
+	hosts   map[host.Hostname]*hostclient.HTTP
 
 	mu       sync.RWMutex
 	sessions map[string]*managedSession // keyed by hub session ID
@@ -110,7 +110,7 @@ type managedSession struct {
 func New() *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		hosts:                        make(map[host.HostID]*hostclient.HTTP),
+		hosts:                        make(map[host.Hostname]*hostclient.HTTP),
 		sessions:                     make(map[string]*managedSession),
 		subscribers:                  make(map[string]chan agent.Event),
 		startTime:                    time.Now(),

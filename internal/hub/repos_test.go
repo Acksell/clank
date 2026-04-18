@@ -69,7 +69,7 @@ func TestHubReposEndToEnd(t *testing.T) {
 		},
 	})
 	t.Cleanup(hostSvc.Shutdown)
-	if _, err := hostSvc.RegisterRepo(host.RepoRef{RemoteURL: remote}, dir); err != nil {
+	if _, err := hostSvc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: remote}, dir); err != nil {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
 
@@ -91,12 +91,12 @@ func TestHubReposEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListReposOnHost: %v", err)
 	}
-	if len(repos) != 1 || string(repos[0].ID) != "github.com/acksell/clank" {
+	if len(repos) != 1 || repos[0].Ref.Canonical() != "github.com/acksell/clank" {
 		t.Fatalf("repos = %+v", repos)
 	}
 
 	// ListBranchesOnRepo runs against real git.
-	branches, err := client.ListBranchesOnRepo(ctx, host.HostLocal, repos[0].ID)
+	branches, err := client.ListBranchesOnRepo(ctx, host.HostLocal, repos[0].Ref.Canonical())
 	if err != nil {
 		t.Fatalf("ListBranchesOnRepo: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestHubReposEndToEnd(t *testing.T) {
 	}
 
 	// CreateWorktreeOnRepo creates a new branch + worktree.
-	wt, err := client.CreateWorktreeOnRepo(ctx, host.HostLocal, repos[0].ID, "feat/x")
+	wt, err := client.CreateWorktreeOnRepo(ctx, host.HostLocal, repos[0].Ref.Canonical(), "feat/x")
 	if err != nil {
 		t.Fatalf("CreateWorktreeOnRepo: %v", err)
 	}
@@ -115,12 +115,12 @@ func TestHubReposEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(wt.WorktreeDir) })
 
 	// RemoveWorktreeOnRepo cleans up.
-	if err := client.RemoveWorktreeOnRepo(ctx, host.HostLocal, repos[0].ID, "feat/x", true); err != nil {
+	if err := client.RemoveWorktreeOnRepo(ctx, host.HostLocal, repos[0].Ref.Canonical(), "feat/x", true); err != nil {
 		t.Fatalf("RemoveWorktreeOnRepo: %v", err)
 	}
 }
 
-// TestHubReposUnknownHost verifies the 404 path when hostID is not
+// TestHubReposUnknownHost verifies the 404 path when hostname is not
 // registered in the catalog.
 func TestHubReposUnknownHost(t *testing.T) {
 	t.Parallel()

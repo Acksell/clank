@@ -200,9 +200,9 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&followUp,
 			&info.ProjectDir,
 			&info.ProjectName,
-			&info.Branch,
+			&info.WorktreeBranch,
 			&info.WorktreeDir,
-			&info.HostID,
+			&info.Hostname,
 			&info.RepoRemoteURL,
 			&info.Prompt,
 			&info.Title,
@@ -244,11 +244,10 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		lastReadAt = &info.LastReadAt
 	}
 
-	// Prefer the new Branch field; fall back to legacy WorktreeBranch.
-	branch := info.Branch
-	hostID := info.HostID
-	if hostID == "" {
-		hostID = "local"
+	branch := info.WorktreeBranch
+	hostname := info.Hostname
+	if hostname == "" {
+		hostname = "local"
 	}
 
 	_, err := s.db.Exec(`
@@ -270,7 +269,7 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		info.ProjectName,
 		branch,
 		info.WorktreeDir,
-		hostID,
+		hostname,
 		info.RepoRemoteURL,
 		info.Prompt,
 		info.Title,
@@ -379,9 +378,9 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&followUp,
 		&info.ProjectDir,
 		&info.ProjectName,
-		&info.Branch,
+		&info.WorktreeBranch,
 		&info.WorktreeDir,
-		&info.HostID,
+		&info.Hostname,
 		&info.RepoRemoteURL,
 		&info.Prompt,
 		&info.Title,

@@ -60,7 +60,7 @@ func newTestService(t *testing.T) *host.Service {
 }
 
 // initGitRepo creates a real git repo with an "origin" remote so the
-// host can resolve a RepoRef → RepoID and call git ops.
+// host can canonicalize a GitRef and call git ops.
 func initGitRepo(t *testing.T, remote string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -88,26 +88,26 @@ func TestService_RegisterRepoAndLookup(t *testing.T) {
 	svc := newTestService(t)
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
-	ref := host.RepoRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	ref := host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}
 
 	repo, err := svc.RegisterRepo(ref, dir)
 	if err != nil {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
-	if string(repo.ID) != "github.com/acksell/clank" {
-		t.Errorf("ID = %q", repo.ID)
+	if got := repo.Ref.Canonical(); got != "github.com/acksell/clank" {
+		t.Errorf("Ref.Canonical = %q", got)
 	}
 	if repo.RootDir != dir {
 		t.Errorf("RootDir = %q, want %q", repo.RootDir, dir)
 	}
 
-	got, ok := svc.Repo(repo.ID)
+	got, ok := svc.Repo(repo.Ref)
 	if !ok || got.RootDir != dir {
 		t.Errorf("Repo lookup mismatch: ok=%v got=%+v", ok, got)
 	}
 
 	all, err := svc.ListRepos(context.Background())
-	if err != nil || len(all) != 1 || all[0].ID != repo.ID {
+	if err != nil || len(all) != 1 || all[0].Ref.Canonical() != repo.Ref.Canonical() {
 		t.Errorf("ListRepos = %+v err=%v", all, err)
 	}
 }
@@ -116,14 +116,14 @@ func TestService_RegisterRepoValidation(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
 
-	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: "git@github.com:a/b.git"}, ""); err == nil {
+	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:a/b.git"}, ""); err == nil {
 		t.Error("empty rootDir should error")
 	}
-	if _, err := svc.RegisterRepo(host.RepoRef{}, "/tmp"); err == nil {
-		t.Error("empty RemoteURL should error")
+	if _, err := svc.RegisterRepo(host.GitRef{}, "/tmp"); err == nil {
+		t.Error("empty GitRef should error")
 	}
-	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: "://invalid"}, "/tmp"); err == nil {
-		t.Error("invalid RemoteURL should error")
+	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "://invalid"}, "/tmp"); err == nil {
+		t.Error("invalid URL should error")
 	}
 }
 
@@ -145,7 +145,7 @@ func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 		t.Fatal("CreateSession should error when repo not registered")
 	}
 
-	if _, err := svc.RegisterRepo(host.RepoRef{RemoteURL: "git@github.com:acksell/clank.git"}, dir); err != nil {
+	if _, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir); err != nil {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 }
 
 // TestService_ByRepoMethods_NotFound verifies that the *ByRepo helpers
-// return host.ErrNotFound when the RepoID is unknown.
+// return host.ErrNotFound when the gitRef is unknown.
 func TestService_ByRepoMethods_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := newTestService(t)
@@ -186,12 +186,12 @@ func TestService_ListBranchesByRepo(t *testing.T) {
 	svc := newTestService(t)
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
-	repo, err := svc.RegisterRepo(host.RepoRef{RemoteURL: "git@github.com:acksell/clank.git"}, dir)
+	repo, err := svc.RegisterRepo(host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}, dir)
 	if err != nil {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
 
-	branches, err := svc.ListBranchesByRepo(context.Background(), repo.ID)
+	branches, err := svc.ListBranchesByRepo(context.Background(), repo.Ref.Canonical())
 	if err != nil {
 		t.Fatalf("ListBranchesByRepo: %v", err)
 	}

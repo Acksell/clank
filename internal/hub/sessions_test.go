@@ -44,8 +44,8 @@ func TestDaemonCreateSession(t *testing.T) {
 	if info.RepoRemoteURL != testRemoteURL {
 		t.Errorf("expected repo_remote_url=%s, got %s", testRemoteURL, info.RepoRemoteURL)
 	}
-	if info.HostID != "local" {
-		t.Errorf("expected host_id=local, got %s", info.HostID)
+	if info.Hostname != "local" {
+		t.Errorf("expected host_id=local, got %s", info.Hostname)
 	}
 	if info.ProjectDir != wantDir {
 		t.Errorf("expected project_dir=%s, got %s", wantDir, info.ProjectDir)

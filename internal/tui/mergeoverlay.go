@@ -27,8 +27,8 @@ type mergeResultMsg struct {
 // editable textarea for the merge commit message.
 type mergeOverlayModel struct {
 	client *hubclient.Client
-	hostID host.HostID
-	repoID host.RepoID
+	hostname host.Hostname
+	gitRef string
 	branch host.BranchInfo
 
 	commitMsg textarea.Model
@@ -38,7 +38,7 @@ type mergeOverlayModel struct {
 	height int
 }
 
-func newMergeOverlay(client *hubclient.Client, hostID host.HostID, repoID host.RepoID, branch host.BranchInfo) mergeOverlayModel {
+func newMergeOverlay(client *hubclient.Client, hostname host.Hostname, gitRef string, branch host.BranchInfo) mergeOverlayModel {
 	ta := textarea.New()
 	ta.SetValue("")
 	ta.Placeholder = "Describe the work done on this branch..."
@@ -60,8 +60,8 @@ func newMergeOverlay(client *hubclient.Client, hostID host.HostID, repoID host.R
 
 	return mergeOverlayModel{
 		client:    client,
-		hostID:    hostID,
-		repoID:    repoID,
+		hostname:    hostname,
+		gitRef:    gitRef,
 		branch:    branch,
 		commitMsg: ta,
 	}
@@ -127,13 +127,13 @@ func (m *mergeOverlayModel) Update(msg tea.Msg) tea.Cmd {
 
 func (m *mergeOverlayModel) doMerge(commitMsg string) tea.Cmd {
 	client := m.client
-	hostID := m.hostID
-	repoID := m.repoID
+	hostname := m.hostname
+	gitRef := m.gitRef
 	branch := m.branch.Name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := client.MergeBranchOnRepo(ctx, hostID, repoID, branch, commitMsg)
+		_, err := client.MergeBranchOnRepo(ctx, hostname, gitRef, branch, commitMsg)
 		if err != nil {
 			return mergeResultMsg{merged: false, err: err, branch: branch}
 		}

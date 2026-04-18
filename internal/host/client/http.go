@@ -166,46 +166,49 @@ func (c *HTTP) ListRepos(ctx context.Context) ([]host.Repo, error) {
 	return out, err
 }
 
-func (c *HTTP) RegisterRepo(ctx context.Context, ref host.RepoRef, rootDir string) (host.Repo, error) {
+func (c *HTTP) RegisterRepo(ctx context.Context, ref host.GitRef, rootDir string) (host.Repo, error) {
 	body := struct {
-		Ref     host.RepoRef `json:"ref"`
-		RootDir string       `json:"root_dir"`
+		Ref     host.GitRef `json:"ref"`
+		RootDir string      `json:"root_dir"`
 	}{ref, rootDir}
 	var out host.Repo
 	err := c.do(ctx, http.MethodPost, "/repos", body, &out)
 	return out, err
 }
 
-func (c *HTTP) ListBranchesByRepo(ctx context.Context, id host.RepoID) ([]host.BranchInfo, error) {
+// ListBranchesByRepo et al. take the canonical GitRef string used as the
+// repo's URL key (typically obtained from GitRef.Canonical() at the call
+// site or from a previously-returned host.Repo's Ref).
+func (c *HTTP) ListBranchesByRepo(ctx context.Context, ref string) ([]host.BranchInfo, error) {
 	var out []host.BranchInfo
-	err := c.do(ctx, http.MethodGet, "/repos/"+url.PathEscape(string(id))+"/branches", nil, &out)
+	err := c.do(ctx, http.MethodGet, "/repos/"+url.PathEscape(ref)+"/branches", nil, &out)
 	return out, err
 }
 
-func (c *HTTP) ResolveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string) (host.WorktreeInfo, error) {
+func (c *HTTP) ResolveWorktreeByRepo(ctx context.Context, ref, branch string) (host.WorktreeInfo, error) {
 	body := struct {
 		Branch string `json:"branch"`
 	}{branch}
 	var out host.WorktreeInfo
-	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(string(id))+"/worktrees", body, &out)
+	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(ref)+"/worktrees", body, &out)
 	return out, err
 }
 
-func (c *HTTP) RemoveWorktreeByRepo(ctx context.Context, id host.RepoID, branch string, force bool) error {
+func (c *HTTP) RemoveWorktreeByRepo(ctx context.Context, ref, branch string, force bool) error {
 	q := url.Values{
 		"branch": {branch},
 		"force":  {strconv.FormatBool(force)},
 	}
-	return c.do(ctx, http.MethodDelete, "/repos/"+url.PathEscape(string(id))+"/worktrees?"+q.Encode(), nil, nil)
+	return c.do(ctx, http.MethodDelete, "/repos/"+url.PathEscape(ref)+"/worktrees?"+q.Encode(), nil, nil)
 }
 
-func (c *HTTP) MergeBranchByRepo(ctx context.Context, id host.RepoID, branch, commitMessage string) (host.MergeResult, error) {
+func (c *HTTP) MergeBranchByRepo(ctx context.Context, ref, branch, commitMessage string) (host.MergeResult, error) {
 	body := struct {
 		Branch        string `json:"branch"`
 		CommitMessage string `json:"commit_message,omitempty"`
 	}{branch, commitMessage}
 	var out host.MergeResult
-	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(string(id))+"/worktrees/merge", body, &out)
+	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(ref)+"/worktrees/merge", body, &out)
 	return out, err
 }
 

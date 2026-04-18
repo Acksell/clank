@@ -107,8 +107,8 @@ type InboxModel struct {
 	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
 	// git repo with an origin remote), these stay zero and the sidebar will
 	// surface the underlying load error.
-	hostID host.HostID
-	repoID host.RepoID
+	hostname host.Hostname
+	gitRef   string
 
 	// Pre-built display data.
 	displayLines []string
@@ -159,12 +159,12 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	ti.SetStyles(styles)
 
 	cwd, _ := os.Getwd()
-	// Resolve cwd → (hostID, repoID). On failure we leave both zero; the
+	// Resolve cwd → (hostname, gitRef). On failure we leave both zero; the
 	// sidebar's branch load will then return a clear error to the user.
-	hostID, ref, root, _, err := hubclient.ResolveRepo(cwd)
-	var repoID host.RepoID
-	if err == nil && ref.RemoteURL != "" {
-		repoID, _ = ref.ID()
+	hostname, ref, root, _, err := hubclient.ResolveRepo(cwd)
+	var gitRef string
+	if err == nil && ref.URL != "" {
+		gitRef = ref.Canonical()
 		// Best-effort: tell the host where this checkout lives so that
 		// path-free StartRequests can be resolved by the host plane.
 		// Failures are non-fatal — the user will see a clear error
@@ -172,10 +172,10 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		// client is nil (some TUI tests construct InboxModel
 		// without a daemon connection).
 		if client != nil {
-			_, _ = client.RegisterRepoOnHost(context.Background(), hostID, ref, root)
+			_, _ = client.RegisterRepoOnHost(context.Background(), hostname, ref, root)
 		}
 	}
-	bp := NewSidebarModel(client, hostID, repoID, cwd)
+	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
 		client:      client,
 		pane:        paneSessions,
@@ -184,8 +184,8 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		searchInput: ti,
 		projectDir:  cwd,
 		projectName: filepath.Base(cwd),
-		hostID:      hostID,
-		repoID:      repoID,
+		hostname:    hostname,
+		gitRef:      gitRef,
 	}
 }
 
@@ -1464,7 +1464,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
-			m.mergeOverlay = newMergeOverlay(m.client, m.hostID, m.repoID, *bi)
+			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
 			m.mergeOverlay.SetSize(m.width, m.height)
 			m.showMerge = true
 		}
@@ -1653,8 +1653,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	const branchBadgeWidth = 12
 	branchBadge := ""
 	branchExtra := 0
-	if m.sidebar.SelectedBranch() == "" && s.Branch != "" {
-		branchLabel := s.Branch
+	if m.sidebar.SelectedBranch() == "" && s.WorktreeBranch != "" {
+		branchLabel := s.WorktreeBranch
 		if len(branchLabel) > branchBadgeWidth-2 {
 			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
 		}

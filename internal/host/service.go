@@ -39,7 +39,7 @@ import (
 // path. The in-process hostclient adapter uses the same ID-keyed API for
 // parity with the HTTP adapter.
 type Service struct {
-	id              HostID
+	id              Hostname
 	startedAt       time.Time
 	backendManagers map[agent.BackendType]agent.BackendManager
 	log             *log.Logger
@@ -48,13 +48,13 @@ type Service struct {
 	sessions map[string]agent.SessionBackend
 
 	reposMu sync.RWMutex
-	repos   map[RepoID]Repo
+	repos   map[string]Repo // key: GitRef.Canonical()
 }
 
 // Options configures a Service at construction time.
 type Options struct {
 	// ID is the host identifier. Defaults to HostLocal when empty.
-	ID HostID
+	ID Hostname
 	// BackendManagers maps each backend type to its manager. Required.
 	BackendManagers map[agent.BackendType]agent.BackendManager
 	// Log is the logger. Defaults to a logger writing to stderr with the
@@ -83,12 +83,12 @@ func New(opts Options) *Service {
 		backendManagers: opts.BackendManagers,
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
-		repos:           make(map[RepoID]Repo),
+		repos:           make(map[string]Repo),
 	}
 }
 
 // ID returns the host's ID.
-func (s *Service) ID() HostID { return s.id }
+func (s *Service) ID() Hostname { return s.id }
 
 // Run initializes all BackendManagers. knownDirs is a per-backend lookup
 // that returns previously-seen project directories (used to warm
@@ -139,7 +139,7 @@ func (s *Service) Status(_ context.Context) (HostStatus, error) {
 	live := len(s.sessions)
 	s.mu.RUnlock()
 	return HostStatus{
-		HostID:    s.id,
+		Hostname:  s.id,
 		Version:   "", // Populated once we have a version string wired up
 		StartedAt: s.startedAt,
 		Sessions:  live,
@@ -222,9 +222,9 @@ type CreateInfo struct {
 // under the given Hub-assigned session ID. The backend is NOT started —
 // callers call Start() or Watch() on the returned backend.
 //
-// Identity (HostID, RepoRemoteURL, Branch) is path-free; the host
+// Identity (Hostname, RepoRemoteURL, Branch) is path-free; the host
 // resolves a working directory by:
-//  1. deriving RepoID from req.RepoRemoteURL,
+//  1. canonicalizing req.RepoRemoteURL into a GitRef key,
 //  2. looking up the previously-registered rootDir,
 //  3. resolving (rootDir, Branch) → workDir via resolveWorktree when
 //     Branch is non-empty (otherwise workDir == rootDir).
@@ -259,20 +259,24 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	s.mu.Unlock()
 
-	repoID, err := RepoRef{RemoteURL: req.RepoRemoteURL}.ID()
-	if err != nil {
-		return nil, CreateInfo{}, fmt.Errorf("derive repo id: %w", err)
+	// StartRequest still carries a remote URL string for now (§7.3 step 8
+	// will replace it with a full GitRef field). Construct a remote-kind
+	// GitRef on the fly so we can canonicalize and look up the registered
+	// repo via the same code path as the typed API.
+	canonical := GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}.Canonical()
+	if canonical == "" {
+		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url %q is not a recognized git URL", req.RepoRemoteURL)
 	}
-	rootDir, err := s.repoRoot(repoID)
+	rootDir, err := s.repoRoot(canonical)
 	if err != nil {
 		return nil, CreateInfo{}, err
 	}
 
 	workDir := rootDir
-	if req.Branch != "" {
-		wt, err := s.resolveWorktree(ctx, rootDir, req.Branch)
+	if req.WorktreeBranch != "" {
+		wt, err := s.resolveWorktree(ctx, rootDir, req.WorktreeBranch)
 		if err != nil {
-			return nil, CreateInfo{}, fmt.Errorf("resolve worktree for branch %q: %w", req.Branch, err)
+			return nil, CreateInfo{}, fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
 		}
 		workDir = wt.WorktreeDir
 	}

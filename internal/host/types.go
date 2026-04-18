@@ -9,81 +9,113 @@ package host
 import (
 	"fmt"
 	"net/url"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 )
 
-// HostID identifies a Host within the Hub's catalog. It is a short,
+// Hostname identifies a Host within the Hub's catalog. It is a short,
 // human-readable slug ("local", "daytona-abc123") chosen by whoever
 // registers the Host. The Hub treats it as an opaque key.
-type HostID string
+type Hostname string
 
 const (
 	// HostLocal is the canonical ID for the laptop's supervised clank-host
 	// child. The TUI defaults to this until the host-selection UX lands.
-	HostLocal HostID = "local"
+	HostLocal Hostname = "local"
 )
 
-// RepoID is a URL-safe slug derived deterministically from a RepoRef's
-// RemoteURL — for example "github.com/acksell/clank". Stable across host
-// reboots and used as a path component in Hub HTTP routes
-// (`/hosts/{hostID}/repos/{repoID}/...`).
-type RepoID string
+// GitRefKind tags whether a GitRef points at a remote URL (cloneable) or
+// a pre-existing local checkout on the Host.
+type GitRefKind string
 
-// RepoRef is the canonical handle for a repository on a Host. It carries
-// the remote URL and is the only repo identity that crosses the wire — the
-// Host translates it to a local filesystem path internally.
+const (
+	GitRefRemote GitRefKind = "remote"
+	GitRefLocal  GitRefKind = "local"
+)
+
+// GitRef is the canonical reference to a git repository. It supersedes
+// RepoRef/RepoID by carrying enough information to either clone a remote
+// or use a local checkout, plus an optional commit pin.
 //
-// In Phase 0 this is purely a value type; it gets wired into StartRequest
-// and the Hub API in Phase 3.
-type RepoRef struct {
-	// RemoteURL is the repository's canonical remote URL. Any standard git
-	// URL form is accepted (https, ssh, scp-like git@host:owner/repo).
-	RemoteURL string `json:"remote_url"`
+// Canonical() yields a stable string used both as the storage primary key
+// (repos.git_ref) and as the URL-encoded path component on Hub/Host APIs.
+type GitRef struct {
+	Kind      GitRefKind `json:"kind"`
+	URL       string     `json:"url,omitempty"`        // required when Kind=remote; rejected otherwise
+	Path      string     `json:"path,omitempty"`       // required when Kind=local; must be absolute
+	CommitSHA string     `json:"commit_sha,omitempty"` // optional pinning hint, advisory only
 }
 
-// Validate ensures the RepoRef carries enough info to compute an ID.
-func (r RepoRef) Validate() error {
-	if strings.TrimSpace(r.RemoteURL) == "" {
-		return fmt.Errorf("remote_url is required")
+// Validate enforces the kind-specific field rules from §7.2.
+func (g GitRef) Validate() error {
+	switch g.Kind {
+	case "":
+		return fmt.Errorf("kind is required")
+	case GitRefRemote:
+		if strings.TrimSpace(g.URL) == "" {
+			return fmt.Errorf("kind=remote requires url")
+		}
+		if g.Path != "" {
+			return fmt.Errorf("kind=remote must not set path")
+		}
+		if _, _, err := parseGitURL(g.URL); err != nil {
+			return fmt.Errorf("url is not a recognized git URL: %w", err)
+		}
+		return nil
+	case GitRefLocal:
+		if strings.TrimSpace(g.Path) == "" {
+			return fmt.Errorf("kind=local requires path")
+		}
+		if g.URL != "" {
+			return fmt.Errorf("kind=local must not set url")
+		}
+		if !filepath.IsAbs(g.Path) {
+			return fmt.Errorf("kind=local path must be absolute, got %q", g.Path)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown kind %q", g.Kind)
 	}
-	if _, err := r.ID(); err != nil {
-		return fmt.Errorf("remote_url is not a recognized git URL: %w", err)
-	}
-	return nil
 }
 
-// ID derives the deterministic RepoID slug from the RemoteURL.
+// Canonical returns the stable string identity of the ref.
 //
-// Examples:
+// remote: "<host>/<path>" lowercased, scheme-normalized, ".git"-stripped
+// local : the absolute path as-is (Unix; Windows handling TBD)
 //
-//	git@github.com:acksell/clank.git         -> github.com/acksell/clank
-//	https://github.com/acksell/clank.git     -> github.com/acksell/clank
-//	https://github.com/acksell/clank         -> github.com/acksell/clank
-//	ssh://git@github.com/acksell/clank.git   -> github.com/acksell/clank
-//	git://gitlab.example.com/team/proj.git   -> gitlab.example.com/team/proj
-//
-// The slug is lowercased so capitalization differences in user-supplied
-// URLs do not produce divergent IDs for the same repo.
-func (r RepoRef) ID() (RepoID, error) {
-	host, path, err := parseGitURL(r.RemoteURL)
-	if err != nil {
-		return "", err
+// Returns "" if the ref is invalid; callers that need to surface errors
+// should call Validate first.
+func (g GitRef) Canonical() string {
+	switch g.Kind {
+	case GitRefRemote:
+		host, path, err := parseGitURL(g.URL)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(host + "/" + path)
+	case GitRefLocal:
+		if !filepath.IsAbs(g.Path) {
+			return ""
+		}
+		return g.Path
+	default:
+		return ""
 	}
-	slug := strings.ToLower(host + "/" + path)
-	if !repoIDRe.MatchString(slug) {
-		return "", fmt.Errorf("derived slug %q has unsafe characters", slug)
-	}
-	return RepoID(slug), nil
 }
 
-// repoIDRe enforces the URL-safe character set for RepoID. We allow
-// lowercase letters, digits, dots, dashes, underscores, and forward slashes
-// as path separators.
-var repoIDRe = regexp.MustCompile(`^[a-z0-9._\-]+(/[a-z0-9._\-]+)+$`)
+// Equal reports whether two refs identify the same repository per their
+// canonical form. CommitSHA is intentionally ignored — it pins a revision,
+// not a repo identity.
+func (g GitRef) Equal(other GitRef) bool {
+	a, b := g.Canonical(), other.Canonical()
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b
+}
 
 // parseGitURL extracts the host and repo path (without the trailing ".git")
 // from any standard git URL form.
@@ -130,9 +162,8 @@ func parseGitURL(raw string) (host, path string, err error) {
 
 // Repo describes a repository known to a Host.
 type Repo struct {
-	ID      RepoID  `json:"id"`
-	Ref     RepoRef `json:"ref"`
-	RootDir string  `json:"root_dir"` // Local filesystem path on the Host (host-internal info, exposed for diagnostics)
+	Ref     GitRef `json:"ref"`
+	RootDir string `json:"root_dir"` // Local filesystem path on the Host (host-internal info, exposed for diagnostics)
 }
 
 // BackendInfo describes one backend installed on a Host (e.g. "opencode",
@@ -174,7 +205,7 @@ type WorktreeInfo struct {
 // HostStatus is the response body of `GET /status` on the Host API. Hub
 // surfaces a derived view (online/offline + last seen) to clients.
 type HostStatus struct {
-	HostID    HostID    `json:"host_id"`
+	Hostname  Hostname  `json:"hostname"`
 	Version   string    `json:"version"`
 	StartedAt time.Time `json:"started_at"`
 	Sessions  int       `json:"sessions"` // Number of live (backend-attached) sessions

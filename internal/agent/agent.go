@@ -326,20 +326,20 @@ type AgentInfo struct {
 // StartRequest contains the parameters needed to start a new agent session.
 //
 // Identity is path-free post Phase 3D-2 (hub_host_refactor.md):
-// (HostID, RepoRemoteURL, Branch). The Host resolves these to a working
+// (Hostname, RepoRemoteURL, Branch). The Host resolves these to a working
 // directory inside CreateSession; the wire never carries filesystem paths.
 //
 // Note: identity uses raw strings (not host.RepoRef) to avoid an agent->host import cycle.
 type StartRequest struct {
-	Backend       BackendType    `json:"backend"`
-	HostID        string         `json:"host_id,omitempty"` // Target host; empty defaults to "local" at the hub.
-	RepoRemoteURL string         `json:"repo_remote_url"`   // Canonical repo identity (e.g. git@github.com:acksell/clank.git)
-	Branch        string         `json:"branch,omitempty"`  // Git branch; when set, the host creates/reuses a worktree
-	Prompt        string         `json:"prompt"`
-	SessionID     string         `json:"session_id,omitempty"` // Empty = new session, set = resume
-	TicketID      string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
-	Agent         string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
-	Model         *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
+	Backend        BackendType    `json:"backend"`
+	Hostname       string         `json:"hostname,omitempty"`        // Target host; empty defaults to "local" at the hub.
+	RepoRemoteURL  string         `json:"repo_remote_url"`           // Canonical repo identity (e.g. git@github.com:acksell/clank.git)
+	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch; when set, the host creates/reuses a worktree
+	Prompt         string         `json:"prompt"`
+	SessionID      string         `json:"session_id,omitempty"` // Empty = new session, set = resume
+	TicketID       string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
+	Agent          string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
+	Model          *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
 }
 
 // Validate checks that required fields are set.
@@ -369,9 +369,9 @@ type SessionInfo struct {
 	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
 	ProjectDir      string            `json:"project_dir"`
 	ProjectName     string            `json:"project_name"`
-	HostID          string            `json:"host_id,omitempty"`         // Canonical identity: host (Phase 3); "local" by default.
+	Hostname        string            `json:"hostname,omitempty"`        // Canonical identity: host (Phase 3); "local" by default.
 	RepoRemoteURL   string            `json:"repo_remote_url,omitempty"` // Canonical identity: repo (Phase 3).
-	Branch          string            `json:"branch,omitempty"`          // Canonical identity: git branch.
+	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Canonical identity: git branch.
 	WorktreeDir     string            `json:"worktree_dir,omitempty"`    // Runtime metadata (host-local): filesystem path of the git worktree. Not identity.
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode

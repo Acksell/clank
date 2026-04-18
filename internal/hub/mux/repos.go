@@ -25,29 +25,29 @@ func writeRepoErr(w http.ResponseWriter, err error) {
 	}
 }
 
-func parseHostID(r *http.Request) (host.HostID, error) {
-	id := host.HostID(r.PathValue("hostID"))
+func parseHostname(r *http.Request) (host.Hostname, error) {
+	id := host.Hostname(r.PathValue("hostname"))
 	if id == "" {
 		return "", errors.New("host id is required")
 	}
 	return id, nil
 }
 
-func parseRepoID(r *http.Request) (host.RepoID, error) {
-	id := host.RepoID(r.PathValue("repoID"))
-	if id == "" {
-		return "", errors.New("repo id is required")
+func parseGitRef(r *http.Request) (string, error) {
+	ref := r.PathValue("gitRef")
+	if ref == "" {
+		return "", errors.New("git ref is required")
 	}
-	return id, nil
+	return ref, nil
 }
 
 func (m *Mux) handleListReposOnHost(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repos, err := m.svc.ListReposOnHost(r.Context(), hostID)
+	repos, err := m.svc.ListReposOnHost(r.Context(), hostname)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -56,12 +56,15 @@ func (m *Mux) handleListReposOnHost(w http.ResponseWriter, r *http.Request) {
 }
 
 type registerRepoOnHostRequest struct {
+	// For now this endpoint only accepts remote URLs. Local-kind GitRefs
+	// will be added when implicit adoption (§7.5) lands in step 6; the
+	// endpoint itself is slated for deletion at that time.
 	RemoteURL string `json:"remote_url"`
 	RootDir   string `json:"root_dir"`
 }
 
 func (m *Mux) handleRegisterRepoOnHost(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
@@ -75,7 +78,8 @@ func (m *Mux) handleRegisterRepoOnHost(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "remote_url and root_dir are required")
 		return
 	}
-	repo, err := m.svc.RegisterRepoOnHost(r.Context(), hostID, host.RepoRef{RemoteURL: body.RemoteURL}, body.RootDir)
+	ref := host.GitRef{Kind: host.GitRefRemote, URL: body.RemoteURL}
+	repo, err := m.svc.RegisterRepoOnHost(r.Context(), hostname, ref, body.RootDir)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -84,17 +88,17 @@ func (m *Mux) handleRegisterRepoOnHost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Mux) handleListBranchesOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repoID, err := parseRepoID(r)
+	gitRef, err := parseGitRef(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	branches, err := m.svc.ListBranchesOnRepo(r.Context(), hostID, repoID)
+	branches, err := m.svc.ListBranchesOnRepo(r.Context(), hostname, gitRef)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -107,12 +111,12 @@ type createWorktreeOnRepoRequest struct {
 }
 
 func (m *Mux) handleCreateWorktreeOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repoID, err := parseRepoID(r)
+	gitRef, err := parseGitRef(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
@@ -126,7 +130,7 @@ func (m *Mux) handleCreateWorktreeOnRepo(w http.ResponseWriter, r *http.Request)
 		writeBadRequest(w, "branch is required")
 		return
 	}
-	wt, err := m.svc.CreateWorktreeOnRepo(r.Context(), hostID, repoID, body.Branch)
+	wt, err := m.svc.CreateWorktreeOnRepo(r.Context(), hostname, gitRef, body.Branch)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -135,12 +139,12 @@ func (m *Mux) handleCreateWorktreeOnRepo(w http.ResponseWriter, r *http.Request)
 }
 
 func (m *Mux) handleRemoveWorktreeOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repoID, err := parseRepoID(r)
+	gitRef, err := parseGitRef(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
@@ -151,7 +155,7 @@ func (m *Mux) handleRemoveWorktreeOnRepo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	force := r.URL.Query().Get("force") == "true"
-	if err := m.svc.RemoveWorktreeOnRepo(r.Context(), hostID, repoID, branch, force); err != nil {
+	if err := m.svc.RemoveWorktreeOnRepo(r.Context(), hostname, gitRef, branch, force); err != nil {
 		writeRepoErr(w, err)
 		return
 	}
@@ -164,12 +168,12 @@ type mergeBranchOnRepoRequest struct {
 }
 
 func (m *Mux) handleMergeBranchOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostID, err := parseHostID(r)
+	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repoID, err := parseRepoID(r)
+	gitRef, err := parseGitRef(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
@@ -183,7 +187,7 @@ func (m *Mux) handleMergeBranchOnRepo(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "branch is required")
 		return
 	}
-	res, err := m.svc.MergeBranchOnRepo(r.Context(), hostID, repoID, body.Branch, body.CommitMessage)
+	res, err := m.svc.MergeBranchOnRepo(r.Context(), hostname, gitRef, body.Branch, body.CommitMessage)
 	if err != nil {
 		writeRepoErr(w, err)
 		return

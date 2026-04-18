@@ -80,9 +80,9 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			existingMS.info.ProjectDir = snap.Directory
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
-			if existingMS.info.Branch == "" {
+			if existingMS.info.WorktreeBranch == "" {
 				if branch, ok := wtPathToBranch[snap.Directory]; ok {
-					existingMS.info.Branch = branch
+					existingMS.info.WorktreeBranch = branch
 					existingMS.info.WorktreeDir = snap.Directory
 				}
 			}
@@ -111,7 +111,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			RepoRemoteURL:   remoteURL,
 			ProjectDir:      snap.Directory,
 			ProjectName:     filepath.Base(snap.Directory),
-			Branch:          wtBranch,
+			WorktreeBranch:  wtBranch,
 			WorktreeDir:     wtDir,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
@@ -136,11 +136,11 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
 	backend, _, err := s.hostClient.CreateSession(s.ctx, id, agent.StartRequest{
-		Backend:       ms.info.Backend,
-		HostID:        ms.info.HostID,
-		RepoRemoteURL: ms.info.RepoRemoteURL,
-		Branch:        ms.info.Branch,
-		SessionID:     ms.info.ExternalID,
+		Backend:        ms.info.Backend,
+		Hostname:       ms.info.Hostname,
+		RepoRemoteURL:  ms.info.RepoRemoteURL,
+		WorktreeBranch: ms.info.WorktreeBranch,
+		SessionID:      ms.info.ExternalID,
 	})
 	if err != nil {
 		return fmt.Errorf("activate backend: %w", err)
@@ -307,13 +307,13 @@ func parseTimeParam(s string) (time.Time, error) {
 
 // HUB
 // createSession creates a new managed session and starts the backend.
-// Identity is path-free post Phase 3D-2: callers send (HostID,
+// Identity is path-free post Phase 3D-2: callers send (Hostname,
 // RepoRemoteURL, Branch); the Host resolves a workDir on the way down
 // and returns it to us as host.CreateInfo so we can populate
 // SessionInfo.{ProjectDir, WorktreeDir} for the TUI.
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
-	if req.HostID == "" {
-		req.HostID = string(host.HostLocal)
+	if req.Hostname == "" {
+		req.Hostname = string(host.HostLocal)
 	}
 
 	// Hub assigns the session ID up front, then asks the Host to create
@@ -330,20 +330,20 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	now := time.Now()
 
 	sessInfo := agent.SessionInfo{
-		ID:            id,
-		Backend:       req.Backend,
-		Status:        agent.StatusStarting,
-		HostID:        req.HostID,
-		RepoRemoteURL: req.RepoRemoteURL,
-		Branch:        req.Branch,
-		ProjectDir:    info.ProjectDir,
-		ProjectName:   filepath.Base(info.ProjectDir),
-		WorktreeDir:   info.WorktreeDir,
-		Prompt:        req.Prompt,
-		TicketID:      req.TicketID,
-		Agent:         req.Agent,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:             id,
+		Backend:        req.Backend,
+		Status:         agent.StatusStarting,
+		Hostname:       req.Hostname,
+		RepoRemoteURL:  req.RepoRemoteURL,
+		WorktreeBranch: req.WorktreeBranch,
+		ProjectDir:     info.ProjectDir,
+		ProjectName:    filepath.Base(info.ProjectDir),
+		WorktreeDir:    info.WorktreeDir,
+		Prompt:         req.Prompt,
+		TicketID:       req.TicketID,
+		Agent:          req.Agent,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	ms := &managedSession{

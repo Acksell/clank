@@ -335,7 +335,7 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
 				Backend:       agent.BackendType(args.Backend),
-				HostID:        string(host.HostLocal),
+				Hostname:        string(host.HostLocal),
 				RepoRemoteURL: remote,
 				Prompt:        args.Prompt,
 			})

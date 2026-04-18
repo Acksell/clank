@@ -144,14 +144,14 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 
 	if ms.backend == nil {
 		req := agent.StartRequest{
-			Backend:       ms.info.Backend,
-			HostID:        ms.info.HostID,
-			RepoRemoteURL: ms.info.RepoRemoteURL,
-			Branch:        ms.info.Branch,
-			SessionID:     ms.info.ExternalID,
-			Prompt:        in.Text,
-			Agent:         in.Agent,
-			Model:         in.Model,
+			Backend:        ms.info.Backend,
+			Hostname:       ms.info.Hostname,
+			RepoRemoteURL:  ms.info.RepoRemoteURL,
+			WorktreeBranch: ms.info.WorktreeBranch,
+			SessionID:      ms.info.ExternalID,
+			Prompt:         in.Text,
+			Agent:          in.Agent,
+			Model:          in.Model,
 		}
 		backend, _, err := s.hostClient.CreateSession(s.ctx, id, req)
 		if err != nil {
@@ -484,16 +484,16 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, projectD
 // --- Repos / worktrees (host pass-throughs) ---
 
 // HostExists returns whether a host with the given ID is registered.
-func (s *Service) HostExists(id host.HostID) bool {
+func (s *Service) HostExists(id host.Hostname) bool {
 	_, ok := s.Host(id)
 	return ok
 }
 
 // ListReposOnHost lists the repos the named host knows about.
-func (s *Service) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]host.Repo, error) {
-	hc, ok := s.Host(hostID)
+func (s *Service) ListReposOnHost(ctx context.Context, hostname host.Hostname) ([]host.Repo, error) {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return nil, ErrHostNotRegistered(hostID)
+		return nil, ErrHostNotRegistered(hostname)
 	}
 	return hc.ListRepos(ctx)
 }
@@ -502,67 +502,68 @@ func (s *Service) ListReposOnHost(ctx context.Context, hostID host.HostID) ([]ho
 //
 // TODO(refactor-step-6): this endpoint disappears once the Host adopts
 // implicitly during CreateSession.
-func (s *Service) RegisterRepoOnHost(ctx context.Context, hostID host.HostID, ref host.RepoRef, rootDir string) (host.Repo, error) {
-	hc, ok := s.Host(hostID)
+func (s *Service) RegisterRepoOnHost(ctx context.Context, hostname host.Hostname, ref host.GitRef, rootDir string) (host.Repo, error) {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return host.Repo{}, ErrHostNotRegistered(hostID)
+		return host.Repo{}, ErrHostNotRegistered(hostname)
 	}
 	return hc.RegisterRepo(ctx, ref, rootDir)
 }
 
-// ListBranchesOnRepo lists branches for a repo on a given host.
-func (s *Service) ListBranchesOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID) ([]host.BranchInfo, error) {
-	hc, ok := s.Host(hostID)
+// ListBranchesOnRepo lists branches for a repo on a given host. The
+// gitRef parameter is the canonical GitRef string (URL key form).
+func (s *Service) ListBranchesOnRepo(ctx context.Context, hostname host.Hostname, gitRef string) ([]host.BranchInfo, error) {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return nil, ErrHostNotRegistered(hostID)
+		return nil, ErrHostNotRegistered(hostname)
 	}
-	return hc.ListBranchesByRepo(ctx, repoID)
+	return hc.ListBranchesByRepo(ctx, gitRef)
 }
 
 // CreateWorktreeOnRepo creates (or resolves) a worktree for a branch.
-func (s *Service) CreateWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string) (host.WorktreeInfo, error) {
-	hc, ok := s.Host(hostID)
+func (s *Service) CreateWorktreeOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch string) (host.WorktreeInfo, error) {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return host.WorktreeInfo{}, ErrHostNotRegistered(hostID)
+		return host.WorktreeInfo{}, ErrHostNotRegistered(hostname)
 	}
-	return hc.ResolveWorktreeByRepo(ctx, repoID, branch)
+	return hc.ResolveWorktreeByRepo(ctx, gitRef, branch)
 }
 
 // RemoveWorktreeOnRepo removes a worktree.
-func (s *Service) RemoveWorktreeOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch string, force bool) error {
-	hc, ok := s.Host(hostID)
+func (s *Service) RemoveWorktreeOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch string, force bool) error {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return ErrHostNotRegistered(hostID)
+		return ErrHostNotRegistered(hostname)
 	}
-	return hc.RemoveWorktreeByRepo(ctx, repoID, branch, force)
+	return hc.RemoveWorktreeByRepo(ctx, gitRef, branch, force)
 }
 
 // MergeBranchOnRepo merges branch into the repo's default branch and
 // marks attached hub-side sessions as done.
-func (s *Service) MergeBranchOnRepo(ctx context.Context, hostID host.HostID, repoID host.RepoID, branch, commitMessage string) (host.MergeResult, error) {
-	hc, ok := s.Host(hostID)
+func (s *Service) MergeBranchOnRepo(ctx context.Context, hostname host.Hostname, gitRef, branch, commitMessage string) (host.MergeResult, error) {
+	hc, ok := s.Host(hostname)
 	if !ok {
-		return host.MergeResult{}, ErrHostNotRegistered(hostID)
+		return host.MergeResult{}, ErrHostNotRegistered(hostname)
 	}
-	res, err := hc.MergeBranchByRepo(ctx, repoID, branch, commitMessage)
+	res, err := hc.MergeBranchByRepo(ctx, gitRef, branch, commitMessage)
 	if err != nil {
 		return host.MergeResult{}, err
 	}
-	s.markBranchSessionsDone(repoID, branch)
+	s.markBranchSessionsDone(gitRef, branch)
 	return res, nil
 }
 
 // --- Hosts ---
 
-// ErrHostNotRegisteredErr is the typed error for unknown hostID lookups.
-type ErrHostNotRegisteredErr struct{ ID host.HostID }
+// ErrHostNotRegisteredErr is the typed error for unknown hostname lookups.
+type ErrHostNotRegisteredErr struct{ ID host.Hostname }
 
 func (e ErrHostNotRegisteredErr) Error() string {
 	return fmt.Sprintf("host not registered: %s", e.ID)
 }
 
 // ErrHostNotRegistered constructs ErrHostNotRegisteredErr.
-func ErrHostNotRegistered(id host.HostID) error { return ErrHostNotRegisteredErr{ID: id} }
+func ErrHostNotRegistered(id host.Hostname) error { return ErrHostNotRegisteredErr{ID: id} }
 
 // --- Events ---
 

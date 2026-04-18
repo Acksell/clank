@@ -78,24 +78,24 @@ func TestUpsertAndLoad(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-001",
-		ExternalID:  "oc-ext-001",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusBusy,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-a",
-		ProjectName: "project-a",
-		WorktreeDir: "/home/user/.clank/worktrees/project-a/feat-login",
-		Branch:      "feat/login",
-		Prompt:      "Fix the login bug",
-		Title:       "Fix authentication",
-		TicketID:    "TICKET-42",
-		Agent:       "plan",
-		Draft:       "work in progress",
-		CreatedAt:   now.Add(-2 * time.Hour),
-		UpdatedAt:   now.Add(-1 * time.Hour),
-		LastReadAt:  now,
+		ID:             "ses-001",
+		ExternalID:     "oc-ext-001",
+		Backend:        agent.BackendOpenCode,
+		Status:         agent.StatusBusy,
+		Visibility:     agent.VisibilityDone,
+		FollowUp:       true,
+		ProjectDir:     "/tmp/project-a",
+		ProjectName:    "project-a",
+		WorktreeDir:    "/home/user/.clank/worktrees/project-a/feat-login",
+		WorktreeBranch: "feat/login",
+		Prompt:         "Fix the login bug",
+		Title:          "Fix authentication",
+		TicketID:       "TICKET-42",
+		Agent:          "plan",
+		Draft:          "work in progress",
+		CreatedAt:      now.Add(-2 * time.Hour),
+		UpdatedAt:      now.Add(-1 * time.Hour),
+		LastReadAt:     now,
 	}
 
 	if err := s.UpsertSession(info); err != nil {
@@ -135,8 +135,8 @@ func TestUpsertAndLoad(t *testing.T) {
 	if got.ProjectName != info.ProjectName {
 		t.Errorf("ProjectName = %q, want %q", got.ProjectName, info.ProjectName)
 	}
-	if got.Branch != info.Branch {
-		t.Errorf("Branch = %q, want %q", got.Branch, info.Branch)
+	if got.WorktreeBranch != info.WorktreeBranch {
+		t.Errorf("Branch = %q, want %q", got.WorktreeBranch, info.WorktreeBranch)
 	}
 	if got.WorktreeDir != info.WorktreeDir {
 		t.Errorf("WorktreeDir = %q, want %q", got.WorktreeDir, info.WorktreeDir)
@@ -731,7 +731,7 @@ func TestConcurrentWrites(t *testing.T) {
 }
 
 // TestUpsertAndLoadHostScopedIdentity verifies the Phase 3A identity fields
-// (HostID, RepoRemoteURL, Branch) round-trip alongside the legacy path-style
+// (Hostname, RepoRemoteURL, Branch) round-trip alongside the legacy path-style
 // fields, and that the Branch field mirrors WorktreeBranch on load.
 func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	t.Parallel()
@@ -742,9 +742,9 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 		ID:            "ses-host-1",
 		Backend:       agent.BackendOpenCode,
 		Status:        agent.StatusIdle,
-		HostID:        "local",
+		Hostname:      "local",
 		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Branch:        "feat/x",
+		WorktreeBranch: "feat/x",
 		ProjectDir:    "/tmp/clank",
 		ProjectName:   "clank",
 		CreatedAt:     now,
@@ -763,22 +763,22 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 		t.Fatalf("expected 1 session, got %d", len(sessions))
 	}
 	got := sessions[0]
-	if got.HostID != "local" {
-		t.Errorf("HostID = %q, want local", got.HostID)
+	if got.Hostname != "local" {
+		t.Errorf("Hostname = %q, want local", got.Hostname)
 	}
 	if got.RepoRemoteURL != info.RepoRemoteURL {
 		t.Errorf("RepoRemoteURL = %q, want %q", got.RepoRemoteURL, info.RepoRemoteURL)
 	}
-	// Branch round-trips (DB column worktree_branch is bound to info.Branch).
-	if got.Branch != "feat/x" {
-		t.Errorf("Branch = %q, want feat/x", got.Branch)
+	// Branch round-trips (DB column worktree_branch is bound to info.WorktreeBranch).
+	if got.WorktreeBranch != "feat/x" {
+		t.Errorf("Branch = %q, want feat/x", got.WorktreeBranch)
 	}
 }
 
-// TestUpsertDefaultsHostIDToLocal verifies that legacy callers that never
-// set HostID still produce rows with host_id='local' (the migration default
+// TestUpsertDefaultsHostnameToLocal verifies that legacy callers that never
+// set Hostname still produce rows with host_id='local' (the migration default
 // also covers this for pre-v11 rows).
-func TestUpsertDefaultsHostIDToLocal(t *testing.T) {
+func TestUpsertDefaultsHostnameToLocal(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
@@ -799,7 +799,7 @@ func TestUpsertDefaultsHostIDToLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessions: %v", err)
 	}
-	if len(sessions) != 1 || sessions[0].HostID != "local" {
-		t.Fatalf("expected HostID=local, got %+v", sessions)
+	if len(sessions) != 1 || sessions[0].Hostname != "local" {
+		t.Fatalf("expected Hostname=local, got %+v", sessions)
 	}
 }

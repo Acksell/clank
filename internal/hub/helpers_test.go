@@ -42,7 +42,7 @@ func registerTestRepoAt(t *testing.T, s *hub.Service, dir string) {
 	if !ok {
 		t.Fatal("local host not registered on hub.Service")
 	}
-	if _, err := c.RegisterRepo(context.Background(), host.RepoRef{RemoteURL: testRemoteURL}, dir); err != nil {
+	if _, err := c.RegisterRepo(context.Background(), host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir); err != nil {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
 }
