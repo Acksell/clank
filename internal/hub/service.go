@@ -131,7 +131,13 @@ func New() *Service {
 // until Stop() is called (or s.ctx is cancelled some other way). The
 // caller owns the listener's lifetime AND any on-disk artifacts (PID
 // file, socket file, etc.); Run never touches them.
-func (s *Service) Run(listener net.Listener) error {
+//
+// handler is the HTTP handler the listener should serve. Production
+// uses internal/hub/mux (hubmux.New(s, log).Handler()); tests use the
+// same. Run takes the handler from the caller (rather than wiring it
+// internally) to keep the hub package free of an import cycle on
+// internal/hub/mux, which itself imports internal/hub.
+func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 	s.log.Printf("hub started (pid=%d, addr=%s)", os.Getpid(), listener.Addr())
 
 	// Load persisted sessions from the store (if available).
@@ -195,10 +201,7 @@ func (s *Service) Run(listener net.Listener) error {
 	// to finish starting servers rather than starting them itself.
 	s.warmPrimaryAgentCaches()
 
-	mux := http.NewServeMux()
-	s.registerRoutes(mux)
-
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: handler}
 
 	// Start HTTP server in background.
 	s.wg.Add(1)

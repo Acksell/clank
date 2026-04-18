@@ -14,6 +14,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
+	hubmux "github.com/acksell/clank/internal/hub/mux"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -281,7 +282,7 @@ func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient
 	}
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.Run(listener) }()
+	go func() { errCh <- s.Run(listener, hubmux.New(s, nil).Handler()) }()
 
 	client := hubclient.NewClient(sockPath)
 	waitForDaemon(t, client)

@@ -2,76 +2,12 @@ package hub
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
-
-// HUB
-func (s *Service) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	backendStr := r.URL.Query().Get("backend")
-	projectDir := r.URL.Query().Get("project_dir")
-
-	if backendStr == "" || projectDir == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "backend and project_dir query params are required"})
-		return
-	}
-
-	bt := agent.BackendType(backendStr)
-
-	// Try to serve from the persistent cache (SQLite) first. This avoids
-	// blocking on the OpenCode server starting up — the response is instant.
-	if s.Store != nil {
-		cached, err := s.Store.LoadPrimaryAgents(bt, projectDir)
-		if err != nil {
-			s.log.Printf("warning: load cached primary agents: %v", err)
-		}
-		if cached != nil {
-			// Return cached data immediately and refresh in the background.
-			s.refreshPrimaryAgentsInBackground(bt, projectDir)
-			writeJSON(w, http.StatusOK, cached)
-			return
-		}
-	}
-
-	// No cache — fetch synchronously through the host plane.
-	agents, err := s.hostClient.ListAgents(r.Context(), bt, projectDir)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if agents == nil {
-		agents = []agent.AgentInfo{}
-	}
-	s.persistPrimaryAgents(bt, projectDir, agents)
-	writeJSON(w, http.StatusOK, agents)
-}
-
-// HUB
-// handleListModels returns available models for a given backend and project.
-func (s *Service) handleListModels(w http.ResponseWriter, r *http.Request) {
-	backendStr := r.URL.Query().Get("backend")
-	projectDir := r.URL.Query().Get("project_dir")
-
-	if backendStr == "" || projectDir == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "backend and project_dir query params are required"})
-		return
-	}
-
-	bt := agent.BackendType(backendStr)
-	models, err := s.hostClient.ListModels(r.Context(), bt, projectDir)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if models == nil {
-		models = []agent.ModelInfo{}
-	}
-	writeJSON(w, http.StatusOK, models)
-}
 
 // HOST
 // openCodeServerURLs returns a map from project directory to server URL

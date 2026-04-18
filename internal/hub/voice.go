@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// handleVoiceAudio upgrades to a WebSocket for bidirectional audio
+// HandleVoiceAudio upgrades to a WebSocket for bidirectional audio
 // streaming, then creates the voice session immediately.
 //
 // Protocol:
@@ -27,18 +28,23 @@ import (
 //
 // Only one voice session can be active at a time (singleton). The
 // session is torn down when the WebSocket disconnects.
-func (s *Service) handleVoiceAudio(w http.ResponseWriter, r *http.Request) {
+//
+// This handler stays on Service (rather than moving to internal/hub/mux/)
+// because it owns Service-internal singleton state (s.voice, s.voiceAudioConn)
+// and a long-lived websocket whose lifecycle is tied to a goroutine on
+// s.wg. The mux package delegates the route to this exported method.
+func (s *Service) HandleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if s.voice != nil {
 		s.mu.Unlock()
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "voice session already active"})
+		writeVoiceJSON(w, http.StatusConflict, map[string]string{"error": "voice session already active"})
 		return
 	}
 	s.mu.Unlock()
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "OPENAI_API_KEY environment variable is not set"})
+		writeVoiceJSON(w, http.StatusBadRequest, map[string]string{"error": "OPENAI_API_KEY environment variable is not set"})
 		return
 	}
 
@@ -121,21 +127,15 @@ func (s *Service) handleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleVoiceStatus returns the current voice session state.
-func (s *Service) handleVoiceStatus(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	sess := s.voice
-	s.mu.RUnlock()
-
-	if sess == nil {
-		writeJSON(w, http.StatusOK, map[string]string{"active": "false", "status": string(agent.VoiceStatusIdle)})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{
-		"active": "true",
-		"status": string(sess.Status()),
-	})
+// writeVoiceJSON is a tiny local helper for early-exit branches in
+// HandleVoiceAudio that need to write an HTTP error before the
+// websocket upgrade. Mux owns the rest of the wire format; this helper
+// exists only because HandleVoiceAudio runs inside the hub package and
+// can't reach hubmux helpers without an import cycle.
+func writeVoiceJSON(w http.ResponseWriter, status int, body map[string]string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // hubToolProvider implements voice.ToolProvider using direct

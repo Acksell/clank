@@ -11,6 +11,7 @@ import (
 
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
+	hubmux "github.com/acksell/clank/internal/hub/mux"
 )
 
 // runHubServer is the production driver for hub.Service: it owns the
@@ -81,5 +82,5 @@ func runHubServer(s *hub.Service) error {
 		}
 	}()
 
-	return s.Run(listener)
+	return s.Run(listener, hubmux.New(s, nil).Handler())
 }

@@ -1,10 +1,8 @@
 package hub
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"log"
-	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,29 +15,19 @@ import (
 )
 
 // HUB
-func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ProjectDir string `json:"project_dir"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	if body.ProjectDir == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_dir is required"})
-		return
-	}
+// discoverSessions is the non-HTTP entrypoint for session discovery.
+// Wire shape and semantics are owned by Service; mux only marshals.
+func (s *Service) discoverSessions(ctx context.Context, projectDir string) (DiscoverResult, error) {
 	// Fan out to every backend the host knows about and accumulate
 	// snapshots. Discovery is best-effort per backend — failures are
 	// logged but do not abort the whole call.
 	var snapshots []agent.SessionSnapshot
-	backends, err := s.hostClient.ListBackends(r.Context())
+	backends, err := s.hostClient.ListBackends(ctx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return DiscoverResult{}, err
 	}
 	for _, bi := range backends {
-		found, err := s.hostClient.DiscoverSessions(r.Context(), bi.Name, body.ProjectDir)
+		found, err := s.hostClient.DiscoverSessions(ctx, bi.Name, projectDir)
 		if err != nil {
 			s.log.Printf("discover sessions (%s): %v", bi.Name, err)
 			continue
@@ -47,15 +35,14 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 		snapshots = append(snapshots, found...)
 	}
 	if snapshots == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"discovered": 0, "total": 0})
-		return
+		return DiscoverResult{}, nil
 	}
 
 	// Build a worktree path → branch name map so we can attribute discovered
 	// sessions to the correct worktree. This lets the TUI filter sessions by
 	// worktree directory (ProjectDir).
 	wtPathToBranch := make(map[string]string)
-	worktrees, err := git.ListWorktrees(body.ProjectDir)
+	worktrees, err := git.ListWorktrees(projectDir)
 	if err == nil {
 		for _, wt := range worktrees {
 			if !wt.Bare && wt.Branch != "" {
@@ -87,22 +74,18 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		if existingMS != nil {
-			// Refresh backend-owned fields from the snapshot.
 			existingMS.info.Title = snap.Title
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
 			existingMS.info.ProjectDir = snap.Directory
 			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
-			// Backfill worktree attribution if not already set.
 			if existingMS.info.Branch == "" {
 				if branch, ok := wtPathToBranch[snap.Directory]; ok {
 					existingMS.info.Branch = branch
 					existingMS.info.WorktreeDir = snap.Directory
 				}
 			}
-			// Normalize stale statuses for backend-less sessions —
-			// same rationale as the startup normalization.
 			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
 				existingMS.info.Status = agent.StatusIdle
 			}
@@ -110,8 +93,6 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		// Attribute the session to a worktree by matching its directory
-		// against known worktree paths.
 		var wtBranch, wtDir string
 		if branch, ok := wtPathToBranch[snap.Directory]; ok {
 			wtBranch = branch
@@ -119,11 +100,8 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 		}
 
 		id := ulid.Make().String()
-		// Derive RepoRemoteURL so that lazy backend activation
+		// Derive RepoRemoteURL so lazy backend activation
 		// (activateBackend) can reach the host plane without paths.
-		// Best-effort: discovered sessions whose Directory is not a
-		// git repo (or has no `origin`) will have empty RepoRemoteURL
-		// and won't be re-attachable, which matches today's UX.
 		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
 		info := agent.SessionInfo{
 			ID:              id,
@@ -139,7 +117,7 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 			RevertMessageID: snap.RevertMessageID,
 			CreatedAt:       snap.CreatedAt,
 			UpdatedAt:       snap.UpdatedAt,
-			LastReadAt:      snap.UpdatedAt, // Mark as read — they're not new activity
+			LastReadAt:      snap.UpdatedAt, // mark as read — not new activity
 		}
 		s.sessions[id] = &managedSession{info: info, backend: nil}
 		s.persistSession(s.sessions[id])
@@ -147,93 +125,7 @@ func (s *Service) handleDiscoverSessions(w http.ResponseWriter, r *http.Request)
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"discovered": added,
-		"total":      len(snapshots),
-	})
-}
-
-// HUB
-func (s *Service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	var req agent.StartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-	if err := req.Validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
-	info, err := s.createSession(req)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, info)
-}
-
-// HUB
-func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.snapshotSessions())
-}
-
-// HUB
-func (s *Service) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
-	sinceRaw := r.URL.Query().Get("since")
-	untilRaw := r.URL.Query().Get("until")
-	visibility := agent.SessionVisibility(r.URL.Query().Get("visibility"))
-
-	if q == "" && sinceRaw == "" && untilRaw == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one of q, since, or until is required"})
-		return
-	}
-
-	var p agent.SearchParams
-	p.Query = q
-	p.Visibility = visibility
-
-	if sinceRaw != "" {
-		t, err := parseTimeParam(sinceRaw)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since param: " + err.Error()})
-			return
-		}
-		p.Since = t
-	}
-	if untilRaw != "" {
-		t, err := parseTimeParam(untilRaw)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid until param: " + err.Error()})
-			return
-		}
-		p.Until = t
-	}
-
-	writeJSON(w, http.StatusOK, s.searchSessions(p))
-}
-
-// HUB
-func (s *Service) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	info := ms.info
-	if ms.backend != nil {
-		info.Status = ms.backend.Status()
-	}
-	if info.Backend == agent.BackendOpenCode {
-		if urls := s.openCodeServerURLs(); urls != nil {
-			info.ServerURL = urls[info.ProjectDir]
-		}
-	}
-	writeJSON(w, http.StatusOK, info)
+	return DiscoverResult{Discovered: added, Total: len(snapshots)}, nil
 }
 
 // HOST
@@ -298,385 +190,6 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 	}()
 
 	return nil
-}
-
-// HUB
-func (s *Service) handleGetSessionMessages(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	if ms.backend == nil {
-		// Historical session — activate a read-only backend to fetch messages.
-		if err := s.activateBackend(id, ms); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-
-	messages, err := ms.backend.Messages(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if messages == nil {
-		messages = []agent.MessageData{}
-	}
-	writeJSON(w, http.StatusOK, messages)
-}
-
-// HUB
-func (s *Service) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		Text  string               `json:"text"`
-		Agent string               `json:"agent"`
-		Model *agent.ModelOverride `json:"model,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	if body.Text == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
-		return
-	}
-
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-
-	// Update the session's current agent if one was specified, clear any draft,
-	// and reset visibility if the session was hidden (user re-engaging means
-	// it's no longer done/archived).
-	s.mu.Lock()
-	if body.Agent != "" {
-		ms.info.Agent = body.Agent
-	}
-	ms.info.Draft = ""
-	if ms.info.Visibility == agent.VisibilityDone || ms.info.Visibility == agent.VisibilityArchived {
-		ms.info.Visibility = agent.VisibilityVisible
-	}
-	s.persistSession(ms)
-	s.mu.Unlock()
-
-	if ms.backend == nil {
-		// Historical session with no backend — create one and start it with
-		// the follow-up prompt. Start() handles resume: it skips Session.New()
-		// because sessionID is already set, starts SSE, then sends the prompt.
-		req := agent.StartRequest{
-			Backend:       ms.info.Backend,
-			HostID:        ms.info.HostID,
-			RepoRemoteURL: ms.info.RepoRemoteURL,
-			Branch:        ms.info.Branch,
-			SessionID:     ms.info.ExternalID,
-			Prompt:        body.Text,
-			Agent:         body.Agent,
-			Model:         body.Model,
-		}
-		backend, _, err := s.hostClient.CreateSession(s.ctx, id, req)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		s.mu.Lock()
-		ms.backend = backend
-		ms.watchOnly = false
-		s.mu.Unlock()
-
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.runBackend(id, ms, req)
-		}()
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
-		return
-	}
-
-	if ms.watchOnly {
-		// Backend was started via Watch() (read-only observation). Try
-		// SendMessage first — OpenCode supports this. If it fails (e.g.,
-		// Claude), fall back to stopping the watch-only backend and starting
-		// a fresh one via Start().
-		s.mu.Lock()
-		ms.watchOnly = false
-		s.mu.Unlock()
-	}
-
-	opts := agent.SendMessageOpts{
-		Text:  body.Text,
-		Agent: body.Agent,
-		Model: body.Model,
-	}
-
-	// Dispatch asynchronously — SendMessage blocks until the LLM responds.
-	// The TUI tracks progress via the SSE event stream instead.
-	go func() {
-		if err := ms.backend.SendMessage(s.ctx, opts); err != nil {
-			s.log.Printf("session %s: send message error: %v", id, err)
-			s.broadcast(agent.Event{
-				Type:      agent.EventError,
-				SessionID: id,
-				Timestamp: time.Now(),
-				Data:      agent.ErrorData{Message: err.Error()},
-			})
-		}
-	}()
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "sent"})
-}
-
-// HOST
-func (s *Service) handleAbortSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	if ms.backend == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
-		return
-	}
-
-	if err := ms.backend.Abort(r.Context()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
-}
-
-// HOST
-func (s *Service) handleRevertSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		MessageID string `json:"message_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	if body.MessageID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message_id is required"})
-		return
-	}
-
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	if ms.backend == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
-		return
-	}
-
-	if err := ms.backend.Revert(r.Context(), body.MessageID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.mu.Lock()
-	ms.info.RevertMessageID = body.MessageID
-	s.persistSession(ms)
-	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reverted"})
-}
-
-// HUB
-func (s *Service) handleForkSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		MessageID string `json:"message_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	// message_id is optional: empty means "fork the entire session".
-
-	s.mu.RLock()
-	ms, ok := s.sessions[id]
-	s.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	if ms.backend == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no active backend"})
-		return
-	}
-
-	// Ask the backend to fork — returns the new session's external ID and title.
-	forkResult, err := ms.backend.Fork(r.Context(), body.MessageID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	// Create a new managed session for the fork.
-	newID := ulid.Make().String()
-	now := time.Now()
-	newInfo := agent.SessionInfo{
-		ID:          newID,
-		ExternalID:  forkResult.ID,
-		Backend:     ms.info.Backend,
-		Status:      agent.StatusIdle,
-		ProjectDir:  ms.info.ProjectDir,
-		ProjectName: ms.info.ProjectName,
-		Title:       forkResult.Title,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	newMS := &managedSession{info: newInfo}
-
-	s.mu.Lock()
-	s.sessions[newID] = newMS
-	s.persistSession(newMS)
-	s.mu.Unlock()
-
-	// Activate the backend so the forked session can stream events and accept prompts.
-	if err := s.activateBackend(newID, newMS); err != nil {
-		log.Printf("[daemon] fork: failed to activate backend for %s: %v", newID, err)
-		// Session is persisted but backend is inactive; user can still navigate to it.
-	}
-
-	s.broadcast(agent.Event{
-		Type:      agent.EventSessionCreate,
-		SessionID: newID,
-		Timestamp: now,
-		Data:      newInfo,
-	})
-
-	writeJSON(w, http.StatusOK, newInfo)
-}
-
-// HUB
-func (s *Service) handleMarkSessionRead(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.Lock()
-	ms, ok := s.sessions[id]
-	if !ok {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	ms.info.LastReadAt = time.Now()
-	s.persistSession(ms)
-	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// HUB
-func (s *Service) handleToggleFollowUp(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.mu.Lock()
-	ms, ok := s.sessions[id]
-	if !ok {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	ms.info.FollowUp = !ms.info.FollowUp
-	followUp := ms.info.FollowUp
-	s.persistSession(ms)
-	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]bool{"follow_up": followUp})
-}
-
-// HUB
-func (s *Service) handleSetVisibility(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		Visibility agent.SessionVisibility `json:"visibility"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-	switch body.Visibility {
-	case agent.VisibilityVisible, agent.VisibilityDone, agent.VisibilityArchived:
-		// valid
-	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid visibility: %q", body.Visibility)})
-		return
-	}
-
-	s.mu.Lock()
-	ms, ok := s.sessions[id]
-	if !ok {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	ms.info.Visibility = body.Visibility
-	s.persistSession(ms)
-	s.mu.Unlock()
-}
-
-// HUB
-func (s *Service) handleSetDraft(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var body struct {
-		Draft string `json:"draft"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
-		return
-	}
-
-	s.mu.Lock()
-	ms, ok := s.sessions[id]
-	if !ok {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	ms.info.Draft = body.Draft
-	s.persistSession(ms)
-	s.mu.Unlock()
-}
-
-// HUB
-func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	s.mu.Lock()
-	ms, ok := s.sessions[id]
-	if !ok {
-		s.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
-		return
-	}
-	delete(s.sessions, id)
-	s.deletePersistedSession(id)
-	s.mu.Unlock()
-
-	// Free the host registry slot. StopSession is a no-op if the session
-	// was never registered (historical session that was never activated).
-	if ms.backend != nil {
-		if err := s.hostClient.StopSession(s.ctx, id); err != nil {
-			s.log.Printf("error stopping session %s on host: %v", id, err)
-		}
-	}
-
-	s.broadcast(agent.Event{
-		Type:      agent.EventSessionDelete,
-		SessionID: id,
-		Timestamp: time.Now(),
-	})
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // HUB
