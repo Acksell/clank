@@ -209,7 +209,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	req := agent.StartRequest{
 		Backend:        m.backend,
 		Hostname:       string(host.HostLocal),
-		RepoRemoteURL:  remoteURL,
+		GitRef:         agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL},
 		WorktreeBranch: m.worktreeBranch,
 		Prompt:         prompt,
 	}

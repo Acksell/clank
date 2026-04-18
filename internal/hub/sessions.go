@@ -100,15 +100,19 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		}
 
 		id := ulid.Make().String()
-		// Derive RepoRemoteURL so lazy backend activation
+		// Derive a remote-kind GitRef so lazy backend activation
 		// (activateBackend) can reach the host plane without paths.
 		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
+		var gitRef agent.GitRef
+		if remoteURL != "" {
+			gitRef = agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL}
+		}
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
 			Backend:         agent.BackendOpenCode,
 			Status:          agent.StatusIdle,
-			RepoRemoteURL:   remoteURL,
+			GitRef:          gitRef,
 			ProjectDir:      snap.Directory,
 			ProjectName:     filepath.Base(snap.Directory),
 			WorktreeBranch:  wtBranch,
@@ -138,7 +142,7 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 	backend, _, err := s.hostClient.Sessions().Create(s.ctx, id, agent.StartRequest{
 		Backend:        ms.info.Backend,
 		Hostname:       ms.info.Hostname,
-		RepoRemoteURL:  ms.info.RepoRemoteURL,
+		GitRef:         ms.info.GitRef,
 		WorktreeBranch: ms.info.WorktreeBranch,
 		SessionID:      ms.info.ExternalID,
 	})
@@ -308,7 +312,7 @@ func parseTimeParam(s string) (time.Time, error) {
 // HUB
 // createSession creates a new managed session and starts the backend.
 // Identity is path-free post Phase 3D-2: callers send (Hostname,
-// RepoRemoteURL, Branch); the Host resolves a workDir on the way down
+// GitRef, WorktreeBranch); the Host resolves a workDir on the way down
 // and returns it to us as host.CreateInfo so we can populate
 // SessionInfo.{ProjectDir, WorktreeDir} for the TUI.
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
@@ -318,7 +322,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 
 	// Hub assigns the session ID up front, then asks the Host to create
 	// and register a backend under it. The Host resolves
-	// (RepoRemoteURL, Branch) → workDir and reports it back via
+	// (GitRef, WorktreeBranch) → workDir and reports it back via
 	// CreateInfo so the Hub can populate SessionInfo paths without
 	// having to compute filesystem layout itself.
 	id := ulid.Make().String()
@@ -334,7 +338,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		Backend:        req.Backend,
 		Status:         agent.StatusStarting,
 		Hostname:       req.Hostname,
-		RepoRemoteURL:  req.RepoRemoteURL,
+		GitRef:         req.GitRef,
 		WorktreeBranch: req.WorktreeBranch,
 		ProjectDir:     info.ProjectDir,
 		ProjectName:    filepath.Base(info.ProjectDir),

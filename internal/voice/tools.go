@@ -334,10 +334,10 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 				return "", fmt.Errorf("derive repo remote for %s: %w", args.ProjectDir, err)
 			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
-				Backend:       agent.BackendType(args.Backend),
-				Hostname:        string(host.HostLocal),
-				RepoRemoteURL: remote,
-				Prompt:        args.Prompt,
+				Backend:  agent.BackendType(args.Backend),
+				Hostname: string(host.HostLocal),
+				GitRef:   agent.GitRef{Kind: agent.GitRefRemote, URL: remote},
+				Prompt:   args.Prompt,
 			})
 			if err != nil {
 				return "", fmt.Errorf("create session: %w", err)

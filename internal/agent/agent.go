@@ -329,15 +329,12 @@ type AgentInfo struct {
 // (Hostname, GitRef, WorktreeBranch). The Host resolves these to a working
 // directory inside CreateSession; the wire never carries filesystem paths.
 //
-// Step 8b transition: GitRef and the legacy RepoRemoteURL coexist. New
-// callers should populate GitRef (with Kind set); legacy callers may still
-// send RepoRemoteURL alone, which the host coerces into a remote-kind
-// GitRef. Step 8d removes RepoRemoteURL.
+// GitRef is the sole repo identity on the wire (§7.3 of
+// hub_host_refactor_code_review.md).
 type StartRequest struct {
 	Backend        BackendType    `json:"backend"`
 	Hostname       string         `json:"hostname,omitempty"`        // Target host; empty defaults to "local" at the hub.
-	GitRef         GitRef         `json:"git_ref,omitempty"`         // Wire-canonical repo identity (kind + url|path)
-	RepoRemoteURL  string         `json:"repo_remote_url,omitempty"` // DEPRECATED (step 8d): legacy remote URL; ignored when GitRef.Kind is set.
+	GitRef         GitRef         `json:"git_ref"`                   // Wire-canonical repo identity (kind + url|path); required.
 	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch; when set, the host creates/reuses a worktree
 	Prompt         string         `json:"prompt"`
 	SessionID      string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session. Distinct from the host's clank session ID and from BackendInvocation.ResumeExternalID (which today equals this).
@@ -373,18 +370,14 @@ func (r StartRequest) Validate() error {
 	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
-	switch {
-	case r.GitRef.Kind != "":
-		if err := r.GitRef.Validate(); err != nil {
-			return fmt.Errorf("git_ref: %w", err)
-		}
-		if r.AllowClone && r.GitRef.Kind == GitRefLocal {
-			return fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
-		}
-	case r.RepoRemoteURL != "":
-		// Legacy path; coerced into a remote GitRef inside the host.
-	default:
-		return fmt.Errorf("git_ref or repo_remote_url is required")
+	if r.GitRef.Kind == "" {
+		return fmt.Errorf("git_ref is required")
+	}
+	if err := r.GitRef.Validate(); err != nil {
+		return fmt.Errorf("git_ref: %w", err)
+	}
+	if r.AllowClone && r.GitRef.Kind == GitRefLocal {
+		return fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
@@ -406,7 +399,7 @@ type SessionInfo struct {
 	ProjectDir      string            `json:"project_dir"`
 	ProjectName     string            `json:"project_name"`
 	Hostname        string            `json:"hostname,omitempty"`        // Canonical identity: host (Phase 3); "local" by default.
-	RepoRemoteURL   string            `json:"repo_remote_url,omitempty"` // Canonical identity: repo (Phase 3).
+	GitRef          GitRef            `json:"git_ref,omitempty"`         // Canonical identity: repo (kind + url|path).
 	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Canonical identity: git branch.
 	WorktreeDir     string            `json:"worktree_dir,omitempty"`    // Runtime metadata (host-local): filesystem path of the git worktree. Not identity.
 	Prompt          string            `json:"prompt"`

@@ -25,7 +25,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	// Create a session.
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "fix the bug",
 		TicketID:      "TICKET-42",
 	})
@@ -125,7 +125,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "hello",
 	})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "do something",
 	})
 	if err != nil {
@@ -353,7 +353,7 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "hello",
 	})
 	if err != nil {

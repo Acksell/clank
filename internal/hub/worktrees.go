@@ -8,15 +8,14 @@ package hub
 
 import (
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
 // markBranchSessionsDone flips every non-archived session attached to
 // (gitRef, branch) to "done". Returns the count of sessions updated.
 //
 // gitRef is the canonical GitRef string (URL key form). The session's
-// RepoRemoteURL is canonicalized the same way for comparison so the
-// helper does not depend on URL spelling differences.
+// GitRef is canonicalized the same way for comparison so the helper
+// does not depend on URL spelling differences.
 //
 // Used by handleMergeBranchOnRepo after a successful merge so that the
 // inbox surfaces the work as completed without the user having to
@@ -31,8 +30,8 @@ func (s *Service) markBranchSessionsDone(gitRef, branch string) int {
 			continue
 		}
 		// Guard against accidentally completing same-named branches across
-		// repos by re-canonicalizing the session's RemoteURL.
-		sessionRef := host.GitRef{Kind: host.GitRefRemote, URL: ms.info.RepoRemoteURL}.Canonical()
+		// repos by re-canonicalizing the session's GitRef.
+		sessionRef := ms.info.GitRef.Canonical()
 		if sessionRef == "" || sessionRef != gitRef {
 			continue
 		}

@@ -10,7 +10,7 @@ import (
 // testRemoteURL is the canonical remote URL used by hub tests.
 // It is paired with a per-test git repo registered through
 // registerTestRepo / testDaemon so that the host plane can resolve
-// (RepoRemoteURL, Branch) → workDir without callers passing paths.
+// (GitRef, WorktreeBranch) → workDir without callers passing paths.
 const testRemoteURL = "git@github.com:acksell/clank.git"
 
 // registerTestRepo creates a real git repo (via initGitRepo from
@@ -25,8 +25,8 @@ func registerTestRepo(t *testing.T, s *hub.Service) string {
 	t.Helper()
 	dir := initGitRepo(t)
 	// Set origin remote so git.RemoteURL(dir, "origin") in the discover
-	// path can recover RepoRemoteURL — needed for lazy backend
-	// activation of historical sessions.
+	// path can recover the GitRef — needed for lazy backend activation
+	// of historical sessions.
 	gitRun(t, dir, "remote", "add", "origin", testRemoteURL)
 	registerTestRepoAt(t, s, dir)
 	return dir

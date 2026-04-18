@@ -23,7 +23,7 @@ func TestDaemonPermissionReply(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "do stuff",
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func TestDaemonPendingPermission(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "do stuff",
 	})
 	if err != nil {
@@ -161,7 +161,7 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "read two dirs",
 	})
 	if err != nil {
@@ -248,7 +248,7 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 		Prompt:        "read two dirs",
 	})
 	if err != nil {

@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 func tempDBPath(t *testing.T) string {
@@ -730,25 +733,25 @@ func TestConcurrentWrites(t *testing.T) {
 	}
 }
 
-// TestUpsertAndLoadHostScopedIdentity verifies the Phase 3A identity fields
-// (Hostname, RepoRemoteURL, Branch) round-trip alongside the legacy path-style
-// fields, and that the Branch field mirrors WorktreeBranch on load.
+// TestUpsertAndLoadHostScopedIdentity verifies the path-free identity fields
+// (Hostname, GitRef, WorktreeBranch) round-trip through the JSON-encoded
+// git_ref column alongside the legacy path-style fields.
 func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:            "ses-host-1",
-		Backend:       agent.BackendOpenCode,
-		Status:        agent.StatusIdle,
-		Hostname:      "local",
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
+		ID:             "ses-host-1",
+		Backend:        agent.BackendOpenCode,
+		Status:         agent.StatusIdle,
+		Hostname:       "local",
+		GitRef:         agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
 		WorktreeBranch: "feat/x",
-		ProjectDir:    "/tmp/clank",
-		ProjectName:   "clank",
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ProjectDir:     "/tmp/clank",
+		ProjectName:    "clank",
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	if err := s.UpsertSession(info); err != nil {
@@ -766,8 +769,8 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	if got.Hostname != "local" {
 		t.Errorf("Hostname = %q, want local", got.Hostname)
 	}
-	if got.RepoRemoteURL != info.RepoRemoteURL {
-		t.Errorf("RepoRemoteURL = %q, want %q", got.RepoRemoteURL, info.RepoRemoteURL)
+	if got.GitRef != info.GitRef {
+		t.Errorf("GitRef = %+v, want %+v", got.GitRef, info.GitRef)
 	}
 	// Branch round-trips (DB column worktree_branch is bound to info.WorktreeBranch).
 	if got.WorktreeBranch != "feat/x" {
@@ -801,5 +804,135 @@ func TestUpsertDefaultsHostnameToLocal(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].Hostname != "local" {
 		t.Fatalf("expected Hostname=local, got %+v", sessions)
+	}
+}
+
+// TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns verifies that
+// the v11→v12 migration renames repo_remote_url to git_ref_url, adds
+// git_ref_kind / git_ref_path, and backfills kind='remote' for rows
+// that had a populated URL. Empty rows stay empty (kind=”) so they get
+// re-resolved on next session start instead of being stamped with a
+// bogus remote.
+func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
+	t.Parallel()
+	path := tempDBPath(t)
+
+	// Bootstrap a v11-shaped database directly via the sqlite driver:
+	// run the same DDL the historical migrations did, insert two rows
+	// (one populated, one empty repo_remote_url), leave user_version=11.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+			id              TEXT PRIMARY KEY,
+			external_id     TEXT NOT NULL DEFAULT '',
+			backend         TEXT NOT NULL,
+			status          TEXT NOT NULL DEFAULT 'idle',
+			visibility      TEXT NOT NULL DEFAULT '',
+			follow_up       INTEGER NOT NULL DEFAULT 0,
+			project_dir     TEXT NOT NULL,
+			project_name    TEXT NOT NULL,
+			prompt          TEXT NOT NULL DEFAULT '',
+			title           TEXT NOT NULL DEFAULT '',
+			ticket_id       TEXT NOT NULL DEFAULT '',
+			agent           TEXT NOT NULL DEFAULT '',
+			draft           TEXT NOT NULL DEFAULT '',
+			created_at      DATETIME NOT NULL,
+			updated_at      DATETIME NOT NULL,
+			last_read_at    DATETIME,
+			worktree_branch TEXT NOT NULL DEFAULT '',
+			worktree_dir    TEXT NOT NULL DEFAULT '',
+			host_id         TEXT NOT NULL DEFAULT 'local',
+			repo_remote_url TEXT NOT NULL DEFAULT ''
+		);
+		PRAGMA user_version = 11;
+	`); err != nil {
+		t.Fatalf("seed v11 schema: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := db.Exec(`
+		INSERT INTO sessions
+			(id, backend, status, project_dir, project_name,
+			 created_at, updated_at, host_id, repo_remote_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "ses-old-1", string(agent.BackendOpenCode), string(agent.StatusIdle),
+		"/tmp/old", "old", now, now, "local",
+		"git@github.com:acksell/clank.git"); err != nil {
+		t.Fatalf("seed populated row: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO sessions
+			(id, backend, status, project_dir, project_name,
+			 created_at, updated_at, host_id, repo_remote_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "ses-old-2", string(agent.BackendOpenCode), string(agent.StatusIdle),
+		"/tmp/old2", "old2", now, now, "local", ""); err != nil {
+		t.Fatalf("seed empty row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Re-open via store.Open to apply v12.
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	sessions, err := s.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	byID := map[string]agent.SessionInfo{}
+	for _, info := range sessions {
+		byID[info.ID] = info
+	}
+	got1, ok := byID["ses-old-1"]
+	if !ok {
+		t.Fatal("missing ses-old-1 after migration")
+	}
+	want1 := agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"}
+	if got1.GitRef != want1 {
+		t.Errorf("ses-old-1 GitRef = %+v, want %+v", got1.GitRef, want1)
+	}
+	got2 := byID["ses-old-2"]
+	if got2.GitRef != (agent.GitRef{}) {
+		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
+	}
+
+	// Verify the underlying schema actually has the discrete columns
+	// (catches a future regression where the migration silently no-ops).
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen raw: %v", err)
+	}
+	defer raw.Close()
+	cols, err := raw.Query(`SELECT name FROM pragma_table_info('sessions') WHERE name LIKE 'git_ref%' ORDER BY name`)
+	if err != nil {
+		t.Fatalf("pragma_table_info: %v", err)
+	}
+	defer cols.Close()
+	var names []string
+	for cols.Next() {
+		var n string
+		if err := cols.Scan(&n); err != nil {
+			t.Fatalf("scan col name: %v", err)
+		}
+		names = append(names, n)
+	}
+	wantCols := []string{"git_ref_kind", "git_ref_path", "git_ref_url"}
+	if len(names) != len(wantCols) {
+		t.Fatalf("git_ref* columns = %v, want %v", names, wantCols)
+	}
+	for i, want := range wantCols {
+		if names[i] != want {
+			t.Errorf("col[%d] = %q, want %q", i, names[i], want)
+		}
 	}
 }

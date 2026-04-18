@@ -132,9 +132,9 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 	defer cancel()
 
 	be, _, err := c.Sessions().Create(ctx, "sid-1", agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "hi",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -217,7 +217,7 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 
 	ctx := context.Background()
 	be, _, err := c.Sessions().Create(ctx, "sid-2", agent.StartRequest{
-		Backend: agent.BackendOpenCode, RepoRemoteURL: testRemoteURL, Prompt: "hi",
+		Backend: agent.BackendOpenCode, GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, Prompt: "hi",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

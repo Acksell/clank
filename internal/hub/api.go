@@ -146,7 +146,7 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 		req := agent.StartRequest{
 			Backend:        ms.info.Backend,
 			Hostname:       ms.info.Hostname,
-			RepoRemoteURL:  ms.info.RepoRemoteURL,
+			GitRef:         ms.info.GitRef,
 			WorktreeBranch: ms.info.WorktreeBranch,
 			SessionID:      ms.info.ExternalID,
 			Prompt:         in.Text,

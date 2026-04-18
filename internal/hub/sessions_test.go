@@ -28,9 +28,9 @@ func TestDaemonCreateSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "Fix the bug",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "Fix the bug",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -41,8 +41,8 @@ func TestDaemonCreateSession(t *testing.T) {
 	if info.Backend != agent.BackendOpenCode {
 		t.Errorf("expected backend=opencode, got %s", info.Backend)
 	}
-	if info.RepoRemoteURL != testRemoteURL {
-		t.Errorf("expected repo_remote_url=%s, got %s", testRemoteURL, info.RepoRemoteURL)
+	if info.GitRef.URL != testRemoteURL {
+		t.Errorf("expected git_ref.url=%s, got %s", testRemoteURL, info.GitRef.URL)
 	}
 	if info.Hostname != "local" {
 		t.Errorf("expected host_id=local, got %s", info.Hostname)
@@ -66,8 +66,8 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 
 	// Missing backend.
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt: "test",
 	})
 	if err == nil {
 		t.Error("expected error for missing backend")
@@ -84,8 +84,8 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 
 	// Missing prompt.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
 	})
 	if err == nil {
 		t.Error("expected error for missing prompt")
@@ -93,9 +93,9 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 
 	// Invalid backend.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       "invalid",
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: "invalid",
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err == nil {
 		t.Error("expected error for invalid backend")
@@ -119,18 +119,18 @@ func TestDaemonListSessions(t *testing.T) {
 
 	// Create two sessions.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "task a",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "task a",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession a: %v", err)
 	}
 
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendClaudeCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "task b",
+		Backend: agent.BackendClaudeCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "task b",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession b: %v", err)
@@ -154,9 +154,9 @@ func TestDaemonGetSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -184,9 +184,9 @@ func TestDaemonGetSessionMessages(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -246,9 +246,9 @@ func TestDaemonGetSessionMessagesEmpty(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -290,9 +290,9 @@ func TestDaemonSendMessage(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "initial prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "initial prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -330,9 +330,9 @@ func TestDaemonAbortSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "do stuff",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -368,9 +368,9 @@ func TestDaemonRevertSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "do stuff",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -402,9 +402,9 @@ func TestDaemonRevertSessionMissingMessageID(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -442,9 +442,9 @@ func TestDaemonForkSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "original session",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "original session",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -502,9 +502,9 @@ func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -549,9 +549,9 @@ func TestDaemonDeleteSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -596,9 +596,9 @@ func TestDaemonSendEmptyMessage(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -656,9 +656,9 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 
 	// Create a session.
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -715,9 +715,9 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -782,9 +782,9 @@ func TestDaemonTitleUpdateOnSession(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "Fix the login bug",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "Fix the login bug",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -834,9 +834,9 @@ func TestDaemonTitleVisibleInList(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "Fix the login bug",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "Fix the login bug",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -880,10 +880,10 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 
 	// Create session with agent specified.
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test with agent",
-		Agent:         "plan",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test with agent",
+		Agent:   "plan",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1048,9 +1048,9 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 
 	// Create a real session first. runBackend will set ExternalID to "oc-real-session".
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "do stuff",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1087,7 +1087,7 @@ func TestHistoricalSessionMessagesActivatesBackend(t *testing.T) {
 	_, client, getBackend, repoDir, cleanup := testDaemonWithDiscover(t, snapshots)
 	defer cleanup()
 	// Snapshot must point at a real git repo so the discover path can
-	// recover RepoRemoteURL via `git remote get-url origin`. Mutating
+	// recover the GitRef via `git remote get-url origin`. Mutating
 	// the slice is safe — the discoverer holds the same backing array.
 	snapshots[0].Directory = repoDir
 
@@ -1148,7 +1148,7 @@ func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
 	_, client, getBackend, repoDir, cleanup := testDaemonWithDiscover(t, snapshots)
 	defer cleanup()
 	// Snapshot must point at a real git repo so the discover path can
-	// recover RepoRemoteURL via `git remote get-url origin`.
+	// recover the GitRef via `git remote get-url origin`.
 	snapshots[0].Directory = repoDir
 
 	ctx := context.Background()
@@ -1207,9 +1207,9 @@ func TestDaemonSetVisibilityDone(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1241,9 +1241,9 @@ func TestDaemonSetVisibilityArchived(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1275,9 +1275,9 @@ func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1312,9 +1312,9 @@ func TestDaemonUnarchiveSession(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1362,9 +1362,9 @@ func TestDaemonSetVisibilityInvalid(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1397,9 +1397,9 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1443,9 +1443,9 @@ func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1491,9 +1491,9 @@ func TestDaemonSetDraft(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1522,9 +1522,9 @@ func TestDaemonSetDraftClear(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1567,9 +1567,9 @@ func TestDaemonDraftVisibleInList(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1600,9 +1600,9 @@ func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: testRemoteURL,
-		Prompt:        "test prompt",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "test prompt",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -1652,19 +1652,19 @@ func TestDaemonSearchSessions(t *testing.T) {
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "myproject",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "myproject",
 			Title: "Fix authentication bug", Prompt: "fix login",
 			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour),
 		},
 		{
 			ID: "ses-s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "myproject",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "myproject",
 			Title: "Add dark mode", Prompt: "implement dark mode toggle",
 			CreatedAt: now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
 		},
 		{
 			ID: "ses-s3", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "otherproject",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "otherproject",
 			Title: "Refactor database layer", Prompt: "clean up db queries",
 			CreatedAt: now, UpdatedAt: now,
 		},
@@ -1903,21 +1903,21 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-active", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "proj",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "active session", Prompt: "do stuff",
 			Visibility: agent.VisibilityVisible,
 			CreatedAt:  now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour),
 		},
 		{
 			ID: "ses-done", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "proj",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "done session", Prompt: "finished task",
 			Visibility: agent.VisibilityDone,
 			CreatedAt:  now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
 		},
 		{
 			ID: "ses-archived", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			RepoRemoteURL: testRemoteURL, ProjectName: "proj",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "archived session", Prompt: "old stuff",
 			Visibility: agent.VisibilityArchived,
 			CreatedAt:  now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),

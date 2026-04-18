@@ -38,10 +38,10 @@ func TestCreateSession_AddByDir_Success(t *testing.T) {
 	dir := initGitRepo(t, remote)
 
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: remote,
-		Dir:           dir,
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: remote},
+		Dir:     dir,
+		Prompt:  "hi",
 	}
 	_, info, err := svc.CreateSession(context.Background(), "sid-add", req)
 	if err != nil {
@@ -69,10 +69,10 @@ func TestCreateSession_AddByDir_Mismatch(t *testing.T) {
 	dir := initGitRepo(t, "git@github.com:other/repo.git")
 
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Dir:           dir,
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+		Dir:     dir,
+		Prompt:  "hi",
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-mismatch", req)
 	if err == nil {
@@ -102,10 +102,10 @@ func TestCreateSession_AddByDir_NotRoot(t *testing.T) {
 	}
 
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: remote,
-		Dir:           sub,
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: remote},
+		Dir:     sub,
+		Prompt:  "hi",
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-sub", req)
 	if err == nil {
@@ -123,9 +123,9 @@ func TestCreateSession_NoHint(t *testing.T) {
 	svc := newTestService(t)
 
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+		Prompt:  "hi",
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-nope", req)
 	if err == nil {
@@ -152,10 +152,10 @@ func TestCreateSession_DirDisagreesWithStored(t *testing.T) {
 	}
 
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: remote,
-		Dir:           dirB,
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: remote},
+		Dir:     dirB,
+		Prompt:  "hi",
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-rebind", req)
 	if err == nil {

@@ -165,6 +165,24 @@ func (s *Store) migrate() error {
 		}
 		version = 11
 	}
+	if version < 12 {
+		// Step 8d: replace the single repo_remote_url string with the
+		// three-field GitRef shape (kind + url|path) as discrete columns.
+		// Existing non-empty values are remote URLs by construction, so
+		// we backfill kind='remote' for those rows; empty rows stay empty
+		// and will be re-resolved on next session start.
+		_, err := s.db.Exec(`
+			ALTER TABLE sessions RENAME COLUMN repo_remote_url TO git_ref_url;
+			ALTER TABLE sessions ADD COLUMN git_ref_kind TEXT NOT NULL DEFAULT '';
+			ALTER TABLE sessions ADD COLUMN git_ref_path TEXT NOT NULL DEFAULT '';
+			UPDATE sessions SET git_ref_kind = 'remote' WHERE git_ref_url != '';
+			PRAGMA user_version = 12;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v12: %w", err)
+		}
+		version = 12
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
@@ -176,7 +194,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
 		       project_dir, project_name, worktree_branch, worktree_dir,
-		       host_id, repo_remote_url,
+		       host_id, git_ref_kind, git_ref_url, git_ref_path,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -191,6 +209,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 		var info agent.SessionInfo
 		var followUp int
 		var lastReadAt sql.NullTime
+		var refKind, refURL, refPath string
 		err := rows.Scan(
 			&info.ID,
 			&info.ExternalID,
@@ -203,7 +222,9 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&info.WorktreeBranch,
 			&info.WorktreeDir,
 			&info.Hostname,
-			&info.RepoRemoteURL,
+			&refKind,
+			&refURL,
+			&refPath,
 			&info.Prompt,
 			&info.Title,
 			&info.TicketID,
@@ -215,6 +236,9 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
+		}
+		if refKind != "" {
+			info.GitRef = agent.GitRef{Kind: agent.GitRefKind(refKind), URL: refURL, Path: refPath}
 		}
 		info.FollowUp = followUp != 0
 		if lastReadAt.Valid {
@@ -254,10 +278,10 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
 			 project_dir, project_name, worktree_branch, worktree_dir,
-			 host_id, repo_remote_url,
+			 host_id, git_ref_kind, git_ref_url, git_ref_path,
 			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		info.ID,
 		info.ExternalID,
@@ -270,7 +294,9 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		branch,
 		info.WorktreeDir,
 		hostname,
-		info.RepoRemoteURL,
+		string(info.GitRef.Kind),
+		info.GitRef.URL,
+		info.GitRef.Path,
 		info.Prompt,
 		info.Title,
 		info.TicketID,
@@ -361,10 +387,11 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	var info agent.SessionInfo
 	var followUp int
 	var lastReadAt sql.NullTime
+	var refKind, refURL, refPath string
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
 		       project_dir, project_name, worktree_branch, worktree_dir,
-		       host_id, repo_remote_url,
+		       host_id, git_ref_kind, git_ref_url, git_ref_path,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -381,7 +408,9 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&info.WorktreeBranch,
 		&info.WorktreeDir,
 		&info.Hostname,
-		&info.RepoRemoteURL,
+		&refKind,
+		&refURL,
+		&refPath,
 		&info.Prompt,
 		&info.Title,
 		&info.TicketID,
@@ -400,6 +429,9 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	info.FollowUp = followUp != 0
 	if lastReadAt.Valid {
 		info.LastReadAt = lastReadAt.Time
+	}
+	if refKind != "" {
+		info.GitRef = agent.GitRef{Kind: agent.GitRefKind(refKind), URL: refURL, Path: refPath}
 	}
 	return &info, nil
 }

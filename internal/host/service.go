@@ -283,10 +283,10 @@ type CreateInfo struct {
 // under the given Hub-assigned session ID. The backend is NOT started —
 // callers call Start() or Watch() on the returned backend.
 //
-// Identity (Hostname, RepoRemoteURL, WorktreeBranch) is path-free; the
+// Identity (Hostname, GitRef, WorktreeBranch) is path-free; the
 // host implements the §7.5 resolution algorithm to map identity → workDir:
 //
-//  1. Canonicalize req.RepoRemoteURL into a GitRef key.
+//  1. Use req.GitRef as the canonical key (kind + url|path).
 //  2. If the key is already in the repo registry: use its rootDir.
 //     If the caller also passed req.Dir and it disagrees with the stored
 //     rootDir, error loudly — auto-rebind is YAGNI; operator must edit
@@ -326,15 +326,9 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	s.mu.Unlock()
 
-	// Step 8b transition: prefer GitRef when set, else coerce the legacy
-	// RepoRemoteURL into a remote-kind GitRef. Step 8d removes the
-	// fallback.
 	ref := req.GitRef
 	if ref.Kind == "" {
-		if req.RepoRemoteURL == "" {
-			return nil, CreateInfo{}, fmt.Errorf("git_ref or repo_remote_url is required")
-		}
-		ref = GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}
+		return nil, CreateInfo{}, fmt.Errorf("git_ref is required")
 	}
 	if err := ref.Validate(); err != nil {
 		return nil, CreateInfo{}, fmt.Errorf("git_ref: %w", err)

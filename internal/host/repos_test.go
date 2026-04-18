@@ -137,9 +137,9 @@ func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+		Prompt:  "hi",
 	}
 
 	if _, _, err := svc.CreateSession(context.Background(), "sid-1", req); err == nil {
@@ -266,9 +266,9 @@ func TestService_RepoStore_PersistsAcrossRestart(t *testing.T) {
 	// And the higher-level path that depends on the registry — CreateSession
 	// — succeeds without an intervening AddRepo.
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Prompt:        "hi",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+		Prompt:  "hi",
 	}
 	if _, info, err := svc2.CreateSession(context.Background(), "sid-after-restart", req); err != nil {
 		t.Fatalf("CreateSession after restart: %v", err)

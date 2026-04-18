@@ -70,11 +70,11 @@ func TestParseTimeParam(t *testing.T) {
 func TestStartRequest_Validate_DirAndAllowCloneMutuallyExclusive(t *testing.T) {
 	t.Parallel()
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: "git@github.com:acksell/clank.git",
-		Prompt:        "hi",
-		Dir:           "/tmp/clank",
-		AllowClone:    true,
+		Backend:    agent.BackendOpenCode,
+		GitRef:     agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+		Prompt:     "hi",
+		Dir:        "/tmp/clank",
+		AllowClone: true,
 	}
 	err := req.Validate()
 	if err == nil {
@@ -82,10 +82,10 @@ func TestStartRequest_Validate_DirAndAllowCloneMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// §7.3 step 8b: GitRef coexists with the legacy RepoRemoteURL during the
-// transition. Validate must accept either form, reject when neither is
-// supplied, and reject AllowClone+local because a local-kind ref names an
-// existing checkout that cannot be cloned.
+// §7.3: GitRef is the sole repo-identity field on StartRequest. Validate
+// must accept remote and local kinds, reject when missing, propagate
+// GitRef.Validate failures, and reject AllowClone+local because a
+// local-kind ref names an existing checkout that cannot be cloned.
 func TestStartRequest_Validate_GitRef(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -110,15 +110,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			},
 		},
 		{
-			name: "legacy_remote_url_ok",
-			req: agent.StartRequest{
-				Backend:       agent.BackendOpenCode,
-				RepoRemoteURL: "git@github.com:acksell/clank.git",
-				Prompt:        "hi",
-			},
-		},
-		{
-			name: "neither_form_set_rejected",
+			name: "git_ref_missing_rejected",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
 				Prompt:  "hi",
