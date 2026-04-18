@@ -153,7 +153,7 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 			Agent:          in.Agent,
 			Model:          in.Model,
 		}
-		backend, _, err := s.hostClient.CreateSession(s.ctx, id, req)
+		backend, _, err := s.hostClient.Sessions().Create(s.ctx, id, req)
 		if err != nil {
 			return err
 		}
@@ -363,7 +363,7 @@ func (s *Service) DeleteSession(ctx context.Context, id string) error {
 	s.mu.Unlock()
 
 	if ms.backend != nil {
-		if err := s.hostClient.StopSession(s.ctx, id); err != nil {
+		if err := s.hostClient.Session(id).Stop(s.ctx); err != nil {
 			s.log.Printf("error stopping session %s on host: %v", id, err)
 		}
 	}
@@ -458,7 +458,7 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, projectD
 			return cached, nil
 		}
 	}
-	agents, err := s.hostClient.ListAgents(ctx, bt, projectDir)
+	agents, err := s.hostClient.Backend(bt).Agents(ctx, projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +471,7 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, projectD
 
 // ListModels returns available models for (backend, projectDir).
 func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]agent.ModelInfo, error) {
-	models, err := s.hostClient.ListModels(ctx, bt, projectDir)
+	models, err := s.hostClient.Backend(bt).Models(ctx, projectDir)
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +495,7 @@ func (s *Service) ListReposOnHost(ctx context.Context, hostname host.Hostname) (
 	if !ok {
 		return nil, ErrHostNotRegistered(hostname)
 	}
-	return hc.ListRepos(ctx)
+	return hc.Repos(ctx)
 }
 
 // ListBranchesOnRepo lists branches for a repo on a given host. The
@@ -505,7 +505,7 @@ func (s *Service) ListBranchesOnRepo(ctx context.Context, hostname host.Hostname
 	if !ok {
 		return nil, ErrHostNotRegistered(hostname)
 	}
-	return hc.ListBranchesByRepo(ctx, gitRef)
+	return hc.Repo(gitRef).Branches(ctx)
 }
 
 // CreateWorktreeOnRepo creates (or resolves) a worktree for a branch.
@@ -514,7 +514,7 @@ func (s *Service) CreateWorktreeOnRepo(ctx context.Context, hostname host.Hostna
 	if !ok {
 		return host.WorktreeInfo{}, ErrHostNotRegistered(hostname)
 	}
-	return hc.ResolveWorktreeByRepo(ctx, gitRef, branch)
+	return hc.Repo(gitRef).Worktree(branch).Resolve(ctx)
 }
 
 // RemoveWorktreeOnRepo removes a worktree.
@@ -523,7 +523,7 @@ func (s *Service) RemoveWorktreeOnRepo(ctx context.Context, hostname host.Hostna
 	if !ok {
 		return ErrHostNotRegistered(hostname)
 	}
-	return hc.RemoveWorktreeByRepo(ctx, gitRef, branch, force)
+	return hc.Repo(gitRef).Worktree(branch).Remove(ctx, force)
 }
 
 // MergeBranchOnRepo merges branch into the repo's default branch and
@@ -533,7 +533,7 @@ func (s *Service) MergeBranchOnRepo(ctx context.Context, hostname host.Hostname,
 	if !ok {
 		return host.MergeResult{}, ErrHostNotRegistered(hostname)
 	}
-	res, err := hc.MergeBranchByRepo(ctx, gitRef, branch, commitMessage)
+	res, err := hc.Repo(gitRef).Worktree(branch).Merge(ctx, commitMessage)
 	if err != nil {
 		return host.MergeResult{}, err
 	}

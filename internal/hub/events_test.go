@@ -36,7 +36,7 @@ func TestDaemonStatus(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a session.
-	_, err := client.CreateSession(ctx, agent.StartRequest{
+	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -75,7 +75,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two sessions.
-	_, err := client.CreateSession(ctx, agent.StartRequest{
+	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "task a",
@@ -83,7 +83,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession a: %v", err)
 	}
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendClaudeCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "task b",
@@ -116,13 +116,13 @@ func TestDaemonEventStream(t *testing.T) {
 	defer cancel()
 
 	// Subscribe to events.
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
 	// Create a session — should generate events.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -174,17 +174,17 @@ func TestDaemonMultipleEventSubscribers(t *testing.T) {
 	defer cancel()
 
 	// Two subscribers.
-	events1, err := client.SubscribeEvents(ctx)
+	events1, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents 1: %v", err)
 	}
-	events2, err := client.SubscribeEvents(ctx)
+	events2, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents 2: %v", err)
 	}
 
 	// Create a session.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -216,12 +216,12 @@ func TestEventRoundTrip_StatusChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",
@@ -391,12 +391,12 @@ func TestEventRoundTrip_InjectedEvents(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			events, err := client.SubscribeEvents(ctx)
+			events, err := client.Sessions().Subscribe(ctx)
 			if err != nil {
 				t.Fatalf("SubscribeEvents: %v", err)
 			}
 
-			_, err = client.CreateSession(ctx, agent.StartRequest{
+			_, err = client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:       agent.BackendOpenCode,
 				RepoRemoteURL: testRemoteURL,
 				Prompt:        "hello",
@@ -436,12 +436,12 @@ func TestEventRoundTrip_StreamingTextDeltas(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",
@@ -502,12 +502,12 @@ func TestEventRoundTrip_SessionID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",
@@ -551,12 +551,12 @@ func TestEventRoundTrip_TitleChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",

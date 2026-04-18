@@ -467,7 +467,7 @@ func (m *SidebarModel) loadBranches() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		branches, err := client.ListBranchesOnRepo(ctx, hostname, gitRef)
+		branches, err := client.Host(hostname).Repo(gitRef).Branches(ctx)
 		if err != nil {
 			return branchLoadedMsg{err: err}
 		}
@@ -483,7 +483,7 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.CreateWorktreeOnRepo(ctx, hostname, gitRef, branch)
+		_, err := client.Host(hostname).Repo(gitRef).Worktree(branch).Resolve(ctx)
 		return branchWorktreeCreatedMsg{branch: branch, err: err}
 	}
 }

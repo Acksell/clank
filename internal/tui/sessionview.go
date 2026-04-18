@@ -403,7 +403,7 @@ func (m *SessionViewModel) fetchSessionInfo() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		info, err := m.client.GetSession(ctx, m.sessionID)
+		info, err := m.client.Session(m.sessionID).Get(ctx)
 		if err != nil {
 			return sessionEventsErrMsg{err: err}
 		}
@@ -416,7 +416,7 @@ func (m *SessionViewModel) fetchSessionMessages() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		messages, err := m.client.GetSessionMessages(ctx, m.sessionID)
+		messages, err := m.client.Session(m.sessionID).Messages(ctx)
 		if err != nil {
 			return sessionEventsErrMsg{err: err}
 		}
@@ -430,7 +430,7 @@ func (m *SessionViewModel) fetchPendingPermission() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		perms, err := m.client.GetPendingPermissions(ctx, m.sessionID)
+		perms, err := m.client.Session(m.sessionID).PendingPermissions(ctx)
 		if err != nil {
 			// Non-critical; the live SSE stream will deliver new prompts.
 			return nil
@@ -448,7 +448,7 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		agents, err := client.ListAgents(ctx, backend, projectDir)
+		agents, err := client.Backend(backend).Agents(ctx, projectDir)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no agent selector.
 			return agentsResultMsg{}
@@ -466,7 +466,7 @@ func (m *SessionViewModel) fetchModels() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		models, err := client.ListModels(ctx, backend, projectDir)
+		models, err := client.Backend(backend).Models(ctx, projectDir)
 		if err != nil {
 			// Non-fatal: degrade gracefully with no model selector.
 			return modelsResultMsg{}
@@ -479,7 +479,7 @@ func (m *SessionViewModel) fetchModels() tea.Cmd {
 func (m *SessionViewModel) subscribeEvents() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
-		events, err := m.client.SubscribeEvents(ctx)
+		events, err := m.client.Sessions().Subscribe(ctx)
 		if err != nil {
 			cancel()
 			return sessionEventsErrMsg{err: err}
@@ -1954,7 +1954,7 @@ func (m *SessionViewModel) sendMessage(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		opts := agent.SendMessageOpts{Text: text, Agent: selectedAgent, Model: modelOverride}
-		err := m.client.SendMessage(ctx, m.sessionID, opts)
+		err := m.client.Session(m.sessionID).Send(ctx, opts)
 		return sessionSendResultMsg{err: err}
 	}
 }
@@ -1964,7 +1964,7 @@ func (m *SessionViewModel) replyPermission(perm agent.PermissionData, allow bool
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := m.client.ReplyPermission(ctx, sessionID, perm.RequestID, allow)
+		err := m.client.Session(sessionID).ReplyPermission(ctx, perm.RequestID, allow)
 		return permissionReplyResultMsg{perm: perm, allow: allow, err: err}
 	}
 }
@@ -1975,7 +1975,7 @@ func (m *SessionViewModel) toggleFollowUp() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		followUp, err := client.ToggleFollowUp(ctx, sessionID)
+		followUp, err := client.Session(sessionID).ToggleFollowUp(ctx)
 		return sessionFollowUpResultMsg{followUp: followUp, err: err}
 	}
 }
@@ -1986,7 +1986,7 @@ func (m *SessionViewModel) abortSession() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := client.AbortSession(ctx, sessionID)
+		err := client.Session(sessionID).Abort(ctx)
 		return sessionAbortResultMsg{err: err}
 	}
 }
@@ -2073,7 +2073,7 @@ func (m *SessionViewModel) revertSession(messageID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := client.RevertSession(ctx, sessionID, messageID); err != nil {
+		if err := client.Session(sessionID).Revert(ctx, messageID); err != nil {
 			return revertResultMsg{err: err}
 		}
 		return revertResultMsg{messageID: messageID, prompt: prompt}
@@ -2089,7 +2089,7 @@ func (m *SessionViewModel) forkSession(nextMessageID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		info, err := client.ForkSession(ctx, sessionID, nextMessageID)
+		info, err := client.Session(sessionID).Fork(ctx, nextMessageID)
 		if err != nil {
 			return forkResultMsg{err: err}
 		}
@@ -2103,7 +2103,7 @@ func (m *SessionViewModel) setVisibility(visibility agent.SessionVisibility) tea
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := client.SetVisibility(ctx, sessionID, visibility)
+		err := client.Session(sessionID).SetVisibility(ctx, visibility)
 		return sessionVisibilityResultMsg{err: err}
 	}
 }

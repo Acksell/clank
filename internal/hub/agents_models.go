@@ -66,7 +66,7 @@ func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, project
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 
-		agents, err := s.hostClient.ListAgents(ctx, bt, projectDir)
+		agents, err := s.hostClient.Backend(bt).Agents(ctx, projectDir)
 		if err != nil {
 			s.log.Printf("background primary agent refresh for %s/%s: %v", bt, projectDir, err)
 			return
@@ -88,7 +88,7 @@ func (s *Service) warmPrimaryAgentCaches() {
 	if s.Store == nil {
 		return
 	}
-	backends, err := s.hostClient.ListBackends(s.ctx)
+	backends, err := s.hostClient.Backends(s.ctx)
 	if err != nil {
 		s.log.Printf("warning: list backends: %v", err)
 		return

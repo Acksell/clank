@@ -21,7 +21,7 @@ func TestDaemonPermissionReply(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do stuff",
@@ -32,7 +32,7 @@ func TestDaemonPermissionReply(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.ReplyPermission(ctx, info.ID, "perm-42", true)
+	err = client.Session(info.ID).ReplyPermission(ctx, "perm-42", true)
 	if err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestDaemonPermissionReplyNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	err := client.ReplyPermission(context.Background(), "nonexistent", "perm-1", true)
+	err := client.Session("nonexistent").ReplyPermission(context.Background(), "perm-1", true)
 	if err == nil {
 		t.Error("expected error replying to permission on non-existent session")
 	}
@@ -69,7 +69,7 @@ func TestDaemonPendingPermission(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do stuff",
@@ -81,7 +81,7 @@ func TestDaemonPendingPermission(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// No pending permission yet.
-	perms, err := client.GetPendingPermissions(ctx, info.ID)
+	perms, err := client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestDaemonPendingPermission(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Now pending permission should be available.
-	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	perms, err = client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions after emit: %v", err)
 	}
@@ -123,11 +123,11 @@ func TestDaemonPendingPermission(t *testing.T) {
 	}
 
 	// Reply to the permission — should clear the pending state.
-	if err := client.ReplyPermission(ctx, info.ID, "perm-99", true); err != nil {
+	if err := client.Session(info.ID).ReplyPermission(ctx, "perm-99", true); err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
 	}
 
-	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	perms, err = client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions after reply: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestDaemonPendingPermissionNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	_, err := client.GetPendingPermissions(context.Background(), "nonexistent")
+	_, err := client.Session("nonexistent").PendingPermissions(context.Background())
 	if err == nil {
 		t.Error("expected error for non-existent session")
 	}
@@ -159,7 +159,7 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "read two dirs",
@@ -194,7 +194,7 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Both permissions must be present.
-	perms, err := client.GetPendingPermissions(ctx, info.ID)
+	perms, err := client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions: %v", err)
 	}
@@ -209,10 +209,10 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	}
 
 	// Reply to the first with allow — only the second should remain.
-	if err := client.ReplyPermission(ctx, info.ID, "perm-opencode", true); err != nil {
+	if err := client.Session(info.ID).ReplyPermission(ctx, "perm-opencode", true); err != nil {
 		t.Fatalf("ReplyPermission (first): %v", err)
 	}
-	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	perms, err = client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions after first reply: %v", err)
 	}
@@ -224,10 +224,10 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 	}
 
 	// Reply to the second with deny — the queue should be fully cleared.
-	if err := client.ReplyPermission(ctx, info.ID, "perm-clank", false); err != nil {
+	if err := client.Session(info.ID).ReplyPermission(ctx, "perm-clank", false); err != nil {
 		t.Fatalf("ReplyPermission (second): %v", err)
 	}
-	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	perms, err = client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions after second reply: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "read two dirs",
@@ -279,7 +279,7 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	perms, err := client.GetPendingPermissions(ctx, info.ID)
+	perms, err := client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions before deny: %v", err)
 	}
@@ -287,11 +287,11 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 		t.Fatalf("expected 2 pending permissions before deny, got %d", len(perms))
 	}
 
-	if err := client.ReplyPermission(ctx, info.ID, "perm-a", false); err != nil {
+	if err := client.Session(info.ID).ReplyPermission(ctx, "perm-a", false); err != nil {
 		t.Fatalf("ReplyPermission (deny): %v", err)
 	}
 
-	perms, err = client.GetPendingPermissions(ctx, info.ID)
+	perms, err = client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {
 		t.Fatalf("GetPendingPermissions after deny: %v", err)
 	}

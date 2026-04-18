@@ -131,7 +131,7 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	be, _, err := c.CreateSession(ctx, "sid-1", agent.StartRequest{
+	be, _, err := c.Sessions().Create(ctx, "sid-1", agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hi",
@@ -216,7 +216,7 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := context.Background()
-	be, _, err := c.CreateSession(ctx, "sid-2", agent.StartRequest{
+	be, _, err := c.Sessions().Create(ctx, "sid-2", agent.StartRequest{
 		Backend: agent.BackendOpenCode, RepoRemoteURL: testRemoteURL, Prompt: "hi",
 	})
 	if err != nil {
@@ -253,7 +253,7 @@ func TestHTTPRoundTrip_NotFound(t *testing.T) {
 	c := hostclient.NewHTTP(srv.URL, nil)
 	t.Cleanup(func() { _ = c.Close() })
 
-	err := c.StopSession(context.Background(), "does-not-exist")
+	err := c.Session("does-not-exist").Stop(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

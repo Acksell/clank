@@ -23,7 +23,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a session.
-	info, err := client1.CreateSession(ctx, agent.StartRequest{
+	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "fix the bug",
@@ -37,21 +37,21 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Mutate user-owned fields.
-	if _, err := client1.ToggleFollowUp(ctx, info.ID); err != nil {
+	if _, err := client1.Session(info.ID).ToggleFollowUp(ctx); err != nil {
 		t.Fatalf("ToggleFollowUp: %v", err)
 	}
-	if err := client1.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+	if err := client1.Session(info.ID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
 		t.Fatalf("SetVisibility: %v", err)
 	}
-	if err := client1.SetDraft(ctx, info.ID, "my draft text"); err != nil {
+	if err := client1.Session(info.ID).SetDraft(ctx, "my draft text"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
-	if err := client1.MarkSessionRead(ctx, info.ID); err != nil {
+	if err := client1.Session(info.ID).MarkRead(ctx); err != nil {
 		t.Fatalf("MarkSessionRead: %v", err)
 	}
 
 	// Snapshot the session before stopping.
-	before, err := client1.GetSession(ctx, info.ID)
+	before, err := client1.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	defer cleanup2()
 
 	// The session should survive the restart.
-	sessions, err := client2.ListSessions(ctx)
+	sessions, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	_, client1, sockPath, dbPath, repoDir, cleanup1 := testDaemonWithStore(t, dir)
 	ctx := context.Background()
 
-	info, err := client1.CreateSession(ctx, agent.StartRequest{
+	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",
@@ -133,7 +133,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	}
 	time.Sleep(150 * time.Millisecond)
 
-	if err := client1.DeleteSession(ctx, info.ID); err != nil {
+	if err := client1.Session(info.ID).Delete(ctx); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 		st2.Close()
 	}()
 
-	sessions, err := client2.ListSessions(ctx)
+	sessions, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	_ = d1
 	ctx := context.Background()
 
-	info, err := client1.CreateSession(ctx, agent.StartRequest{
+	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do something",
@@ -188,7 +188,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// Verify the session is busy (mockBackend transitions to busy on Start).
-	session, err := client1.GetSession(ctx, info.ID)
+	session, err := client1.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 		st2.Close()
 	}()
 
-	sessions, err := client2.ListSessions(ctx)
+	sessions, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -266,11 +266,11 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 	client1, sockPath, cleanup1 := startHubOnSocket(t, d1)
 
 	ctx := context.Background()
-	if err := client1.DiscoverSessions(ctx, "/tmp/stale-project"); err != nil {
+	if err := client1.Sessions().Discover(ctx, "/tmp/stale-project"); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
-	sessions1, err := client1.ListSessions(ctx)
+	sessions1, err := client1.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 
 	// After restart, the session loaded from DB should already be idle
 	// (normalized on load).
-	sessions2, err := client2.ListSessions(ctx)
+	sessions2, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions (after restart): %v", err)
 	}
@@ -326,11 +326,11 @@ func TestDiscoverSessions_NormalizesStaleStatusOnRediscover(t *testing.T) {
 	}
 
 	// Re-discover — should also not revert to stale status.
-	if err := client2.DiscoverSessions(ctx, "/tmp/stale-project"); err != nil {
+	if err := client2.Sessions().Discover(ctx, "/tmp/stale-project"); err != nil {
 		t.Fatalf("DiscoverSessions (phase 2): %v", err)
 	}
 
-	sessions3, err := client2.ListSessions(ctx)
+	sessions3, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions (after re-discover): %v", err)
 	}
@@ -351,7 +351,7 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "hello",
@@ -362,13 +362,13 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mutate through all persist paths — none should panic.
-	_, _ = client.ToggleFollowUp(ctx, info.ID)
-	_ = client.SetVisibility(ctx, info.ID, agent.VisibilityArchived)
-	_ = client.SetDraft(ctx, info.ID, "draft")
-	_ = client.MarkSessionRead(ctx, info.ID)
-	_ = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "msg"})
+	_, _ = client.Session(info.ID).ToggleFollowUp(ctx)
+	_ = client.Session(info.ID).SetVisibility(ctx, agent.VisibilityArchived)
+	_ = client.Session(info.ID).SetDraft(ctx, "draft")
+	_ = client.Session(info.ID).MarkRead(ctx)
+	_ = client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "msg"})
 	time.Sleep(100 * time.Millisecond)
-	_ = client.DeleteSession(ctx, info.ID)
+	_ = client.Session(info.ID).Delete(ctx)
 }
 
 func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
@@ -393,11 +393,11 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	d1.BackendManagers[agent.BackendOpenCode] = discMgr1
 	ctx := context.Background()
 
-	if err := client1.DiscoverSessions(ctx, "/tmp/merge-project"); err != nil {
+	if err := client1.Sessions().Discover(ctx, "/tmp/merge-project"); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
-	sessions, err := client1.ListSessions(ctx)
+	sessions, err := client1.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -407,13 +407,13 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	sessionID := sessions[0].ID
 
 	// Set user-owned fields on the discovered session.
-	if _, err := client1.ToggleFollowUp(ctx, sessionID); err != nil {
+	if _, err := client1.Session(sessionID).ToggleFollowUp(ctx); err != nil {
 		t.Fatalf("ToggleFollowUp: %v", err)
 	}
-	if err := client1.SetVisibility(ctx, sessionID, agent.VisibilityDone); err != nil {
+	if err := client1.Session(sessionID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
 		t.Fatalf("SetVisibility: %v", err)
 	}
-	if err := client1.SetDraft(ctx, sessionID, "my followup draft"); err != nil {
+	if err := client1.Session(sessionID).SetDraft(ctx, "my followup draft"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
 
@@ -448,11 +448,11 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	}()
 
 	// Re-discover — the session should be a duplicate (already loaded from DB).
-	if err := client2.DiscoverSessions(ctx, "/tmp/merge-project"); err != nil {
+	if err := client2.Sessions().Discover(ctx, "/tmp/merge-project"); err != nil {
 		t.Fatalf("DiscoverSessions (phase 2): %v", err)
 	}
 
-	sessions2, err := client2.ListSessions(ctx)
+	sessions2, err := client2.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}

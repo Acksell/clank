@@ -1,0 +1,44 @@
+package hostclient
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+)
+
+// SessionsClient is the collection-scoped handle for session operations
+// that don't target a single existing session. Obtained via
+// HTTP.Sessions().
+type SessionsClient struct {
+	c *HTTP
+}
+
+// Sessions returns the collection-scoped session handle.
+func (c *HTTP) Sessions() *SessionsClient {
+	return &SessionsClient{c: c}
+}
+
+// Create starts a new session on the host. Returns a SessionBackend
+// adapter bound to the new session and the host's CreateInfo.
+func (s *SessionsClient) Create(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error) {
+	body := struct {
+		SessionID string             `json:"session_id"`
+		Request   agent.StartRequest `json:"request"`
+	}{sessionID, req}
+	var snap struct {
+		SessionID   string              `json:"session_id"`
+		ExternalID  string              `json:"external_id"`
+		Status      agent.SessionStatus `json:"status"`
+		ProjectDir  string              `json:"project_dir"`
+		WorktreeDir string              `json:"worktree_dir"`
+	}
+	if err := s.c.do(ctx, http.MethodPost, "/sessions", body, &snap); err != nil {
+		return nil, host.CreateInfo{}, err
+	}
+	return newHTTPSessionBackend(s.c, sessionID, snap.ExternalID, snap.Status), host.CreateInfo{
+		ProjectDir:  snap.ProjectDir,
+		WorktreeDir: snap.WorktreeDir,
+	}, nil
+}

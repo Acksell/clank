@@ -224,7 +224,7 @@ func (tp *hubToolProvider) KnownProjectDirs(ctx context.Context) ([]string, erro
 		return nil, nil
 	}
 	seen := make(map[string]struct{})
-	backends, err := tp.s.hostClient.ListBackends(ctx)
+	backends, err := tp.s.hostClient.Backends(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list backends: %w", err)
 	}

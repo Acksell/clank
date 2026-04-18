@@ -92,7 +92,7 @@ The daemon is auto-started if not already running.`,
 			// Subscribe to SSE BEFORE creating the session so we don't miss
 			// events emitted during session startup.
 			sseCtx, sseCancel := context.WithCancel(context.Background())
-			events, err := client.SubscribeEvents(sseCtx)
+			events, err := client.Sessions().Subscribe(sseCtx)
 			if err != nil {
 				sseCancel()
 				return fmt.Errorf("subscribe events: %w", err)
@@ -108,7 +108,7 @@ The daemon is auto-started if not already running.`,
 				return fmt.Errorf("resolve repo remote: %w", err)
 			}
 
-			info, err := client.CreateSession(ctx, agent.StartRequest{
+			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:        bt,
 				Hostname:       string(host.HostLocal),
 				RepoRemoteURL:  remoteURL,

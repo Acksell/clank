@@ -8,10 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"strconv"
 
-	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -122,107 +119,25 @@ func errorFromResp(resp *http.Response) error {
 	}
 }
 
-// --- Client surface ---
+// --- Top-level surface ---
 
+// Status fetches the host's status snapshot.
 func (c *HTTP) Status(ctx context.Context) (host.HostStatus, error) {
 	var out host.HostStatus
 	err := c.do(ctx, http.MethodGet, "/status", nil, &out)
 	return out, err
 }
 
-func (c *HTTP) ListBackends(ctx context.Context) ([]host.BackendInfo, error) {
+// Backends lists the backends this host has registered.
+func (c *HTTP) Backends(ctx context.Context) ([]host.BackendInfo, error) {
 	var out []host.BackendInfo
 	err := c.do(ctx, http.MethodGet, "/backends", nil, &out)
 	return out, err
 }
 
-func (c *HTTP) ListAgents(ctx context.Context, bt agent.BackendType, projectDir string) ([]host.AgentInfo, error) {
-	q := url.Values{"backend": {string(bt)}, "project_dir": {projectDir}}
-	var out []host.AgentInfo
-	err := c.do(ctx, http.MethodGet, "/agents?"+q.Encode(), nil, &out)
-	return out, err
-}
-
-func (c *HTTP) ListModels(ctx context.Context, bt agent.BackendType, projectDir string) ([]host.ModelInfo, error) {
-	q := url.Values{"backend": {string(bt)}, "project_dir": {projectDir}}
-	var out []host.ModelInfo
-	err := c.do(ctx, http.MethodGet, "/models?"+q.Encode(), nil, &out)
-	return out, err
-}
-
-func (c *HTTP) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
-	body := struct {
-		Backend agent.BackendType `json:"backend"`
-		SeedDir string            `json:"seed_dir"`
-	}{Backend: bt, SeedDir: seedDir}
-	var out []agent.SessionSnapshot
-	err := c.do(ctx, http.MethodPost, "/discover", body, &out)
-	return out, err
-}
-
-func (c *HTTP) ListRepos(ctx context.Context) ([]host.Repo, error) {
+// Repos lists the repos this host knows about.
+func (c *HTTP) Repos(ctx context.Context) ([]host.Repo, error) {
 	var out []host.Repo
 	err := c.do(ctx, http.MethodGet, "/repos", nil, &out)
 	return out, err
-}
-
-// ListBranchesByRepo et al. take the canonical GitRef string used as the
-// repo's URL key (typically obtained from GitRef.Canonical() at the call
-// site or from a previously-returned host.Repo's Ref).
-func (c *HTTP) ListBranchesByRepo(ctx context.Context, ref string) ([]host.BranchInfo, error) {
-	var out []host.BranchInfo
-	err := c.do(ctx, http.MethodGet, "/repos/"+url.PathEscape(ref)+"/branches", nil, &out)
-	return out, err
-}
-
-func (c *HTTP) ResolveWorktreeByRepo(ctx context.Context, ref, branch string) (host.WorktreeInfo, error) {
-	body := struct {
-		Branch string `json:"branch"`
-	}{branch}
-	var out host.WorktreeInfo
-	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(ref)+"/worktrees", body, &out)
-	return out, err
-}
-
-func (c *HTTP) RemoveWorktreeByRepo(ctx context.Context, ref, branch string, force bool) error {
-	q := url.Values{
-		"branch": {branch},
-		"force":  {strconv.FormatBool(force)},
-	}
-	return c.do(ctx, http.MethodDelete, "/repos/"+url.PathEscape(ref)+"/worktrees?"+q.Encode(), nil, nil)
-}
-
-func (c *HTTP) MergeBranchByRepo(ctx context.Context, ref, branch, commitMessage string) (host.MergeResult, error) {
-	body := struct {
-		Branch        string `json:"branch"`
-		CommitMessage string `json:"commit_message,omitempty"`
-	}{branch, commitMessage}
-	var out host.MergeResult
-	err := c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(ref)+"/worktrees/merge", body, &out)
-	return out, err
-}
-
-func (c *HTTP) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error) {
-	body := struct {
-		SessionID string             `json:"session_id"`
-		Request   agent.StartRequest `json:"request"`
-	}{sessionID, req}
-	var snap struct {
-		SessionID   string              `json:"session_id"`
-		ExternalID  string              `json:"external_id"`
-		Status      agent.SessionStatus `json:"status"`
-		ProjectDir  string              `json:"project_dir"`
-		WorktreeDir string              `json:"worktree_dir"`
-	}
-	if err := c.do(ctx, http.MethodPost, "/sessions", body, &snap); err != nil {
-		return nil, host.CreateInfo{}, err
-	}
-	return newHTTPSessionBackend(c, sessionID, snap.ExternalID, snap.Status), host.CreateInfo{
-		ProjectDir:  snap.ProjectDir,
-		WorktreeDir: snap.WorktreeDir,
-	}, nil
-}
-
-func (c *HTTP) StopSession(ctx context.Context, sessionID string) error {
-	return c.do(ctx, http.MethodPost, "/sessions/"+sessionID+"/stop", nil, nil)
 }

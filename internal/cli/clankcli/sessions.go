@@ -62,7 +62,7 @@ Use --visibility to include done/archived sessions.`,
 
 			// If no filters specified, list all active sessions.
 			if query == "" && since == "" && until == "" && visibility == "" {
-				sessions, err := client.ListSessions(ctx)
+				sessions, err := client.Sessions().List(ctx)
 				if err != nil {
 					return fmt.Errorf("list sessions: %w", err)
 				}
@@ -88,7 +88,7 @@ Use --visibility to include done/archived sessions.`,
 				p.Until = t
 			}
 
-			sessions, err := client.SearchSessions(ctx, p)
+			sessions, err := client.Sessions().Search(ctx, p)
 			if err != nil {
 				return fmt.Errorf("search sessions: %w", err)
 			}
@@ -120,7 +120,7 @@ func sessionsGetCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			info, err := client.GetSession(ctx, args[0])
+			info, err := client.Session(args[0]).Get(ctx)
 			if err != nil {
 				return fmt.Errorf("get session: %w", err)
 			}
@@ -147,7 +147,7 @@ func sessionsMessagesCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			messages, err := client.GetSessionMessages(ctx, args[0])
+			messages, err := client.Session(args[0]).Messages(ctx)
 			if err != nil {
 				return fmt.Errorf("get messages: %w", err)
 			}
@@ -183,7 +183,7 @@ func sessionsSendCmd() *cobra.Command {
 			sessionID := args[0]
 			text := strings.Join(args[1:], " ")
 
-			if err := client.SendMessage(ctx, sessionID, agent.SendMessageOpts{Text: text}); err != nil {
+			if err := client.Session(sessionID).Send(ctx, agent.SendMessageOpts{Text: text}); err != nil {
 				return fmt.Errorf("send message: %w", err)
 			}
 			return writeJSONOut(map[string]string{
@@ -234,7 +234,7 @@ func sessionsNewCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve repo remote: %w", err)
 			}
-			info, err := client.CreateSession(ctx, agent.StartRequest{
+			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:        bt,
 				Hostname:       string(host.HostLocal),
 				RepoRemoteURL:  remoteURL,
@@ -273,7 +273,7 @@ func sessionsAbortCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			if err := client.AbortSession(ctx, args[0]); err != nil {
+			if err := client.Session(args[0]).Abort(ctx); err != nil {
 				return fmt.Errorf("abort session: %w", err)
 			}
 			return writeJSONOut(map[string]string{

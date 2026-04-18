@@ -35,7 +35,7 @@ func TestDaemonListAgents(t *testing.T) {
 	ctx := context.Background()
 
 	// List agents for OpenCode backend.
-	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestDaemonListAgents(t *testing.T) {
 	}
 
 	// List agents for Claude Code (no agent lister support).
-	agents, err = client.ListAgents(ctx, agent.BackendClaudeCode, "/tmp/test")
+	agents, err = client.Backend(agent.BackendClaudeCode).Agents(ctx, "/tmp/test")
 	if err != nil {
 		t.Fatalf("ListAgents for Claude Code: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestDaemonListAgentsMissingParams(t *testing.T) {
 
 	ctx := context.Background()
 	// Missing backend param — should return an error.
-	_, err := client.ListAgents(ctx, "", "/tmp/test")
+	_, err := client.Backend("").Agents(ctx, "/tmp/test")
 	if err == nil {
 		t.Error("expected error for missing backend param")
 	}
@@ -118,7 +118,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	// create any sessions, so this shouldn't fire).
 
 	// Request agents — should return cached data immediately.
-	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test-proj")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test-proj")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	// After the refresh completes, subsequent requests should get the fresh data.
 	time.Sleep(200 * time.Millisecond)
 
-	agents, err = client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/test-proj")
+	agents, err = client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/test-proj")
 	if err != nil {
 		t.Fatalf("ListAgents (2nd call): %v", err)
 	}
@@ -185,7 +185,7 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	ctx := context.Background()
 
 	// No cache — should fall back to synchronous lister call.
-	agents, err := client.ListAgents(ctx, agent.BackendOpenCode, "/tmp/uncached-proj")
+	agents, err := client.Backend(agent.BackendOpenCode).Agents(ctx, "/tmp/uncached-proj")
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
 	}

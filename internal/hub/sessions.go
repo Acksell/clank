@@ -22,12 +22,12 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 	// snapshots. Discovery is best-effort per backend — failures are
 	// logged but do not abort the whole call.
 	var snapshots []agent.SessionSnapshot
-	backends, err := s.hostClient.ListBackends(ctx)
+	backends, err := s.hostClient.Backends(ctx)
 	if err != nil {
 		return DiscoverResult{}, err
 	}
 	for _, bi := range backends {
-		found, err := s.hostClient.DiscoverSessions(ctx, bi.Name, projectDir)
+		found, err := s.hostClient.Backend(bi.Name).Discover(ctx, projectDir)
 		if err != nil {
 			s.log.Printf("discover sessions (%s): %v", bi.Name, err)
 			continue
@@ -135,7 +135,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
-	backend, _, err := s.hostClient.CreateSession(s.ctx, id, agent.StartRequest{
+	backend, _, err := s.hostClient.Sessions().Create(s.ctx, id, agent.StartRequest{
 		Backend:        ms.info.Backend,
 		Hostname:       ms.info.Hostname,
 		RepoRemoteURL:  ms.info.RepoRemoteURL,
@@ -322,7 +322,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// CreateInfo so the Hub can populate SessionInfo paths without
 	// having to compute filesystem layout itself.
 	id := ulid.Make().String()
-	backend, info, err := s.hostClient.CreateSession(s.ctx, id, req)
+	backend, info, err := s.hostClient.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
 	}

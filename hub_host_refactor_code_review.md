@@ -454,21 +454,59 @@ Real filesystem in tests, isolated tmp file per test.
 
 ### 7.7 Sub-client API shape
 
-Both `internal/hub/client/` and `internal/host/client/`:
+**Hub client** (`internal/hub/client/`) — root `*Client` is multi-host; sub-clients carry bound hostname/gitref/branch as private fields:
 
 ```go
 hub.Host(hostname)                                      // *HostClient
+hub.Host(hostname).Repos(ctx)
 hub.Host(hostname).Repo(gitRef)                         // *RepoClient
 hub.Host(hostname).Repo(gitRef).Branches(ctx)
+hub.Host(hostname).Repo(gitRef).Worktree(branch)        // *WorktreeClient
 hub.Host(hostname).Repo(gitRef).Worktree(branch).Resolve(ctx)
 hub.Host(hostname).Repo(gitRef).Worktree(branch).Remove(ctx, force)
 hub.Host(hostname).Repo(gitRef).Worktree(branch).Merge(ctx, msg)
-hub.Host(hostname).Backend(backend).Agents(ctx, hint)
-hub.Host(hostname).Backend(backend).Models(ctx, hint)
-hub.Host(hostname).Backend(backend).Discover(ctx, hint)
+
+// Backend is FLAT at the hub layer (deviation from earlier draft):
+// the hub multiplexer picks the host internally for catalog ops.
+hub.Backend(backend).Agents(ctx, projectDir)
+hub.Backend(backend).Models(ctx, projectDir)
+
 hub.Sessions().Create(ctx, req)
-hub.Sessions().Get(ctx, id)
+hub.Sessions().List(ctx)
+hub.Sessions().Search(ctx, q)
 hub.Sessions().Subscribe(ctx)
+hub.Sessions().Discover(ctx, projectDir)                // backend-less at hub layer
+
+// Per-id ops live on the handle, not the collection.
+hub.Session(id).Get(ctx)
+hub.Session(id).Messages(ctx, opts)
+hub.Session(id).Send / Abort / Revert / Fork / MarkRead /
+hub.Session(id).ToggleFollowUp / SetVisibility / SetDraft /
+hub.Session(id).Delete / ReplyPermission / PendingPermissions
+```
+
+Voice (`VoiceAudioStream`), `Status`, `Ping`, `PingInfo` stay on the root `*Client`.
+
+**Host client** (`internal/host/client/`) — root `*HTTP` is bound to one host (no `Host(hostname)` prefix); sub-clients are flat:
+
+```go
+c.Status(ctx)
+c.Backends(ctx)
+c.Repos(ctx)
+c.Repo(ref)                                             // *RepoClient
+c.Repo(ref).Branches(ctx)
+c.Repo(ref).Worktree(branch)                            // *WorktreeClient
+c.Repo(ref).Worktree(branch).Resolve(ctx)
+c.Repo(ref).Worktree(branch).Remove(ctx, force)
+c.Repo(ref).Worktree(branch).Merge(ctx, msg)
+c.Backend(bt)                                           // *BackendClient
+c.Backend(bt).Agents(ctx, projectDir)
+c.Backend(bt).Models(ctx, projectDir)
+c.Backend(bt).Discover(ctx, seedDir)
+c.Sessions().Create(ctx, sid, req)                      // returns SessionBackend
+c.Session(id).Stop(ctx)                                 // hub-initiated; per-session ops
+                                                        // beyond Stop live on the
+                                                        // returned SessionBackend.
 ```
 
 Sub-clients carry bound hostname/gitref/branch as private fields. Leaf
@@ -511,7 +549,10 @@ methods take only the args genuinely scoped to that op.
    - **No rebind endpoint.** YAGNI — repos rarely move; if they do, operator edits `host.json`.
    - `verifyDirMatchesRef` evaluates symlinks on both sides before comparing the repo root: `git rev-parse --show-toplevel` returns the realpath while callers commonly pass the symlinked form (e.g. macOS `/var/folders/...` → `/private/var/folders/...`). Caught by `TestCreateSession_AddByDir_NotRoot` red-then-green.
    - Integration tests in `internal/host/createsession_test.go`: add-by-Dir success, add-by-Dir mismatch, add-by-Dir not-root, no-hint ErrNotFound, dir-disagrees-with-stored. The clone-with-AllowClone test currently skips because `GitRef.Canonical()` rejects bare paths and `file://` URLs; end-to-end coverage of the clone branch unblocks when step 8 lands local-kind GitRef as a first-class wire field, or when we add a hermetic git-daemon fixture.
-7. **Sub-client refactor** per §7.7. Walk all call sites.
+7. **[DONE] Sub-client refactor** per §7.7. Walked all call sites in `internal/hub/`, `internal/tui/`, `internal/cli/`, and `internal/host/client/integration_test.go`.
+   - Hub client (`internal/hub/client/`): split monolithic `client.go` into `transport.go` (HTTP + SSE helpers), `host.go`, `repo.go`, `worktree.go`, `backend.go`, `sessions.go`, `session.go`, `voice.go`. Root `*Client` keeps `Status`/`Ping`/`PingInfo`/`VoiceAudioStream` and the sub-client constructors.
+   - Host client (`internal/host/client/`): added `repo.go`, `worktree.go`, `backend.go`, `sessions.go`, `session.go`. Stripped the flat method surface from `http.go`; root `*HTTP` keeps `Status`/`Backends`/`Repos` plus the sub-client constructors.
+   - **Two §7.7 deviations recorded above**: `Get` lives on `Session(id)` not `Sessions()`; `hub.Backend(backend)` is flat (the hub mux picks the host) rather than nested under `Host(hostname)`. `Sessions().Discover` at the hub layer takes no backend param — current wire doesn't need it.
 8. **`StartRequest` finalization + `BackendInvocation` DTO** per §7.3, §7.4. Replace `RepoRemoteURL` (string) with `GitRef` (struct) on the wire. Strip `ProjectDir`/`WorktreeDir`/`ProjectName` from `SessionInfo` and `host.CreateInfo`. Add local-kind registration path (§7.5 step 3). Migrate TUI off deleted fields. `BackendManager.CreateBackend` takes only the DTO.
 9. **Voice** stays in `internal/voice/`. Ratify in design doc.
 10. **Design doc updates** ship in the same commit as each step that changes a load-bearing decision. No more godoc-rationalizations.

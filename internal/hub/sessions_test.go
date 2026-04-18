@@ -20,14 +20,14 @@ func TestDaemonCreateSession(t *testing.T) {
 	// CreateInfo (Phase 3D-2: hub no longer carries paths over the
 	// wire, but SessionInfo still surfaces them as runtime metadata).
 	hc, _ := s.Host("local")
-	repos, err := hc.ListRepos(context.Background())
+	repos, err := hc.Repos(context.Background())
 	if err != nil || len(repos) != 1 {
 		t.Fatalf("ListRepos: %v len=%d", err, len(repos))
 	}
 	wantDir := repos[0].RootDir
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "Fix the bug",
@@ -65,7 +65,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Missing backend.
-	_, err := client.CreateSession(ctx, agent.StartRequest{
+	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
 	})
@@ -74,7 +74,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	}
 
 	// Missing project dir.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		Prompt:  "test",
 	})
@@ -83,7 +83,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	}
 
 	// Missing prompt.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 	})
@@ -92,7 +92,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	}
 
 	// Invalid backend.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       "invalid",
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -109,7 +109,7 @@ func TestDaemonListSessions(t *testing.T) {
 	ctx := context.Background()
 
 	// Initially empty.
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDaemonListSessions(t *testing.T) {
 	}
 
 	// Create two sessions.
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "task a",
@@ -127,7 +127,7 @@ func TestDaemonListSessions(t *testing.T) {
 		t.Fatalf("CreateSession a: %v", err)
 	}
 
-	_, err = client.CreateSession(ctx, agent.StartRequest{
+	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendClaudeCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "task b",
@@ -139,7 +139,7 @@ func TestDaemonListSessions(t *testing.T) {
 	// Allow time for backends to start.
 	time.Sleep(100 * time.Millisecond)
 
-	sessions, err = client.ListSessions(ctx)
+	sessions, err = client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestDaemonGetSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -162,7 +162,7 @@ func TestDaemonGetSession(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestDaemonGetSession(t *testing.T) {
 	}
 
 	// Non-existent session.
-	_, err = client.GetSession(ctx, "nonexistent")
+	_, err = client.Session("nonexistent").Get(ctx)
 	if err == nil {
 		t.Error("expected error for non-existent session")
 	}
@@ -183,7 +183,7 @@ func TestDaemonGetSessionMessages(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -215,7 +215,7 @@ func TestDaemonGetSessionMessages(t *testing.T) {
 	}
 	b.mu.Unlock()
 
-	messages, err := client.GetSessionMessages(ctx, info.ID)
+	messages, err := client.Session(info.ID).Messages(ctx)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestDaemonGetSessionMessagesEmpty(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -257,7 +257,7 @@ func TestDaemonGetSessionMessagesEmpty(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Backend returns nil history by default — should get empty array.
-	messages, err := client.GetSessionMessages(ctx, info.ID)
+	messages, err := client.Session(info.ID).Messages(ctx)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestDaemonGetSessionMessagesNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	_, err := client.GetSessionMessages(context.Background(), "nonexistent")
+	_, err := client.Session("nonexistent").Messages(context.Background())
 	if err == nil {
 		t.Error("expected error for non-existent session")
 	}
@@ -289,7 +289,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "initial prompt",
@@ -301,7 +301,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	// Wait for backend to start.
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow-up message"})
+	err = client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "follow-up message"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestDaemonAbortSession(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do stuff",
@@ -340,7 +340,7 @@ func TestDaemonAbortSession(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.AbortSession(ctx, info.ID)
+	err = client.Session(info.ID).Abort(ctx)
 	if err != nil {
 		t.Fatalf("AbortSession: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestDaemonRevertSession(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do stuff",
@@ -378,7 +378,7 @@ func TestDaemonRevertSession(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.RevertSession(ctx, info.ID, "msg-abc-123")
+	err = client.Session(info.ID).Revert(ctx, "msg-abc-123")
 	if err != nil {
 		t.Fatalf("RevertSession: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestDaemonRevertSessionMissingMessageID(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -413,7 +413,7 @@ func TestDaemonRevertSessionMissingMessageID(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Empty message_id should return an error.
-	err = client.RevertSession(ctx, info.ID, "")
+	err = client.Session(info.ID).Revert(ctx, "")
 	if err == nil {
 		t.Error("expected error for empty message_id")
 	}
@@ -423,7 +423,7 @@ func TestDaemonRevertSessionNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	err := client.RevertSession(context.Background(), "nonexistent", "msg-123")
+	err := client.Session("nonexistent").Revert(context.Background(), "msg-123")
 	if err == nil {
 		t.Error("expected error reverting non-existent session")
 	}
@@ -441,7 +441,7 @@ func TestDaemonForkSession(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "original session",
@@ -452,7 +452,7 @@ func TestDaemonForkSession(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	forked, err := client.ForkSession(ctx, info.ID, "msg-fork-point")
+	forked, err := client.Session(info.ID).Fork(ctx, "msg-fork-point")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
 	registerTestRepo(t, s)
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -513,7 +513,7 @@ func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Empty message_id should fork the entire session (not return an error).
-	forked, err := client.ForkSession(ctx, info.ID, "")
+	forked, err := client.Session(info.ID).Fork(ctx, "")
 	if err != nil {
 		t.Fatalf("ForkSession with empty messageID: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestDaemonForkSessionNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	_, err := client.ForkSession(context.Background(), "nonexistent", "msg-123")
+	_, err := client.Session("nonexistent").Fork(context.Background(), "msg-123")
 	if err == nil {
 		t.Error("expected error forking non-existent session")
 	}
@@ -548,7 +548,7 @@ func TestDaemonDeleteSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -559,18 +559,18 @@ func TestDaemonDeleteSession(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.DeleteSession(ctx, info.ID)
+	err = client.Session(info.ID).Delete(ctx)
 	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
 
 	// Session should be gone.
-	_, err = client.GetSession(ctx, info.ID)
+	_, err = client.Session(info.ID).Get(ctx)
 	if err == nil {
 		t.Error("expected error getting deleted session")
 	}
 
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestDaemonSendMessageToNonexistentSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	err := client.SendMessage(ctx, "nonexistent", agent.SendMessageOpts{Text: "hello"})
+	err := client.Session("nonexistent").Send(ctx, agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending to non-existent session")
 	}
@@ -595,7 +595,7 @@ func TestDaemonSendEmptyMessage(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test",
@@ -606,7 +606,7 @@ func TestDaemonSendEmptyMessage(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: ""})
+	err = client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: ""})
 	if err == nil {
 		t.Error("expected error sending empty message")
 	}
@@ -617,7 +617,7 @@ func TestDaemonDeleteNonexistentSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	err := client.DeleteSession(ctx, "nonexistent")
+	err := client.Session("nonexistent").Delete(ctx)
 	if err == nil {
 		t.Error("expected error deleting non-existent session")
 	}
@@ -655,7 +655,7 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a session.
-	created, err := client.CreateSession(ctx, agent.StartRequest{
+	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -670,7 +670,7 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Newly created session should be unread (LastReadAt is zero).
-	info, err := client.GetSession(ctx, created.ID)
+	info, err := client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -679,12 +679,12 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 	}
 
 	// Mark the session as read.
-	if err := client.MarkSessionRead(ctx, created.ID); err != nil {
+	if err := client.Session(created.ID).MarkRead(ctx); err != nil {
 		t.Fatalf("MarkSessionRead: %v", err)
 	}
 
 	// Session should now be read.
-	info, err = client.GetSession(ctx, created.ID)
+	info, err = client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after mark read: %v", err)
 	}
@@ -701,7 +701,7 @@ func TestDaemonMarkSessionReadNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	err := client.MarkSessionRead(context.Background(), "nonexistent-id")
+	err := client.Session("nonexistent-id").MarkRead(context.Background())
 	if err == nil {
 		t.Error("expected error for nonexistent session")
 	}
@@ -714,7 +714,7 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 
 	ctx := context.Background()
 
-	created, err := client.CreateSession(ctx, agent.StartRequest{
+	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -728,12 +728,12 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark as read.
-	if err := client.MarkSessionRead(ctx, created.ID); err != nil {
+	if err := client.Session(created.ID).MarkRead(ctx); err != nil {
 		t.Fatalf("MarkSessionRead: %v", err)
 	}
 
 	// Verify it's read.
-	info, err := client.GetSession(ctx, created.ID)
+	info, err := client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Session should be unread again because UpdatedAt was bumped.
-	info, err = client.GetSession(ctx, created.ID)
+	info, err = client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after status change: %v", err)
 	}
@@ -781,7 +781,7 @@ func TestDaemonTitleUpdateOnSession(t *testing.T) {
 
 	ctx := context.Background()
 
-	created, err := client.CreateSession(ctx, agent.StartRequest{
+	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "Fix the login bug",
@@ -793,7 +793,7 @@ func TestDaemonTitleUpdateOnSession(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify title is initially empty.
-	info, err := client.GetSession(ctx, created.ID)
+	info, err := client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -815,7 +815,7 @@ func TestDaemonTitleUpdateOnSession(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Session should now have the title.
-	info, err = client.GetSession(ctx, created.ID)
+	info, err = client.Session(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after title change: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestDaemonTitleVisibleInList(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := client.CreateSession(ctx, agent.StartRequest{
+	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "Fix the login bug",
@@ -857,7 +857,7 @@ func TestDaemonTitleVisibleInList(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Title should be visible in session list.
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 	ctx := context.Background()
 
 	// Create session with agent specified.
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test with agent",
@@ -892,7 +892,7 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify agent is stored on session info.
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -901,14 +901,14 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 	}
 
 	// Send a message with a different agent — should update the session's agent.
-	err = client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow up", Agent: "build"})
+	err = client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "follow up", Agent: "build"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	got, err = client.GetSession(ctx, info.ID)
+	got, err = client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after SendMessage: %v", err)
 	}
@@ -947,12 +947,12 @@ func TestDiscoverSessionsAddsHistoricalSessions(t *testing.T) {
 	ctx := context.Background()
 
 	// Trigger discovery.
-	if err := client.DiscoverSessions(ctx, "/tmp/project-alpha"); err != nil {
+	if err := client.Sessions().Discover(ctx, "/tmp/project-alpha"); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
 	// Both sessions should now appear in the list.
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -997,15 +997,15 @@ func TestDiscoverSessionsDeduplicates(t *testing.T) {
 	ctx := context.Background()
 
 	// Discover twice.
-	if err := client.DiscoverSessions(ctx, "/tmp/project-x"); err != nil {
+	if err := client.Sessions().Discover(ctx, "/tmp/project-x"); err != nil {
 		t.Fatalf("DiscoverSessions (1st): %v", err)
 	}
-	if err := client.DiscoverSessions(ctx, "/tmp/project-x"); err != nil {
+	if err := client.Sessions().Discover(ctx, "/tmp/project-x"); err != nil {
 		t.Fatalf("DiscoverSessions (2nd): %v", err)
 	}
 
 	// Should still only have 1 session (not duplicated).
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -1047,7 +1047,7 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a real session first. runBackend will set ExternalID to "oc-real-session".
-	_, err := client.CreateSession(ctx, agent.StartRequest{
+	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "do stuff",
@@ -1060,11 +1060,11 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Now discover — should NOT create a duplicate.
-	if err := client.DiscoverSessions(ctx, "/tmp/project-z"); err != nil {
+	if err := client.Sessions().Discover(ctx, "/tmp/project-z"); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -1094,12 +1094,12 @@ func TestHistoricalSessionMessagesActivatesBackend(t *testing.T) {
 	ctx := context.Background()
 
 	// Discover the historical session.
-	if err := client.DiscoverSessions(ctx, repoDir); err != nil {
+	if err := client.Sessions().Discover(ctx, repoDir); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
 	// Find the discovered session's daemon ID.
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -1114,7 +1114,7 @@ func TestHistoricalSessionMessagesActivatesBackend(t *testing.T) {
 	}
 
 	// Fetch messages — this should trigger lazy backend activation.
-	messages, err := client.GetSessionMessages(ctx, sessionID)
+	messages, err := client.Session(sessionID).Messages(ctx)
 	if err != nil {
 		t.Fatalf("GetSessionMessages: %v", err)
 	}
@@ -1154,11 +1154,11 @@ func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
 	ctx := context.Background()
 
 	// Discover the historical session.
-	if err := client.DiscoverSessions(ctx, repoDir); err != nil {
+	if err := client.Sessions().Discover(ctx, repoDir); err != nil {
 		t.Fatalf("DiscoverSessions: %v", err)
 	}
 
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -1173,7 +1173,7 @@ func TestHistoricalSessionResumeActivatesBackend(t *testing.T) {
 	}
 
 	// Send a follow-up message — this triggers resume (activateBackend + runBackend).
-	err = client.SendMessage(ctx, sessionID, agent.SendMessageOpts{Text: "continue from here"})
+	err = client.Session(sessionID).Send(ctx, agent.SendMessageOpts{Text: "continue from here"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -1206,7 +1206,7 @@ func TestDaemonSetVisibilityDone(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1218,11 +1218,11 @@ func TestDaemonSetVisibilityDone(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark as done.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
 		t.Fatalf("SetVisibility(done): %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1240,7 +1240,7 @@ func TestDaemonSetVisibilityArchived(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1252,11 +1252,11 @@ func TestDaemonSetVisibilityArchived(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark as archived.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityArchived); err != nil {
 		t.Fatalf("SetVisibility(archived): %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1274,7 +1274,7 @@ func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1286,14 +1286,14 @@ func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark done, then revert to visible.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
 		t.Fatalf("SetVisibility(done): %v", err)
 	}
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityVisible); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityVisible); err != nil {
 		t.Fatalf("SetVisibility(visible): %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1311,7 +1311,7 @@ func TestDaemonUnarchiveSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1323,11 +1323,11 @@ func TestDaemonUnarchiveSession(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Archive the session.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityArchived); err != nil {
 		t.Fatalf("SetVisibility(archived): %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after archive: %v", err)
 	}
@@ -1339,11 +1339,11 @@ func TestDaemonUnarchiveSession(t *testing.T) {
 	}
 
 	// Unarchive the session.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityVisible); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityVisible); err != nil {
 		t.Fatalf("SetVisibility(visible): %v", err)
 	}
 
-	got, err = client.GetSession(ctx, info.ID)
+	got, err = client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after unarchive: %v", err)
 	}
@@ -1361,7 +1361,7 @@ func TestDaemonSetVisibilityInvalid(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1373,7 +1373,7 @@ func TestDaemonSetVisibilityInvalid(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Invalid visibility value should fail.
-	err = client.SetVisibility(ctx, info.ID, agent.SessionVisibility("invalid"))
+	err = client.Session(info.ID).SetVisibility(ctx, agent.SessionVisibility("invalid"))
 	if err == nil {
 		t.Error("expected error for invalid visibility value")
 	}
@@ -1384,7 +1384,7 @@ func TestDaemonSetVisibilityNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	err := client.SetVisibility(context.Background(), "nonexistent-id", agent.VisibilityDone)
+	err := client.Session("nonexistent-id").SetVisibility(context.Background(), agent.VisibilityDone)
 	if err == nil {
 		t.Error("expected error for nonexistent session")
 	}
@@ -1396,7 +1396,7 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1408,10 +1408,10 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark session as done.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityDone); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
 		t.Fatalf("SetVisibility(done): %v", err)
 	}
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1420,14 +1420,14 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 	}
 
 	// Send a follow-up message to the done session.
-	if err := client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow up"}); err != nil {
+	if err := client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "follow up"}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
 	// Visibility should be reset to visible.
-	got, err = client.GetSession(ctx, info.ID)
+	got, err = client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after SendMessage: %v", err)
 	}
@@ -1442,7 +1442,7 @@ func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1454,10 +1454,10 @@ func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Mark session as archived.
-	if err := client.SetVisibility(ctx, info.ID, agent.VisibilityArchived); err != nil {
+	if err := client.Session(info.ID).SetVisibility(ctx, agent.VisibilityArchived); err != nil {
 		t.Fatalf("SetVisibility(archived): %v", err)
 	}
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1466,14 +1466,14 @@ func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
 	}
 
 	// Send a follow-up message to the archived session.
-	if err := client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "follow up"}); err != nil {
+	if err := client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "follow up"}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
 	// Visibility should be reset to visible.
-	got, err = client.GetSession(ctx, info.ID)
+	got, err = client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession after SendMessage: %v", err)
 	}
@@ -1490,7 +1490,7 @@ func TestDaemonSetDraft(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1502,11 +1502,11 @@ func TestDaemonSetDraft(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Set a draft.
-	if err := client.SetDraft(ctx, info.ID, "work in progress"); err != nil {
+	if err := client.Session(info.ID).SetDraft(ctx, "work in progress"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1521,7 +1521,7 @@ func TestDaemonSetDraftClear(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1533,14 +1533,14 @@ func TestDaemonSetDraftClear(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Set then clear.
-	if err := client.SetDraft(ctx, info.ID, "draft text"); err != nil {
+	if err := client.Session(info.ID).SetDraft(ctx, "draft text"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
-	if err := client.SetDraft(ctx, info.ID, ""); err != nil {
+	if err := client.Session(info.ID).SetDraft(ctx, ""); err != nil {
 		t.Fatalf("SetDraft(clear): %v", err)
 	}
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1554,7 +1554,7 @@ func TestDaemonSetDraftNotFound(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	err := client.SetDraft(context.Background(), "nonexistent-id", "draft")
+	err := client.Session("nonexistent-id").SetDraft(context.Background(), "draft")
 	if err == nil {
 		t.Error("expected error for nonexistent session")
 	}
@@ -1566,7 +1566,7 @@ func TestDaemonDraftVisibleInList(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1577,11 +1577,11 @@ func TestDaemonDraftVisibleInList(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	if err := client.SetDraft(ctx, info.ID, "my draft"); err != nil {
+	if err := client.Session(info.ID).SetDraft(ctx, "my draft"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
 
-	sessions, err := client.ListSessions(ctx)
+	sessions, err := client.Sessions().List(ctx)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -1599,7 +1599,7 @@ func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:       agent.BackendOpenCode,
 		RepoRemoteURL: testRemoteURL,
 		Prompt:        "test prompt",
@@ -1611,18 +1611,18 @@ func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Set a draft.
-	if err := client.SetDraft(ctx, info.ID, "my draft"); err != nil {
+	if err := client.Session(info.ID).SetDraft(ctx, "my draft"); err != nil {
 		t.Fatalf("SetDraft: %v", err)
 	}
 
 	// Send a message — should clear the draft.
-	if err := client.SendMessage(ctx, info.ID, agent.SendMessageOpts{Text: "real message"}); err != nil {
+	if err := client.Session(info.ID).Send(ctx, agent.SendMessageOpts{Text: "real message"}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	got, err := client.GetSession(ctx, info.ID)
+	got, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -1690,7 +1690,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	// --- Substring AND matching ---
 
 	// Substring match: "authentication" appears in ses-s1 title.
-	results, err := client.SearchSessions(ctx, search("authentication"))
+	results, err := client.Sessions().Search(ctx, search("authentication"))
 	if err != nil {
 		t.Fatalf("SearchSessions(authentication): %v", err)
 	}
@@ -1702,7 +1702,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// Multi-word AND: both "dark" and "toggle" must appear.
-	results, err = client.SearchSessions(ctx, search("dark toggle"))
+	results, err = client.Sessions().Search(ctx, search("dark toggle"))
 	if err != nil {
 		t.Fatalf("SearchSessions(dark toggle): %v", err)
 	}
@@ -1714,7 +1714,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// Multi-word AND where one term doesn't match: "dark queries" returns nothing.
-	results, err = client.SearchSessions(ctx, search("dark queries"))
+	results, err = client.Sessions().Search(ctx, search("dark queries"))
 	if err != nil {
 		t.Fatalf("SearchSessions(dark queries): %v", err)
 	}
@@ -1723,7 +1723,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// Case insensitive: "DATABASE" matches "database" in ses-s3.
-	results, err = client.SearchSessions(ctx, search("DATABASE"))
+	results, err = client.Sessions().Search(ctx, search("DATABASE"))
 	if err != nil {
 		t.Fatalf("SearchSessions(DATABASE): %v", err)
 	}
@@ -1737,7 +1737,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	// --- OR matching ---
 
 	// Pipe-separated OR: "auth|dark" matches ses-s1 and ses-s2.
-	results, err = client.SearchSessions(ctx, search("auth|dark"))
+	results, err = client.Sessions().Search(ctx, search("auth|dark"))
 	if err != nil {
 		t.Fatalf("SearchSessions(auth|dark): %v", err)
 	}
@@ -1753,7 +1753,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// OR with AND groups: "auth bug|database layer" matches ses-s1 and ses-s3.
-	results, err = client.SearchSessions(ctx, search("auth bug|database layer"))
+	results, err = client.Sessions().Search(ctx, search("auth bug|database layer"))
 	if err != nil {
 		t.Fatalf("SearchSessions(auth bug|database layer): %v", err)
 	}
@@ -1768,7 +1768,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// OR where one branch matches nothing: "xyznotfound|dark" matches only ses-s2.
-	results, err = client.SearchSessions(ctx, search("xyznotfound|dark"))
+	results, err = client.Sessions().Search(ctx, search("xyznotfound|dark"))
 	if err != nil {
 		t.Fatalf("SearchSessions(xyznotfound|dark): %v", err)
 	}
@@ -1782,7 +1782,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	// --- Date ordering ---
 
 	// "myproject" matches two sessions; most recent UpdatedAt should come first.
-	results, err = client.SearchSessions(ctx, search("myproject"))
+	results, err = client.Sessions().Search(ctx, search("myproject"))
 	if err != nil {
 		t.Fatalf("SearchSessions(myproject): %v", err)
 	}
@@ -1799,7 +1799,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	// --- Time filtering ---
 
 	// Since 2 hours ago: should exclude ses-s1 (48h ago), include ses-s2 and ses-s3.
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Since: now.Add(-2 * time.Hour),
 	})
 	if err != nil {
@@ -1814,7 +1814,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 
 	// Until 30 minutes ago: should include ses-s1 (48h ago) and ses-s2 (1h ago),
 	// exclude ses-s3 (now).
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Until: now.Add(-30 * time.Minute),
 	})
 	if err != nil {
@@ -1831,7 +1831,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	}
 
 	// Since + Until window: 3h ago to 30min ago — only ses-s2 (1h ago).
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Since: now.Add(-3 * time.Hour),
 		Until: now.Add(-30 * time.Minute),
 	})
@@ -1848,7 +1848,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 	// --- Combined query + time filter ---
 
 	// "myproject" with since=2h: only ses-s2 (ses-s1 is 48h old).
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Query: "myproject",
 		Since: now.Add(-2 * time.Hour),
 	})
@@ -1864,7 +1864,7 @@ func TestDaemonSearchSessions(t *testing.T) {
 
 	// --- No match ---
 
-	results, err = client.SearchSessions(ctx, search("xyznotfound"))
+	results, err = client.Sessions().Search(ctx, search("xyznotfound"))
 	if err != nil {
 		t.Fatalf("SearchSessions(xyznotfound): %v", err)
 	}
@@ -1882,7 +1882,7 @@ func TestDaemonSearchSessionsAllParamsEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	// All params empty should return an error.
-	_, err := client.SearchSessions(ctx, agent.SearchParams{})
+	_, err := client.Sessions().Search(ctx, agent.SearchParams{})
 	if err == nil {
 		t.Fatal("expected error when all search params are empty")
 	}
@@ -1942,7 +1942,7 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 
 	// Default visibility (empty): only active sessions. Must provide at
 	// least one search param for the HTTP handler, so use a broad query.
-	results, err := client.SearchSessions(ctx, agent.SearchParams{Query: "session"})
+	results, err := client.Sessions().Search(ctx, agent.SearchParams{Query: "session"})
 	if err != nil {
 		t.Fatalf("SearchSessions(default visibility): %v", err)
 	}
@@ -1954,7 +1954,7 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	}
 
 	// Visibility "all": returns all three sessions.
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Query:      "session",
 		Visibility: agent.VisibilityAll,
 	})
@@ -1966,7 +1966,7 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	}
 
 	// Visibility "done": only done sessions.
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Query:      "session",
 		Visibility: agent.VisibilityDone,
 	})
@@ -1981,7 +1981,7 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	}
 
 	// Visibility "archived": only archived sessions.
-	results, err = client.SearchSessions(ctx, agent.SearchParams{
+	results, err = client.Sessions().Search(ctx, agent.SearchParams{
 		Query:      "session",
 		Visibility: agent.VisibilityArchived,
 	})

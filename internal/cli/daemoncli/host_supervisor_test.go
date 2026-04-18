@@ -59,7 +59,7 @@ func TestStartHost_SpawnsAndServes(t *testing.T) {
 	// Real wire call. ListBackends returns the two managers clank-host
 	// constructs in main(); empty result would mean either backends
 	// failed to initialize OR the wire is broken.
-	backends, err := hh.client.ListBackends(ctx)
+	backends, err := hh.client.Backends(ctx)
 	if err != nil {
 		t.Fatalf("ListBackends over Unix socket: %v", err)
 	}

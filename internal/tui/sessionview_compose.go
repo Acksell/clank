@@ -233,7 +233,7 @@ func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
 		sseCtx, sseCancel := context.WithCancel(context.Background())
-		events, err := client.SubscribeEvents(sseCtx)
+		events, err := client.Sessions().Subscribe(sseCtx)
 		if err != nil {
 			sseCancel()
 			return sessionCreateResultMsg{err: fmt.Errorf("subscribe events: %w", err)}
@@ -242,7 +242,7 @@ func (m *SessionViewModel) createSessionCmd(req agent.StartRequest) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		info, err := client.CreateSession(ctx, req)
+		info, err := client.Sessions().Create(ctx, req)
 		if err != nil {
 			sseCancel()
 			return sessionCreateResultMsg{err: fmt.Errorf("create session: %w", err)}

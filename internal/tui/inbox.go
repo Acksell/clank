@@ -224,7 +224,7 @@ func (m *InboxModel) discoverCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.client.DiscoverSessions(ctx, cwd)
+		_ = m.client.Sessions().Discover(ctx, cwd)
 		// After discovery completes, trigger a refresh to show new sessions.
 		return inboxRefreshMsg{}
 	}
@@ -236,7 +236,7 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sessions, err := m.client.ListSessions(ctx)
+		sessions, err := m.client.Sessions().List(ctx)
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
@@ -271,7 +271,7 @@ func (m *InboxModel) searchCmd(query string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		sessions, err := m.client.SearchSessions(ctx, agent.SearchParams{Query: query})
+		sessions, err := m.client.Sessions().Search(ctx, agent.SearchParams{Query: query})
 		return inboxSearchResultMsg{query: query, sessions: sessions, err: err}
 	}
 }
@@ -476,12 +476,12 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Persist any unsent text as a draft before leaving the session.
 		if m.activeConnID != "" && m.sessionView != nil {
 			draft := strings.TrimSpace(m.sessionView.DraftText())
-			go m.client.SetDraft(context.Background(), m.activeConnID, draft)
+			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
 		}
 		// Mark the session as read on close to capture any activity
 		// that occurred while the user was viewing it.
 		if m.activeConnID != "" {
-			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
 		m.screen = screenInbox
 		m.sessionView = nil
@@ -497,7 +497,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessionView.cancelEvents()
 		}
 		if m.activeConnID != "" {
-			go m.client.MarkSessionRead(context.Background(), m.activeConnID)
+			go m.client.Session(m.activeConnID).MarkRead(context.Background())
 		}
 		// Navigate to the forked session.
 		return m, m.openSession(forkMsg.sessionID)
@@ -974,13 +974,13 @@ func (m *InboxModel) openSession(sessionID string) tea.Cmd {
 	m.activeConnID = sessionID
 
 	// Mark session as read so the inbox reflects the change immediately.
-	go m.client.MarkSessionRead(context.Background(), sessionID)
+	go m.client.Session(sessionID).MarkRead(context.Background())
 
 	// Pre-subscribe to SSE before creating the view model to avoid missing
 	// events from an already-busy session. The connect is to a local Unix
 	// socket so it completes near-instantly.
 	sseCtx, sseCancel := context.WithCancel(context.Background())
-	events, err := m.client.SubscribeEvents(sseCtx)
+	events, err := m.client.Sessions().Subscribe(sseCtx)
 
 	m.sessionView = NewSessionViewModel(m.client, sessionID)
 	m.sessionView.voice = &m.voice
@@ -1029,13 +1029,13 @@ func (m *InboxModel) deleteSession(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := m.client.DeleteSession(ctx, sessionID); err != nil {
+		if err := m.client.Session(sessionID).Delete(ctx); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data after delete.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }
@@ -1062,13 +1062,13 @@ func (m *InboxModel) setSessionVisibility(sessionID string, visibility agent.Ses
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := m.client.SetVisibility(ctx, sessionID, visibility); err != nil {
+		if err := m.client.Session(sessionID).SetVisibility(ctx, visibility); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data after visibility change.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }
@@ -1077,13 +1077,13 @@ func (m *InboxModel) toggleFollowUp(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := m.client.ToggleFollowUp(ctx, sessionID); err != nil {
+		if _, err := m.client.Session(sessionID).ToggleFollowUp(ctx); err != nil {
 			return inboxDataMsg{err: err}
 		}
 		// Reload data so the session moves to/from the FOLLOW UP group.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
-		sessions, err := m.client.ListSessions(ctx2)
+		sessions, err := m.client.Sessions().List(ctx2)
 		return inboxDataMsg{sessions: sessions, err: err}
 	}
 }

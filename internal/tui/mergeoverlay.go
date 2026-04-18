@@ -133,7 +133,7 @@ func (m *mergeOverlayModel) doMerge(commitMsg string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := client.MergeBranchOnRepo(ctx, hostname, gitRef, branch, commitMsg)
+		_, err := client.Host(hostname).Repo(gitRef).Worktree(branch).Merge(ctx, commitMsg)
 		if err != nil {
 			return mergeResultMsg{merged: false, err: err, branch: branch}
 		}

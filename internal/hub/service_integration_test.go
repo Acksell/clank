@@ -68,13 +68,13 @@ func TestIntegrationDaemon_CreateSessionAndStreamEvents(t *testing.T) {
 	defer cancel()
 
 	// Subscribe to events BEFORE creating the session.
-	events, err := client.SubscribeEvents(ctx)
+	events, err := client.Sessions().Subscribe(ctx)
 	if err != nil {
 		t.Fatalf("SubscribeEvents: %v", err)
 	}
 
 	projectDir := findProjectRoot(t)
-	info, err := client.CreateSession(ctx, agent.StartRequest{
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend:    agent.BackendOpenCode,
 		ProjectDir: projectDir,
 		Prompt:     "Say exactly: daemon-test. Nothing else.",
@@ -151,7 +151,7 @@ done:
 	}
 
 	// Verify session status via API.
-	refreshed, err := client.GetSession(ctx, info.ID)
+	refreshed, err := client.Session(info.ID).Get(ctx)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
