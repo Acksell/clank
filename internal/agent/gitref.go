@@ -135,6 +135,23 @@ func parseGitURL(raw string) (host, path string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("parse URL: %w", err)
 	}
+	// file://<absolute-path> URLs are git's documented form for cloning
+	// from a local source (mirrors, backups, air-gapped setups). They
+	// have no host; the path itself is the identity. Canonicalize as
+	// "file/<cleaned-path>" — the "file" scheme prefix can't collide
+	// with any real remote (real hosts canonicalize as "<host>/<repo>"
+	// with no scheme prefix).
+	if u.Scheme == "file" {
+		if u.Path == "" {
+			return "", "", fmt.Errorf("file URL %q has no path", raw)
+		}
+		path = strings.TrimSuffix(u.Path, ".git")
+		path = strings.TrimRight(path, "/")
+		if path == "" {
+			return "", "", fmt.Errorf("file URL %q has empty path after trim", raw)
+		}
+		return "file", path, nil
+	}
 	if u.Host == "" {
 		return "", "", fmt.Errorf("URL %q has no host", raw)
 	}

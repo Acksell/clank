@@ -384,6 +384,17 @@ func (s *Service) resolveRepoRoot(ref GitRef, canonical string, req agent.StartR
 		}
 		return stored.RootDir, nil
 	}
+	// Step 3: local-kind GitRef — RootDir is the path itself. No verify-via-Dir
+	// step needed; the path IS the identity.
+	if ref.Kind == GitRefLocal {
+		if _, err := git.RepoRoot(ref.Path); err != nil {
+			return "", fmt.Errorf("git_ref.path %q is not a git repository: %w", ref.Path, err)
+		}
+		if _, err := s.AddRepo(ref, ref.Path); err != nil {
+			return "", err
+		}
+		return ref.Path, nil
+	}
 	// Step 4: caller pinned a directory — verify-and-add.
 	if req.Dir != "" {
 		if err := s.verifyDirMatchesRef(req.Dir, canonical); err != nil {

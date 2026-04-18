@@ -170,31 +170,22 @@ func TestCreateSession_DirDisagreesWithStored(t *testing.T) {
 // repo, AllowClone=true → host clones into cloneRoot, adds, and uses
 // the clone.
 //
-// This test currently skips because GitRef.Canonical() only accepts
-// remote-kind URLs with a non-empty host (git@host:owner/repo or
-// https://host/owner/repo). A bare path or file:// URL canonicalizes
-// to "" and CreateSession bails before ever calling clone. Step 8
-// (local-kind GitRef as a first-class backend invocation source) or a
-// hermetic git-daemon fixture will unblock end-to-end coverage. Until
-// then, the verify-and-add path above gives us most of the resolver's
-// behavioural surface; the clone branch is small (delegates to
-// git.Clone after a stat+sanitize) and exercised manually.
+// Uses a `file://` source URL so canonicalization succeeds without
+// needing a git daemon. (file:// support landed in step 8c.)
 func TestCreateSession_CloneByAllowClone(t *testing.T) {
 	t.Parallel()
 	svc, cloneRoot := newTestServiceWithCloneRoot(t)
 
 	source := initGitRepo(t, "git@github.com:acksell/clank.git")
+	sourceURL := "file://" + source
 	req := agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		RepoRemoteURL: source,
-		AllowClone:    true,
-		Prompt:        "hi",
+		Backend:    agent.BackendOpenCode,
+		GitRef:     agent.GitRef{Kind: agent.GitRefRemote, URL: sourceURL},
+		AllowClone: true,
+		Prompt:     "hi",
 	}
 	_, info, err := svc.CreateSession(context.Background(), "sid-clone", req)
 	if err != nil {
-		if strings.Contains(err.Error(), "not a recognized git URL") {
-			t.Skip("local-path remotes not canonicalizable; revisit when step 8 lands local-kind GitRef or a git-daemon fixture")
-		}
 		t.Fatalf("CreateSession: %v", err)
 	}
 	if !strings.HasPrefix(info.ProjectDir, cloneRoot) {
@@ -202,5 +193,53 @@ func TestCreateSession_CloneByAllowClone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(info.ProjectDir, ".git")); err != nil {
 		t.Errorf("clone destination missing .git: %v", err)
+	}
+}
+
+// TestCreateSession_LocalAdd exercises §7.5 step 3: unknown repo with
+// GitRef.Kind=local → host adds RootDir = GitRef.Path directly, no Dir
+// or AllowClone hint required.
+func TestCreateSession_LocalAdd(t *testing.T) {
+	t.Parallel()
+	svc, _ := newTestServiceWithCloneRoot(t)
+
+	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: dir},
+		Prompt:  "hi",
+	}
+	_, info, err := svc.CreateSession(context.Background(), "sid-local", req)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if info.ProjectDir != dir {
+		t.Errorf("ProjectDir = %q, want %q", info.ProjectDir, dir)
+	}
+	// Repo should now be registered under the local path canonical.
+	if _, ok := svc.Repo(host.GitRef{Kind: host.GitRefLocal, Path: dir}); !ok {
+		t.Errorf("expected local repo to be added to registry")
+	}
+}
+
+// TestCreateSession_LocalAdd_RejectsNonGit verifies that step 3 fails
+// fast when GitRef.Path is not a git repository instead of silently
+// adding a bogus entry.
+func TestCreateSession_LocalAdd_RejectsNonGit(t *testing.T) {
+	t.Parallel()
+	svc, _ := newTestServiceWithCloneRoot(t)
+
+	dir := t.TempDir() // not a git repo
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: dir},
+		Prompt:  "hi",
+	}
+	_, _, err := svc.CreateSession(context.Background(), "sid-local-bad", req)
+	if err == nil {
+		t.Fatal("expected error when local path is not a git repo, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("error = %v, want 'not a git repository' message", err)
 	}
 }
