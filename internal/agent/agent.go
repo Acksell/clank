@@ -326,17 +326,21 @@ type AgentInfo struct {
 // StartRequest contains the parameters needed to start a new agent session.
 //
 // Identity is path-free post Phase 3D-2 (hub_host_refactor.md):
-// (Hostname, RepoRemoteURL, Branch). The Host resolves these to a working
+// (Hostname, GitRef, WorktreeBranch). The Host resolves these to a working
 // directory inside CreateSession; the wire never carries filesystem paths.
 //
-// Note: identity uses raw strings (not host.RepoRef) to avoid an agent->host import cycle.
+// Step 8b transition: GitRef and the legacy RepoRemoteURL coexist. New
+// callers should populate GitRef (with Kind set); legacy callers may still
+// send RepoRemoteURL alone, which the host coerces into a remote-kind
+// GitRef. Step 8d removes RepoRemoteURL.
 type StartRequest struct {
 	Backend        BackendType    `json:"backend"`
 	Hostname       string         `json:"hostname,omitempty"`        // Target host; empty defaults to "local" at the hub.
-	RepoRemoteURL  string         `json:"repo_remote_url"`           // Canonical repo identity (e.g. git@github.com:acksell/clank.git)
+	GitRef         GitRef         `json:"git_ref,omitempty"`         // Wire-canonical repo identity (kind + url|path)
+	RepoRemoteURL  string         `json:"repo_remote_url,omitempty"` // DEPRECATED (step 8d): legacy remote URL; ignored when GitRef.Kind is set.
 	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch; when set, the host creates/reuses a worktree
 	Prompt         string         `json:"prompt"`
-	SessionID      string         `json:"session_id,omitempty"` // Empty = new session, set = resume
+	SessionID      string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session. Distinct from the host's clank session ID and from BackendInvocation.ResumeExternalID (which today equals this).
 	TicketID       string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
 	Agent          string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 	Model          *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
@@ -346,21 +350,22 @@ type StartRequest struct {
 	// Dir / AllowClone may be set.
 	//
 	// Dir: absolute filesystem path on the host. When set, the host
-	// verifies the directory's `git remote get-url origin` matches
-	// RepoRemoteURL and adds (canonical → Dir) to its repo registry
-	// before resolving the workDir. Used by clankcli running on the
-	// same machine as the host.
+	// verifies the directory's `git remote get-url origin` matches the
+	// remote and adds (canonical → Dir) to its repo registry before
+	// resolving the workDir. Used by clankcli running on the same
+	// machine as the host.
 	//
 	// AllowClone: when true and the repo is not yet known, the host
-	// clones RepoRemoteURL into its managed clone root and adds the
+	// clones the remote into its managed clone root and adds the
 	// resulting directory to its registry. Used by remote callers
 	// (e.g. TUI talking to a hub on a different machine) where no
-	// pre-existing checkout is available.
+	// pre-existing checkout is available. Rejected when GitRef.Kind=local.
 	Dir        string `json:"dir,omitempty"`
 	AllowClone bool   `json:"allow_clone,omitempty"`
 }
 
-// Validate checks that required fields are set.
+// Validate checks that required fields are set per §7.3 of
+// hub_host_refactor_code_review.md.
 func (r StartRequest) Validate() error {
 	if r.Backend == "" {
 		return fmt.Errorf("backend is required")
@@ -368,8 +373,18 @@ func (r StartRequest) Validate() error {
 	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
-	if r.RepoRemoteURL == "" {
-		return fmt.Errorf("repo_remote_url is required")
+	switch {
+	case r.GitRef.Kind != "":
+		if err := r.GitRef.Validate(); err != nil {
+			return fmt.Errorf("git_ref: %w", err)
+		}
+		if r.AllowClone && r.GitRef.Kind == GitRefLocal {
+			return fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
+		}
+	case r.RepoRemoteURL != "":
+		// Legacy path; coerced into a remote GitRef inside the host.
+	default:
+		return fmt.Errorf("git_ref or repo_remote_url is required")
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")

@@ -312,9 +312,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if req.Backend == "" {
 		return nil, CreateInfo{}, fmt.Errorf("backend is required")
 	}
-	if req.RepoRemoteURL == "" {
-		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url is required")
-	}
 	if req.Dir != "" && req.AllowClone {
 		return nil, CreateInfo{}, fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
@@ -329,14 +326,25 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	s.mu.Unlock()
 
-	// StartRequest still carries a remote URL string for now (§7.3 step 8
-	// will replace it with a full GitRef field). Construct a remote-kind
-	// GitRef on the fly so we can canonicalize and look up the registered
-	// repo via the same code path as the typed API.
-	ref := GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}
+	// Step 8b transition: prefer GitRef when set, else coerce the legacy
+	// RepoRemoteURL into a remote-kind GitRef. Step 8d removes the
+	// fallback.
+	ref := req.GitRef
+	if ref.Kind == "" {
+		if req.RepoRemoteURL == "" {
+			return nil, CreateInfo{}, fmt.Errorf("git_ref or repo_remote_url is required")
+		}
+		ref = GitRef{Kind: GitRefRemote, URL: req.RepoRemoteURL}
+	}
+	if err := ref.Validate(); err != nil {
+		return nil, CreateInfo{}, fmt.Errorf("git_ref: %w", err)
+	}
+	if req.AllowClone && ref.Kind == GitRefLocal {
+		return nil, CreateInfo{}, fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
+	}
 	canonical := ref.Canonical()
 	if canonical == "" {
-		return nil, CreateInfo{}, fmt.Errorf("repo_remote_url %q is not a recognized git URL", req.RepoRemoteURL)
+		return nil, CreateInfo{}, fmt.Errorf("git_ref %+v has empty canonical form", ref)
 	}
 	rootDir, err := s.resolveRepoRoot(ref, canonical, req)
 	if err != nil {

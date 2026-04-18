@@ -81,3 +81,78 @@ func TestStartRequest_Validate_DirAndAllowCloneMutuallyExclusive(t *testing.T) {
 		t.Fatal("expected error when both Dir and AllowClone are set, got nil")
 	}
 }
+
+// §7.3 step 8b: GitRef coexists with the legacy RepoRemoteURL during the
+// transition. Validate must accept either form, reject when neither is
+// supplied, and reject AllowClone+local because a local-kind ref names an
+// existing checkout that cannot be cloned.
+func TestStartRequest_Validate_GitRef(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		req     agent.StartRequest
+		wantErr bool
+	}{
+		{
+			name: "git_ref_remote_ok",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+				Prompt:  "hi",
+			},
+		},
+		{
+			name: "git_ref_local_ok",
+			req: agent.StartRequest{
+				Backend: agent.BackendClaudeCode,
+				GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: "/tmp/repo"},
+				Prompt:  "hi",
+			},
+		},
+		{
+			name: "legacy_remote_url_ok",
+			req: agent.StartRequest{
+				Backend:       agent.BackendOpenCode,
+				RepoRemoteURL: "git@github.com:acksell/clank.git",
+				Prompt:        "hi",
+			},
+		},
+		{
+			name: "neither_form_set_rejected",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				Prompt:  "hi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "git_ref_invalid_propagates",
+			req: agent.StartRequest{
+				Backend: agent.BackendOpenCode,
+				GitRef:  agent.GitRef{Kind: agent.GitRefRemote}, // missing URL
+				Prompt:  "hi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "allow_clone_local_rejected",
+			req: agent.StartRequest{
+				Backend:    agent.BackendOpenCode,
+				GitRef:     agent.GitRef{Kind: agent.GitRefLocal, Path: "/tmp/repo"},
+				Prompt:     "hi",
+				AllowClone: true,
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.req.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
