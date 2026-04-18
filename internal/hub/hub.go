@@ -7,11 +7,11 @@
 //   - the permission broker
 //   - persistence (SQLite store)
 //
-// In production, clankd constructs a hub.Service, registers HTTP routes
-// on it (see routes.go), opens the listening Unix socket itself (see
+// In production, clankd constructs a hub.Service, wires HTTP routes via
+// internal/hub/mux, opens the listening Unix socket itself (see
 // internal/cli/daemoncli), and supervises a clank-host child whose Unix
-// socket address gets registered as the "local" host. See
-// hub_host_refactor.md.
+// socket gets registered as the "local" host through a *hostclient.HTTP.
+// See hub_host_refactor.md.
 //
 // This file holds only the multi-host catalog primitives. The Service
 // struct itself, its constructor, and the bulk of its methods live in
@@ -29,6 +29,12 @@ import (
 // ownership of the lifetime of c; the caller (e.g. clankd's host
 // supervisor) decides when to spawn/kill the underlying process.
 //
+// Per Decision #3 of the refactor, the catalog is typed concretely on
+// *hostclient.HTTP — there is no Host Go interface and no in-process
+// shortcut. Tests stand up a real host.Service behind an httptest
+// server and register the resulting HTTP client; production registers
+// the supervisor's HTTP client over a Unix socket.
+//
 // As a Phase 2 transitional convenience, registering the "local" host
 // also wires it into the legacy single-host code path (s.hostClient),
 // which most session/permission/event code still routes through.
@@ -36,7 +42,7 @@ import (
 //
 // Re-registering the same HostID replaces the previous entry without
 // closing it (the caller is responsible).
-func (s *Service) RegisterHost(id host.HostID, c hostclient.Client) error {
+func (s *Service) RegisterHost(id host.HostID, c *hostclient.HTTP) error {
 	if id == "" {
 		return fmt.Errorf("host id is required")
 	}
@@ -55,7 +61,7 @@ func (s *Service) RegisterHost(id host.HostID, c hostclient.Client) error {
 
 // UnregisterHost removes a host from the catalog. Returns the client so the
 // caller can decide whether to Close it. Returns nil if not registered.
-func (s *Service) UnregisterHost(id host.HostID) hostclient.Client {
+func (s *Service) UnregisterHost(id host.HostID) *hostclient.HTTP {
 	s.hostsMu.Lock()
 	defer s.hostsMu.Unlock()
 	c, ok := s.hosts[id]
@@ -71,7 +77,7 @@ func (s *Service) UnregisterHost(id host.HostID) hostclient.Client {
 
 // Host returns the client for the given HostID. The boolean is false if
 // the host is not registered.
-func (s *Service) Host(id host.HostID) (hostclient.Client, bool) {
+func (s *Service) Host(id host.HostID) (*hostclient.HTTP, bool) {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
 	c, ok := s.hosts[id]
@@ -91,10 +97,10 @@ func (s *Service) Hosts() []host.HostID {
 
 // snapshotHosts returns a copy of the host map, taken under the read lock,
 // so callers can iterate without holding the lock during external calls.
-func (s *Service) snapshotHosts() map[host.HostID]hostclient.Client {
+func (s *Service) snapshotHosts() map[host.HostID]*hostclient.HTTP {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
-	out := make(map[host.HostID]hostclient.Client, len(s.hosts))
+	out := make(map[host.HostID]*hostclient.HTTP, len(s.hosts))
 	for id, c := range s.hosts {
 		out[id] = c
 	}

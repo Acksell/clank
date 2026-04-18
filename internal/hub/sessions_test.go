@@ -664,6 +664,11 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
+	// Allow the backend's startup status events to flow through SSE
+	// before we mark the session read; otherwise a late StatusChange
+	// can bump UpdatedAt past LastReadAt and re-mark it unread.
+	time.Sleep(100 * time.Millisecond)
+
 	// Newly created session should be unread (LastReadAt is zero).
 	info, err := client.GetSession(ctx, created.ID)
 	if err != nil {
@@ -717,6 +722,10 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+
+	// Drain the startup status events so MarkSessionRead races with
+	// nothing — see TestDaemonMarkSessionRead for the same caveat.
+	time.Sleep(100 * time.Millisecond)
 
 	// Mark as read.
 	if err := client.MarkSessionRead(ctx, created.ID); err != nil {

@@ -3,6 +3,7 @@ package hub_test
 import (
 	"context"
 	"net"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,9 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+	hostclient "github.com/acksell/clank/internal/host/client"
+	hostmux "github.com/acksell/clank/internal/host/mux"
 	"github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
@@ -269,10 +273,20 @@ func startHubOnSocket(t *testing.T, s *hub.Service) (*hubclient.Client, string, 
 }
 
 // startHubAtSocket runs s on a Unix listener bound to the supplied
-// sockPath. Used by persistence tests that need to restart a hub on
-// the same socket the previous instance was bound to.
+// sockPath. If s has not had a host client injected, this helper
+// constructs an in-process host.Service from s.BackendManagers, wraps
+// it in an httptest.Server through hostmux, and registers the resulting
+// *hostclient.HTTP — preserving the production wire shape (Hub→HTTP→Host)
+// without adding a fake or in-process shortcut on the Hub side.
 func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient.Client, func()) {
 	t.Helper()
+
+	// Spin a real host.Service behind an httptest server when the
+	// caller hasn't already wired one. The fixture's lifetime is
+	// owned here (closed in cleanup) — Hub no longer owns any host
+	// process or service.
+	hostFixture := ensureHostFixture(t, s)
+
 	// Defensive: clear any stale socket left by a previous instance
 	// (closing a Unix listener does not unlink the on-disk file).
 	os.Remove(sockPath)
@@ -294,9 +308,53 @@ func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient
 		case <-time.After(5 * time.Second):
 			t.Error("daemon did not stop in time")
 		}
+		if hostFixture != nil {
+			hostFixture.close()
+		}
 		os.Remove(sockPath)
 	}
 	return client, cleanup
+}
+
+// hostTestFixture ties together the in-process host.Service and the
+// httptest.Server fronting it, so the test cleanup path can tear both
+// down in the right order.
+type hostTestFixture struct {
+	svc    *host.Service
+	srv    *httptest.Server
+	client *hostclient.HTTP
+}
+
+func (f *hostTestFixture) close() {
+	if f == nil {
+		return
+	}
+	_ = f.client.Close()
+	f.srv.Close()
+	f.svc.Shutdown()
+}
+
+// ensureHostFixture builds an HTTP-fronted host.Service from
+// s.BackendManagers and registers it as the local host on s. If the
+// caller already injected a host client (e.g. repos_test.go which
+// supplies its own) the helper is a no-op and returns nil.
+func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
+	t.Helper()
+	if _, ok := s.Host("local"); ok {
+		return nil
+	}
+	svc := host.New(host.Options{BackendManagers: s.BackendManagers})
+	// Run() boots the backend reconciler (warm-start servers, etc.).
+	// Tests don't supply a knownDirs callback, so reconciler runs
+	// against an empty set — same as the production path before any
+	// project is opened.
+	if err := svc.Run(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("host.Run: %v", err)
+	}
+	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
+	c := hostclient.NewHTTP(srv.URL, nil)
+	s.SetHostClient(c)
+	return &hostTestFixture{svc: svc, srv: srv, client: c}
 }
 
 // testDaemon creates a daemon with mock backends, starts it, registers

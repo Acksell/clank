@@ -191,10 +191,8 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if req.MessageID == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "message_id is required"})
-		return
-	}
+	// Empty MessageID is valid: it forks the entire session from
+	// scratch. Backends interpret it as "no truncation point".
 	res, err := b.Fork(r.Context(), req.MessageID)
 	if err != nil {
 		writeError(w, err)

@@ -2,6 +2,7 @@ package hub_test
 
 import (
 	"context"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
+	hostmux "github.com/acksell/clank/internal/host/mux"
 	"github.com/acksell/clank/internal/hub"
 )
 
@@ -51,9 +53,10 @@ func initRepoForHub(t *testing.T, remote string) string {
 }
 
 // TestHubReposEndToEnd exercises Phase 3B's full path:
-// hubclient → hub HTTP handler → hostclient.InProcess → host.Service →
-// real git. We register a real host.Service via SetHostClient, then
-// drive it through the public hubclient API.
+// hubclient → hub HTTP handler → *hostclient.HTTP → httptest server →
+// hostmux → host.Service → real git. Per Decision #3, the Hub side
+// always talks HTTP — the test wires a real httptest.Server in front
+// of the host service rather than an in-process shortcut.
 func TestHubReposEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -70,8 +73,13 @@ func TestHubReposEndToEnd(t *testing.T) {
 		t.Fatalf("RegisterRepo: %v", err)
 	}
 
+	hostHTTP := httptest.NewServer(hostmux.New(hostSvc, nil).Handler())
+	t.Cleanup(hostHTTP.Close)
+	hostC := hostclient.NewHTTP(hostHTTP.URL, nil)
+	t.Cleanup(func() { _ = hostC.Close() })
+
 	s := hub.New()
-	s.SetHostClient(hostclient.NewInProcess(hostSvc))
+	s.SetHostClient(hostC)
 
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()

@@ -2,11 +2,16 @@ package daemoncli
 
 import (
 	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+	hostclient "github.com/acksell/clank/internal/host/client"
+	hostmux "github.com/acksell/clank/internal/host/mux"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
@@ -52,6 +57,20 @@ func TestRunHubServer_ManagesSocketAndPIDFiles(t *testing.T) {
 	}
 
 	s := hub.New()
+
+	// runHubServer requires a host client (Decision #3: no in-process
+	// shortcut). Wire a real host.Service behind an httptest server so
+	// the lifecycle path under test (socket+PID file management) runs
+	// the same control flow as production clankd.
+	hostSvc := host.New(host.Options{BackendManagers: s.BackendManagers})
+	if err := hostSvc.Run(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("host.Run: %v", err)
+	}
+	t.Cleanup(hostSvc.Shutdown)
+	hostSrv := httptest.NewServer(hostmux.New(hostSvc, nil).Handler())
+	t.Cleanup(hostSrv.Close)
+	s.SetHostClient(hostclient.NewHTTP(hostSrv.URL, nil))
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- runHubServer(s) }()
 

@@ -11,6 +11,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -40,7 +41,7 @@ type Service struct {
 	// fast path; multi-host dispatch arrives with the TCP+TLS transport
 	// in Phase 4.
 	hostsMu sync.RWMutex
-	hosts   map[host.HostID]hostclient.Client
+	hosts   map[host.HostID]*hostclient.HTTP
 
 	mu       sync.RWMutex
 	sessions map[string]*managedSession // keyed by hub session ID
@@ -68,21 +69,15 @@ type Service struct {
 	// Removed in Phase 2 once tests get a `WithHost` constructor option.
 	BackendManagers map[agent.BackendType]agent.BackendManager
 
-	// host is the in-process Host plane. Built in Run() from
-	// BackendManagers ONLY when no HostClient was injected (i.e., tests).
-	// In production clankd, host lives in the clank-host subprocess and
-	// this field stays nil; the daemon talks to it via hostClient.
-	host *host.Service
-	// hostClient is the Hub-side abstraction over host. May be injected
-	// by the caller before Run() (production clankd path: HTTP client
-	// over a Unix socket to the clank-host subprocess). If nil at Run()
-	// entry, the daemon constructs an in-process host from
-	// BackendManagers — used by tests and by the legacy single-process
-	// path.
+	// hostClient is the Hub-side abstraction over host. Per Decision #3
+	// it is the concrete *hostclient.HTTP — no Go interface, no
+	// in-process shortcut. The caller (production clankd, or the test
+	// helper) injects it before Run() either via SetHostClient or by
+	// registering a host into the catalog.
 	//
 	// All HUB-tagged code paths go through this so the call shape matches
 	// the wire path.
-	hostClient hostclient.Client
+	hostClient *hostclient.HTTP
 
 	// Store is the optional SQLite persistence layer. When non-nil, session
 	// metadata is written through on every mutation and loaded on startup.
@@ -115,7 +110,7 @@ type managedSession struct {
 func New() *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		hosts:                        make(map[host.HostID]hostclient.Client),
+		hosts:                        make(map[host.HostID]*hostclient.HTTP),
 		sessions:                     make(map[string]*managedSession),
 		subscribers:                  make(map[string]chan agent.Event),
 		startTime:                    time.Now(),
@@ -164,36 +159,13 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 		}
 	}
 
-	// Construct the in-process Host plane from the configured
-	// BackendManagers, UNLESS the caller injected a HostClient (the
-	// production clankd path, where clank-host runs as a subprocess and
-	// daemon talks to it over a Unix socket).
-	//
-	// In InProcess mode the daemon owns the host's lifetime: it must
-	// call host.Run / host.Shutdown. In HTTP mode the subprocess owns
-	// the host; the daemon only owns the client connection.
+	// Per Decision #3 (no in-process Host shortcut), the caller MUST
+	// inject a host client before Run(). Production clankd does this
+	// via SetHostClient(*hostclient.HTTP) pointed at the clank-host
+	// subprocess; tests do it through the test helper which spins a
+	// real host.Service behind an httptest server.
 	if s.hostClient == nil {
-		s.host = host.New(host.Options{
-			BackendManagers: s.BackendManagers,
-			Log:             s.log,
-		})
-		// Register as the canonical "local" host so the catalog stays
-		// in sync; RegisterHost also sets s.hostClient under the hood.
-		if err := s.RegisterHost("local", hostclient.NewInProcess(s.host)); err != nil {
-			s.log.Printf("warning: register local host: %v", err)
-		}
-
-		// Initialize backend managers via host.Service. The knownDirs callback
-		// is closed over s.Store so warm-up uses the persisted project list.
-		knownDirs := func(bt agent.BackendType) ([]string, error) {
-			if s.Store == nil {
-				return nil, nil
-			}
-			return s.Store.KnownProjectDirs(bt)
-		}
-		if err := s.host.Run(s.ctx, knownDirs); err != nil {
-			s.log.Printf("warning: host.Run: %v", err)
-		}
+		return fmt.Errorf("hub.Service.Run: no host client registered (call SetHostClient before Run)")
 	}
 
 	// Warm primary agent caches AFTER the reconciler has started. The
@@ -238,14 +210,20 @@ func (s *Service) shutdown(server *http.Server) error {
 	}
 	s.mu.Unlock()
 
-	// Shut down the host plane. host.Shutdown() stops every backend in
-	// the in-process host's registry; closeHosts then disconnects every
-	// client in the catalog (including the legacy s.hostClient shortcut,
-	// which is the same object as catalog["local"]). Service must not
-	// double-stop the host service itself.
-	if s.host != nil {
-		s.host.Shutdown()
-	}
+	// Release every active session backend. Stop() unblocks the
+	// per-session SSE relay goroutines (started by runBackend) by
+	// instructing the host to close their event streams; without this
+	// step s.wg.Wait below would deadlock, since we no longer own the
+	// host plane and thus can't shut it down to cascade-close streams.
+	//
+	// In production, this is also what TestDaemonGracefulShutdownStopsBackends
+	// pins down: shutting hub down must release the agent processes it
+	// asked the host to spawn, even when the host process outlives hub.
+	s.stopActiveBackends()
+
+	// Disconnect every host client in the catalog. The host plane's
+	// lifetime (process or test fixture) is owned by the caller; we
+	// only release our HTTP transport handles here.
 	s.closeHosts()
 
 	// Close the persistence store.
@@ -281,15 +259,14 @@ func (s *Service) SetLogOutput(w io.Writer) {
 	s.log.SetOutput(w)
 }
 
-// SetHostClient injects a host client. Call before Run(). When set, the
-// Service does NOT construct its own in-process host.Service and the
-// caller is responsible for the host plane's lifetime (e.g. the clankd
-// subprocess supervisor for clank-host). When unset, Service falls back
-// to building an in-process host from BackendManagers.
+// SetHostClient injects the host client. Call before Run(). The caller
+// owns the host plane's lifetime (e.g. clankd's host supervisor for the
+// production clank-host subprocess, or the test helper for in-test
+// httptest fixtures).
 //
 // Equivalent to RegisterHost("local", c); kept as a convenience for the
 // existing call sites that predate the host catalog.
-func (s *Service) SetHostClient(c hostclient.Client) {
+func (s *Service) SetHostClient(c *hostclient.HTTP) {
 	_ = s.RegisterHost("local", c)
 }
 
@@ -311,6 +288,31 @@ func (s *Service) closeHosts() {
 	for id, c := range s.snapshotHosts() {
 		if err := c.Close(); err != nil {
 			s.log.Printf("close host %s: %v", id, err)
+		}
+	}
+}
+
+// stopActiveBackends instructs every live SessionBackend to stop. This
+// is the hub-side complement to host.Service.Shutdown: it releases the
+// session resources hub asked the host to allocate, in the order it
+// allocated them, without requiring host-process teardown to do it.
+//
+// Iterates a snapshot of *managedSession pointers so backend.Stop()
+// runs without holding s.mu (Stop performs an HTTP round-trip for
+// remote backends).
+func (s *Service) stopActiveBackends() {
+	s.mu.RLock()
+	live := make([]*managedSession, 0, len(s.sessions))
+	for _, ms := range s.sessions {
+		if ms.backend != nil {
+			live = append(live, ms)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, ms := range live {
+		if err := ms.backend.Stop(); err != nil {
+			s.log.Printf("stop session %s: %v", ms.info.ID, err)
 		}
 	}
 }
