@@ -245,9 +245,13 @@ Human comment: RegisterRepoOnHost even existing seems weird, why isnt this just 
   sites updated: `cmd/clank-host/main.go`,
   `internal/cli/daemoncli/server_test.go`,
   `internal/hub/service_test.go`.)*
-- **`host.Service.Shutdown` not idempotent under concurrent
-  `CreateSession`.** No mutex around the registry teardown vs. inserts.
-  Easy to hit during signal-triggered shutdown.
+- **~~`host.Service.Shutdown` not idempotent under concurrent
+  `CreateSession`.~~** *(RESOLVED — `Service.closed` flag set under
+  `s.mu` in `Shutdown` (now early-returns on second call) and re-checked
+  in `CreateSession` both at entry and after `mgr.CreateBackend`
+  returns. A backend created concurrently with shutdown is now
+  `Stop()`ped instead of being inserted into the wiped registry.
+  Regression: `internal/host/shutdown_race_test.go`.)*
 - **Socket-file ownership race** (see 1.4). Single owner. *(DEFERRED
   with §1.4.)*
 - **~~`host.CreateInfo` over the wire~~** *(RESOLVED — `host.CreateInfo`

@@ -47,6 +47,11 @@ type Service struct {
 
 	mu       sync.RWMutex
 	sessions map[string]agent.SessionBackend
+	// closed is set by Shutdown under s.mu and gates new session
+	// registrations. CreateSession checks it both at entry and after the
+	// (potentially slow) mgr.CreateBackend call so a backend created
+	// concurrently with Shutdown cannot leak into a torn-down registry.
+	closed bool
 
 	reposMu sync.RWMutex
 	repos   map[string]Repo // key: GitRef.Canonical()
@@ -182,9 +187,16 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 }
 
 // Shutdown stops all live SessionBackends and then shuts down all
-// BackendManagers. Safe to call multiple times.
+// BackendManagers. Safe to call multiple times — subsequent calls are
+// no-ops. After Shutdown returns, CreateSession will reject new
+// registrations rather than leaking backends into a torn-down service.
 func (s *Service) Shutdown() {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
 	live := s.sessions
 	s.sessions = make(map[string]agent.SessionBackend)
 	s.mu.Unlock()
@@ -331,6 +343,10 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		return nil, "", fmt.Errorf("no backend manager for %s", req.Backend)
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, "", fmt.Errorf("host service is shut down")
+	}
 	if _, exists := s.sessions[sessionID]; exists {
 		s.mu.Unlock()
 		return nil, "", fmt.Errorf("session %s already registered", sessionID)
@@ -372,7 +388,19 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err != nil {
 		return nil, "", err
 	}
+	// Re-check closed under the lock before publishing. mgr.CreateBackend
+	// can take seconds (process spawn, HTTP probe) and Shutdown may have
+	// run in the interim. Without this check the backend would be
+	// inserted into a wiped registry and outlive the manager that owns
+	// it.
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend created during shutdown: %v", stopErr)
+		}
+		return nil, "", fmt.Errorf("host service is shut down")
+	}
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
