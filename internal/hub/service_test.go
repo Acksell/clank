@@ -356,8 +356,8 @@ func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
 	// Tests don't supply a knownDirs callback, so reconciler runs
 	// against an empty set — same as the production path before any
 	// project is opened.
-	if err := svc.Run(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
-		t.Fatalf("host.Run: %v", err)
+	if err := svc.Init(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+		t.Fatalf("host.Init: %v", err)
 	}
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	c := hostclient.NewHTTP(srv.URL, nil)

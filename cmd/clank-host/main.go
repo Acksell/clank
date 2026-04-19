@@ -90,7 +90,7 @@ func run(socket, dbPath string) error {
 	// knownDirs returns nil here: the host has no persistence layer of
 	// its own. Phase 1 daemon does its own warm-up via the catalog API
 	// after spawning. (The Store lives on the Hub.)
-	if err := svc.Run(ctx, func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+	if err := svc.Init(ctx, func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
 		lg.Printf("warning: host.Run: %v", err)
 	}
 

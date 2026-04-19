@@ -151,16 +151,21 @@ func New(opts Options) *Service {
 // ID returns the host's ID.
 func (s *Service) ID() Hostname { return s.id }
 
-// Run initializes all BackendManagers. knownDirs is a per-backend lookup
+// Init initializes all BackendManagers. knownDirs is a per-backend lookup
 // that returns previously-seen project directories (used to warm
 // long-lived servers like OpenCode). Pass a func returning nil, nil to
 // skip warm-up.
 //
-// Run does NOT block — initialization kicks off reconciler goroutines that
+// Init does NOT block — initialization kicks off reconciler goroutines that
 // live for the duration of ctx. The caller is expected to manage the
 // overall process lifecycle; clank-host blocks on a signal, tests block on
 // t.Cleanup → Shutdown.
-func (s *Service) Run(ctx context.Context, knownDirs func(agent.BackendType) ([]string, error)) error {
+//
+// (Renamed from Run in the §2 cleanup pass: Go convention is that Run
+// blocks for the lifetime of the work, e.g. http.Server.ListenAndServe
+// or errgroup.Wait. This function returns immediately after kicking off
+// goroutines, so Init reflects the actual semantics.)
+func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([]string, error)) error {
 	for bt, mgr := range s.backendManagers {
 		bt := bt
 		fn := func() ([]string, error) {

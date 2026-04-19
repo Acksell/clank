@@ -63,7 +63,7 @@ func TestRunHubServer_ManagesSocketAndPIDFiles(t *testing.T) {
 	// the lifecycle path under test (socket+PID file management) runs
 	// the same control flow as production clankd.
 	hostSvc := host.New(host.Options{BackendManagers: s.BackendManagers})
-	if err := hostSvc.Run(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
+	if err := hostSvc.Init(context.Background(), func(agent.BackendType) ([]string, error) { return nil, nil }); err != nil {
 		t.Fatalf("host.Run: %v", err)
 	}
 	t.Cleanup(hostSvc.Shutdown)

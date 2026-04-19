@@ -238,9 +238,13 @@ Human comment: RegisterRepoOnHost even existing seems weird, why isnt this just 
   `(*Service).hostFor(hostname string)` which defaults to `"local"` and
   errors if the host is missing. `SetHostClient` kept as the ergonomic
   `RegisterHost("local", c)` alias used by `cmd/clankd`.)*
-- **`host.Service.Run` is misleading.** Godoc implies it ties lifetime
-  to `ctx`; the body just initializes and returns. Rename to `Init` or
-  actually block on `ctx.Done()`.
+- **~~`host.Service.Run` is misleading.~~** *(RESOLVED — renamed to
+  `host.Service.Init`. The function returns immediately after kicking
+  off reconciler goroutines; Go convention reserves `Run` for blocking
+  calls (`http.Server.ListenAndServe`, `errgroup.Wait`). Three call
+  sites updated: `cmd/clank-host/main.go`,
+  `internal/cli/daemoncli/server_test.go`,
+  `internal/hub/service_test.go`.)*
 - **`host.Service.Shutdown` not idempotent under concurrent
   `CreateSession`.** No mutex around the registry teardown vs. inserts.
   Easy to hit during signal-triggered shutdown.
