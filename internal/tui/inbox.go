@@ -1684,11 +1684,6 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	}
 
 	projectName := s.GitRef.DisplayName()
-	if projectName == "" {
-		// Adopted backends without a remote (or pre-GitRef sessions) fall
-		// back to the legacy ProjectName for display.
-		projectName = s.ProjectName
-	}
 	if len(projectName) > 12 {
 		projectName = projectName[:11] + "…"
 	}

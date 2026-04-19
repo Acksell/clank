@@ -624,7 +624,9 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
 		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.GitRef.Kind != "" {
 			m.backend = m.info.Backend
-			m.projectDir = m.info.ProjectDir
+			// projectDir is not on SessionInfo (path-free wire per §7);
+			// relPath becomes a no-op for sessions opened from the inbox.
+			// TODO: resolve via host repo lookup if/when needed for UX.
 			m.hostname = host.Hostname(m.info.Hostname)
 			if m.hostname == "" {
 				m.hostname = host.HostLocal

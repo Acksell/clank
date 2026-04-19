@@ -125,9 +125,6 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 					title = truncate(s.Prompt, 60)
 				}
 				project := s.GitRef.DisplayName()
-				if project == "" {
-					project = s.ProjectDir
-				}
 				fmt.Fprintf(&b, "- %s | %s | %s | %s | %s%s\n",
 					s.ID, s.Status, s.Backend, project, title, unread)
 			}
@@ -347,9 +344,6 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 				return "", fmt.Errorf("create session: %w", err)
 			}
 			display := info.GitRef.DisplayName()
-			if display == "" {
-				display = info.ProjectName
-			}
 			return fmt.Sprintf("Session created: %s (%s)", info.ID[:8], display), nil
 		},
 	}

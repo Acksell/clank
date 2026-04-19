@@ -87,9 +87,6 @@ func TestUpsertAndLoad(t *testing.T) {
 		Status:         agent.StatusBusy,
 		Visibility:     agent.VisibilityDone,
 		FollowUp:       true,
-		ProjectDir:     "/tmp/project-a",
-		ProjectName:    "project-a",
-		WorktreeDir:    "/home/user/.clank/worktrees/project-a/feat-login",
 		WorktreeBranch: "feat/login",
 		Prompt:         "Fix the login bug",
 		Title:          "Fix authentication",
@@ -132,17 +129,8 @@ func TestUpsertAndLoad(t *testing.T) {
 	if got.FollowUp != info.FollowUp {
 		t.Errorf("FollowUp = %v, want %v", got.FollowUp, info.FollowUp)
 	}
-	if got.ProjectDir != info.ProjectDir {
-		t.Errorf("ProjectDir = %q, want %q", got.ProjectDir, info.ProjectDir)
-	}
-	if got.ProjectName != info.ProjectName {
-		t.Errorf("ProjectName = %q, want %q", got.ProjectName, info.ProjectName)
-	}
 	if got.WorktreeBranch != info.WorktreeBranch {
 		t.Errorf("Branch = %q, want %q", got.WorktreeBranch, info.WorktreeBranch)
-	}
-	if got.WorktreeDir != info.WorktreeDir {
-		t.Errorf("WorktreeDir = %q, want %q", got.WorktreeDir, info.WorktreeDir)
 	}
 	if got.Prompt != info.Prompt {
 		t.Errorf("Prompt = %q, want %q", got.Prompt, info.Prompt)
@@ -176,14 +164,12 @@ func TestUpsertUpdatesExisting(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-002",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-b",
-		ProjectName: "project-b",
-		Prompt:      "original prompt",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-002",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		Prompt:    "original prompt",
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession (initial): %v", err)
@@ -228,13 +214,11 @@ func TestDeleteSession(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-003",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-c",
-		ProjectName: "project-c",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-003",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession: %v", err)
@@ -285,13 +269,11 @@ func TestLastReadAtZeroValue(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-004",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/project-d",
-		ProjectName: "project-d",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-004",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
 		// LastReadAt intentionally left as zero value.
 	}
 	if err := s.UpsertSession(info); err != nil {
@@ -316,17 +298,15 @@ func TestFindByExternalID(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-005",
-		ExternalID:  "oc-ext-005",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-e",
-		ProjectName: "project-e",
-		Draft:       "saved draft",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:         "ses-005",
+		ExternalID: "oc-ext-005",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusIdle,
+		Visibility: agent.VisibilityDone,
+		FollowUp:   true,
+		Draft:      "saved draft",
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession: %v", err)
@@ -369,20 +349,18 @@ func TestPersistenceAcrossReopen(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-006",
-		ExternalID:  "oc-ext-006",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusBusy,
-		Visibility:  agent.VisibilityDone,
-		FollowUp:    true,
-		ProjectDir:  "/tmp/project-f",
-		ProjectName: "project-f",
-		Prompt:      "do stuff",
-		Title:       "Doing stuff",
-		Draft:       "my draft",
-		CreatedAt:   now.Add(-1 * time.Hour),
-		UpdatedAt:   now,
-		LastReadAt:  now,
+		ID:         "ses-006",
+		ExternalID: "oc-ext-006",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusBusy,
+		Visibility: agent.VisibilityDone,
+		FollowUp:   true,
+		Prompt:     "do stuff",
+		Title:      "Doing stuff",
+		Draft:      "my draft",
+		CreatedAt:  now.Add(-1 * time.Hour),
+		UpdatedAt:  now,
+		LastReadAt: now,
 	}
 
 	// Write with first store instance.
@@ -435,13 +413,11 @@ func TestMultipleSessions(t *testing.T) {
 	now := time.Now().Truncate(time.Millisecond)
 	for i, id := range []string{"ses-a", "ses-b", "ses-c"} {
 		info := agent.SessionInfo{
-			ID:          id,
-			Backend:     agent.BackendOpenCode,
-			Status:      agent.StatusIdle,
-			ProjectDir:  "/tmp/project",
-			ProjectName: "project",
-			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
-			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),
+			ID:        id,
+			Backend:   agent.BackendOpenCode,
+			Status:    agent.StatusIdle,
+			CreatedAt: now.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: now.Add(time.Duration(i) * time.Minute),
 		}
 		if err := s.UpsertSession(info); err != nil {
 			t.Fatalf("UpsertSession(%s): %v", id, err)
@@ -727,13 +703,11 @@ func TestConcurrentWrites(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			info := agent.SessionInfo{
-				ID:          fmt.Sprintf("ses-concurrent-%d", i),
-				Backend:     agent.BackendOpenCode,
-				Status:      agent.StatusIdle,
-				ProjectDir:  fmt.Sprintf("/tmp/project-%d", i),
-				ProjectName: fmt.Sprintf("project-%d", i),
-				CreatedAt:   now,
-				UpdatedAt:   now,
+				ID:        fmt.Sprintf("ses-concurrent-%d", i),
+				Backend:   agent.BackendOpenCode,
+				Status:    agent.StatusIdle,
+				CreatedAt: now,
+				UpdatedAt: now,
 			}
 			if err := s.UpsertSession(info); err != nil {
 				errs <- fmt.Errorf("UpsertSession(%d): %w", i, err)
@@ -788,8 +762,6 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 		Hostname:       "local",
 		GitRef:         agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
 		WorktreeBranch: "feat/x",
-		ProjectDir:     "/tmp/clank",
-		ProjectName:    "clank",
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -827,13 +799,11 @@ func TestUpsertDefaultsHostnameToLocal(t *testing.T) {
 
 	now := time.Now().Truncate(time.Millisecond)
 	info := agent.SessionInfo{
-		ID:          "ses-legacy-1",
-		Backend:     agent.BackendOpenCode,
-		Status:      agent.StatusIdle,
-		ProjectDir:  "/tmp/legacy",
-		ProjectName: "legacy",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        "ses-legacy-1",
+		Backend:   agent.BackendOpenCode,
+		Status:    agent.StatusIdle,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := s.UpsertSession(info); err != nil {
 		t.Fatalf("UpsertSession: %v", err)

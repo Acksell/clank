@@ -199,9 +199,8 @@ func TestCreateSessionTool_AcceptsKnownDir(t *testing.T) {
 	tp := &stubToolProvider{
 		knownDirs: []string{dir},
 		createdSession: &agent.SessionInfo{
-			ID:          "01ABCDEF01ABCDEF01ABCDEF01",
-			ProjectName: "clank",
-			ProjectDir:  dir,
+			ID:     "01ABCDEF01ABCDEF01ABCDEF01",
+			GitRef: agent.GitRef{Kind: agent.GitRefLocal, Path: dir},
 		},
 	}
 	tool := createSessionTool(tp)
@@ -221,18 +220,17 @@ func TestCreateSessionTool_AcceptsKnownDir(t *testing.T) {
 	}
 }
 
-func TestListSessionsTool_IncludesProjectDir(t *testing.T) {
+func TestListSessionsTool_IncludesProjectDisplayName(t *testing.T) {
 	t.Parallel()
 
 	tp := &stubToolProvider{
 		sessions: []agent.SessionInfo{
 			{
-				ID:          "01ABCDEF01ABCDEF01ABCDEF01",
-				Status:      agent.StatusBusy,
-				Backend:     agent.BackendOpenCode,
-				ProjectDir:  "/home/user/projects/clank",
-				ProjectName: "clank",
-				Prompt:      "fix the bug",
+				ID:      "01ABCDEF01ABCDEF01ABCDEF01",
+				Status:  agent.StatusBusy,
+				Backend: agent.BackendOpenCode,
+				GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/projects/clank"},
+				Prompt:  "fix the bug",
 			},
 		},
 	}
@@ -243,9 +241,9 @@ func TestListSessionsTool_IncludesProjectDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should contain full project dir, not just project name.
-	if !strings.Contains(result, "/home/user/projects/clank") {
-		t.Errorf("expected full project dir in output, got: %s", result)
+	// Should contain the GitRef display name.
+	if !strings.Contains(result, "clank") {
+		t.Errorf("expected GitRef display name 'clank' in output, got: %s", result)
 	}
 }
 

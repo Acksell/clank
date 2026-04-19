@@ -209,6 +209,26 @@ func (s *Store) migrate() error {
 		}
 		version = 13
 	}
+	if version < 14 {
+		// Step 8e-2b: drop project_dir, project_name, worktree_dir columns
+		// from sessions. Per §7.1 (line 307) of hub_host_refactor_code_review.md:
+		// SessionInfo is now path-free. Identity = (Hostname, GitRef,
+		// WorktreeBranch); the host resolves workdirs internally on
+		// demand. Display name is derived from GitRef.DisplayName.
+		//
+		// SQLite < 3.35 lacks DROP COLUMN, but modernc.org/sqlite ships
+		// a recent SQLite. Use ALTER TABLE DROP COLUMN.
+		_, err := s.db.Exec(`
+			ALTER TABLE sessions DROP COLUMN project_dir;
+			ALTER TABLE sessions DROP COLUMN project_name;
+			ALTER TABLE sessions DROP COLUMN worktree_dir;
+			PRAGMA user_version = 14;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v14: %w", err)
+		}
+		version = 14
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
@@ -219,7 +239,7 @@ func (s *Store) migrate() error {
 func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, worktree_branch, worktree_dir,
+		       worktree_branch,
 		       host_id, git_ref_kind, git_ref_url, git_ref_path,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
@@ -243,10 +263,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&info.Status,
 			&info.Visibility,
 			&followUp,
-			&info.ProjectDir,
-			&info.ProjectName,
 			&info.WorktreeBranch,
-			&info.WorktreeDir,
 			&info.Hostname,
 			&refKind,
 			&refURL,
@@ -303,11 +320,11 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
-			 project_dir, project_name, worktree_branch, worktree_dir,
+			 worktree_branch,
 			 host_id, git_ref_kind, git_ref_url, git_ref_path,
 			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		info.ID,
 		info.ExternalID,
@@ -315,10 +332,7 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		string(info.Status),
 		string(info.Visibility),
 		followUp,
-		info.ProjectDir,
-		info.ProjectName,
 		branch,
-		info.WorktreeDir,
 		hostname,
 		string(info.GitRef.Kind),
 		info.GitRef.URL,
@@ -450,7 +464,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	var refKind, refURL, refPath string
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       project_dir, project_name, worktree_branch, worktree_dir,
+		       worktree_branch,
 		       host_id, git_ref_kind, git_ref_url, git_ref_path,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
@@ -463,10 +477,7 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&info.Status,
 		&info.Visibility,
 		&followUp,
-		&info.ProjectDir,
-		&info.ProjectName,
 		&info.WorktreeBranch,
-		&info.WorktreeDir,
 		&info.Hostname,
 		&refKind,
 		&refURL,

@@ -281,17 +281,13 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 	return disc.DiscoverSessions(ctx, seedDir)
 }
 
-// CreateInfo is the host-resolved runtime metadata for a session
-// backend. The hub uses it to populate SessionInfo.{ProjectDir,
-// WorktreeDir} without having to know about host filesystem layout.
-type CreateInfo struct {
-	ProjectDir  string // Repo root directory on the host's filesystem.
-	WorktreeDir string // Worktree path; equals ProjectDir when no branch was requested.
-}
-
 // CreateSession creates a fresh SessionBackend for req and registers it
 // under the given Hub-assigned session ID. The backend is NOT started —
 // callers call Start() or Watch() on the returned backend.
+//
+// Returns the resolved serverURL (empty string for backends without an
+// HTTP server, e.g. Claude Code). The hub uses serverURL on a per-session
+// basis (e.g. for `opencode attach <url>` shell-out).
 //
 // Identity (Hostname, GitRef, WorktreeBranch) is path-free; the
 // host implements the §7.5 resolution algorithm to map identity → workDir:
@@ -315,51 +311,51 @@ type CreateInfo struct {
 // path (re-attaching to a historical session) creates a backend without
 // a prompt, which Validate() would reject. Callers that send prompts
 // validate at their own boundary.
-func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, CreateInfo, error) {
+func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
 	if sessionID == "" {
-		return nil, CreateInfo{}, fmt.Errorf("session id is required")
+		return nil, "", fmt.Errorf("session id is required")
 	}
 	if req.Backend == "" {
-		return nil, CreateInfo{}, fmt.Errorf("backend is required")
+		return nil, "", fmt.Errorf("backend is required")
 	}
 	if req.Dir != "" && req.AllowClone {
-		return nil, CreateInfo{}, fmt.Errorf("dir and allow_clone are mutually exclusive")
+		return nil, "", fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
-		return nil, CreateInfo{}, fmt.Errorf("no backend manager for %s", req.Backend)
+		return nil, "", fmt.Errorf("no backend manager for %s", req.Backend)
 	}
 	s.mu.Lock()
 	if _, exists := s.sessions[sessionID]; exists {
 		s.mu.Unlock()
-		return nil, CreateInfo{}, fmt.Errorf("session %s already registered", sessionID)
+		return nil, "", fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.mu.Unlock()
 
 	ref := req.GitRef
 	if ref.Kind == "" {
-		return nil, CreateInfo{}, fmt.Errorf("git_ref is required")
+		return nil, "", fmt.Errorf("git_ref is required")
 	}
 	if err := ref.Validate(); err != nil {
-		return nil, CreateInfo{}, fmt.Errorf("git_ref: %w", err)
+		return nil, "", fmt.Errorf("git_ref: %w", err)
 	}
 	if req.AllowClone && ref.Kind == GitRefLocal {
-		return nil, CreateInfo{}, fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
+		return nil, "", fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
 	}
 	canonical := ref.Canonical()
 	if canonical == "" {
-		return nil, CreateInfo{}, fmt.Errorf("git_ref %+v has empty canonical form", ref)
+		return nil, "", fmt.Errorf("git_ref %+v has empty canonical form", ref)
 	}
 	rootDir, err := s.resolveRepoRoot(ref, canonical, req)
 	if err != nil {
-		return nil, CreateInfo{}, err
+		return nil, "", err
 	}
 
 	workDir := rootDir
 	if req.WorktreeBranch != "" {
 		wt, err := s.resolveWorktree(ctx, rootDir, req.WorktreeBranch)
 		if err != nil {
-			return nil, CreateInfo{}, fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
+			return nil, "", fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
 		}
 		workDir = wt.WorktreeDir
 	}
@@ -369,13 +365,26 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		ResumeExternalID: req.SessionID,
 	})
 	if err != nil {
-		return nil, CreateInfo{}, err
+		return nil, "", err
 	}
 	s.mu.Lock()
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
-	return b, CreateInfo{ProjectDir: rootDir, WorktreeDir: workDir}, nil
+	// Resolve per-session serverURL for backends that expose one. Only
+	// OpenCode currently does; iterate ListServers (no fresh start —
+	// CreateBackend already ensured a server exists for workDir).
+	serverURL := ""
+	if oc, ok := mgr.(*OpenCodeBackendManager); ok {
+		for _, srv := range oc.ListServers() {
+			if srv.ProjectDir == workDir {
+				serverURL = srv.URL
+				break
+			}
+		}
+	}
+
+	return b, serverURL, nil
 }
 
 // resolveRepoRoot implements the §7.5 add/clone resolution. Returns the

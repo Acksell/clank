@@ -8,27 +8,6 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-// HOST
-// openCodeServerURLs returns a map from project directory to server URL
-// for all running OpenCode servers. Returns nil if no OpenCode backend
-// manager is registered.
-//
-// TODO(hub-host-refactor): this still type-asserts to the concrete
-// OpenCodeBackendManager. Once the daemon's session info no longer needs
-// the URL inline (or once it's exposed via SessionBackend / Client),
-// this helper goes away.
-func (s *Service) openCodeServerURLs() map[string]string {
-	ocMgr, ok := s.BackendManagers[agent.BackendOpenCode].(*host.OpenCodeBackendManager)
-	if !ok {
-		return nil
-	}
-	urls := make(map[string]string)
-	for _, srv := range ocMgr.ListServers() {
-		urls[srv.ProjectDir] = srv.URL
-	}
-	return urls
-}
-
 // HUB
 // catalogKey produces a stable map key for the primary-agent in-flight
 // refresh dedup table. The catalog is keyed on (backend, hostname, repo)

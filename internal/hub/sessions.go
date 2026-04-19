@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -77,13 +76,10 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			existingMS.info.Title = snap.Title
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
-			existingMS.info.ProjectDir = snap.Directory
-			existingMS.info.ProjectName = filepath.Base(snap.Directory)
 			existingMS.info.RevertMessageID = snap.RevertMessageID
 			if existingMS.info.WorktreeBranch == "" {
 				if branch, ok := wtPathToBranch[snap.Directory]; ok {
 					existingMS.info.WorktreeBranch = branch
-					existingMS.info.WorktreeDir = snap.Directory
 				}
 			}
 			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
@@ -93,10 +89,9 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			continue
 		}
 
-		var wtBranch, wtDir string
+		var wtBranch string
 		if branch, ok := wtPathToBranch[snap.Directory]; ok {
 			wtBranch = branch
-			wtDir = snap.Directory
 		}
 
 		id := ulid.Make().String()
@@ -113,10 +108,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			Backend:         agent.BackendOpenCode,
 			Status:          agent.StatusIdle,
 			GitRef:          gitRef,
-			ProjectDir:      snap.Directory,
-			ProjectName:     filepath.Base(snap.Directory),
 			WorktreeBranch:  wtBranch,
-			WorktreeDir:     wtDir,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
 			CreatedAt:       snap.CreatedAt,
@@ -198,10 +190,11 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 
 // HUB
 // snapshotSessions returns a point-in-time copy of all session infos
-// with live status from backends and populated ServerURL for OpenCode sessions.
+// with live status from backends. ServerURL is per-session, populated
+// at create time by the host (POST /sessions response) and stored on
+// ms.info; not refreshed after daemon restart until a backend is
+// reactivated via activateBackend.
 func (s *Service) snapshotSessions() []agent.SessionInfo {
-	serverURLs := s.openCodeServerURLs()
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sessions := make([]agent.SessionInfo, 0, len(s.sessions))
@@ -209,9 +202,6 @@ func (s *Service) snapshotSessions() []agent.SessionInfo {
 		info := ms.info
 		if ms.backend != nil {
 			info.Status = ms.backend.Status()
-		}
-		if info.Backend == agent.BackendOpenCode && serverURLs != nil {
-			info.ServerURL = serverURLs[info.ProjectDir]
 		}
 		sessions = append(sessions, info)
 	}
@@ -271,7 +261,7 @@ func (s *Service) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 
 		// Text filter: match if ANY OR group matches (all terms in the group present).
 		if hasQuery {
-			hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.ProjectName)
+			hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.GitRef.DisplayName())
 			matched := false
 			for _, terms := range orGroups {
 				allMatch := true
@@ -311,10 +301,10 @@ func parseTimeParam(s string) (time.Time, error) {
 
 // HUB
 // createSession creates a new managed session and starts the backend.
-// Identity is path-free post Phase 3D-2: callers send (Hostname,
-// GitRef, WorktreeBranch); the Host resolves a workDir on the way down
-// and returns it to us as host.CreateInfo so we can populate
-// SessionInfo.{ProjectDir, WorktreeDir} for the TUI.
+// Identity is path-free per §7: callers send (Hostname, GitRef,
+// WorktreeBranch); the Host resolves a workDir on the way down and
+// returns a per-session serverURL (empty for backends without an HTTP
+// server, e.g. Claude Code).
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
 	if req.Hostname == "" {
 		req.Hostname = string(host.HostLocal)
@@ -322,11 +312,10 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 
 	// Hub assigns the session ID up front, then asks the Host to create
 	// and register a backend under it. The Host resolves
-	// (GitRef, WorktreeBranch) → workDir and reports it back via
-	// CreateInfo so the Hub can populate SessionInfo paths without
-	// having to compute filesystem layout itself.
+	// (GitRef, WorktreeBranch) → workDir internally and returns the
+	// resolved server URL (OpenCode only) for per-session shell-out.
 	id := ulid.Make().String()
-	backend, info, err := s.hostClient.Sessions().Create(s.ctx, id, req)
+	backend, serverURL, err := s.hostClient.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
 	}
@@ -340,9 +329,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		Hostname:       req.Hostname,
 		GitRef:         req.GitRef,
 		WorktreeBranch: req.WorktreeBranch,
-		ProjectDir:     info.ProjectDir,
-		ProjectName:    filepath.Base(info.ProjectDir),
-		WorktreeDir:    info.WorktreeDir,
+		ServerURL:      serverURL,
 		Prompt:         req.Prompt,
 		TicketID:       req.TicketID,
 		Agent:          req.Agent,

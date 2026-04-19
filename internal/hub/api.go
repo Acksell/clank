@@ -72,11 +72,6 @@ func (s *Service) GetSession(id string) (*agent.SessionInfo, error) {
 	if ms.backend != nil {
 		info.Status = ms.backend.Status()
 	}
-	if info.Backend == agent.BackendOpenCode {
-		if urls := s.openCodeServerURLs(); urls != nil {
-			info.ServerURL = urls[info.ProjectDir]
-		}
-	}
 	return &info, nil
 }
 
@@ -153,13 +148,16 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 			Agent:          in.Agent,
 			Model:          in.Model,
 		}
-		backend, _, err := s.hostClient.Sessions().Create(s.ctx, id, req)
+		backend, serverURL, err := s.hostClient.Sessions().Create(s.ctx, id, req)
 		if err != nil {
 			return err
 		}
 		s.mu.Lock()
 		ms.backend = backend
 		ms.watchOnly = false
+		// Refresh ServerURL on reactivation: the backend may have been
+		// restarted on a new port since the previous session bound it.
+		ms.info.ServerURL = serverURL
 		s.mu.Unlock()
 
 		s.wg.Add(1)
@@ -258,15 +256,17 @@ func (s *Service) ForkSession(ctx context.Context, id, messageID string) (*agent
 	newID := ulid.Make().String()
 	now := time.Now()
 	newInfo := agent.SessionInfo{
-		ID:          newID,
-		ExternalID:  forkResult.ID,
-		Backend:     ms.info.Backend,
-		Status:      agent.StatusIdle,
-		ProjectDir:  ms.info.ProjectDir,
-		ProjectName: ms.info.ProjectName,
-		Title:       forkResult.Title,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             newID,
+		ExternalID:     forkResult.ID,
+		Backend:        ms.info.Backend,
+		Status:         agent.StatusIdle,
+		Hostname:       ms.info.Hostname,
+		GitRef:         ms.info.GitRef,
+		WorktreeBranch: ms.info.WorktreeBranch,
+		ServerURL:      ms.info.ServerURL,
+		Title:          forkResult.Title,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	newMS := &managedSession{info: newInfo}
 

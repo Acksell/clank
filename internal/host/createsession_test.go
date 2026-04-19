@@ -43,12 +43,9 @@ func TestCreateSession_AddByDir_Success(t *testing.T) {
 		Dir:     dir,
 		Prompt:  "hi",
 	}
-	_, info, err := svc.CreateSession(context.Background(), "sid-add", req)
+	_, _, err := svc.CreateSession(context.Background(), "sid-add", req)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
-	}
-	if info.ProjectDir != dir {
-		t.Errorf("ProjectDir = %q, want %q", info.ProjectDir, dir)
 	}
 
 	// Repo should now be in the registry so a subsequent CreateSession
@@ -184,14 +181,18 @@ func TestCreateSession_CloneByAllowClone(t *testing.T) {
 		AllowClone: true,
 		Prompt:     "hi",
 	}
-	_, info, err := svc.CreateSession(context.Background(), "sid-clone", req)
+	_, _, err := svc.CreateSession(context.Background(), "sid-clone", req)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if !strings.HasPrefix(info.ProjectDir, cloneRoot) {
-		t.Errorf("ProjectDir %q is not under cloneRoot %q", info.ProjectDir, cloneRoot)
+	repo, ok := svc.Repo(host.GitRef{Kind: host.GitRefRemote, URL: sourceURL})
+	if !ok {
+		t.Fatalf("expected cloned repo to be added to registry")
 	}
-	if _, err := os.Stat(filepath.Join(info.ProjectDir, ".git")); err != nil {
+	if !strings.HasPrefix(repo.RootDir, cloneRoot) {
+		t.Errorf("RootDir %q is not under cloneRoot %q", repo.RootDir, cloneRoot)
+	}
+	if _, err := os.Stat(filepath.Join(repo.RootDir, ".git")); err != nil {
 		t.Errorf("clone destination missing .git: %v", err)
 	}
 }
@@ -209,12 +210,9 @@ func TestCreateSession_LocalAdd(t *testing.T) {
 		GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: dir},
 		Prompt:  "hi",
 	}
-	_, info, err := svc.CreateSession(context.Background(), "sid-local", req)
+	_, _, err := svc.CreateSession(context.Background(), "sid-local", req)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
-	}
-	if info.ProjectDir != dir {
-		t.Errorf("ProjectDir = %q, want %q", info.ProjectDir, dir)
 	}
 	// Repo should now be registered under the local path canonical.
 	if _, ok := svc.Repo(host.GitRef{Kind: host.GitRefLocal, Path: dir}); !ok {

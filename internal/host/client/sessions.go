@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
 // SessionsClient is the collection-scoped handle for session operations
@@ -21,24 +20,21 @@ func (c *HTTP) Sessions() *SessionsClient {
 }
 
 // Create starts a new session on the host. Returns a SessionBackend
-// adapter bound to the new session and the host's CreateInfo.
-func (s *SessionsClient) Create(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, host.CreateInfo, error) {
+// adapter bound to the new session and the host-resolved server URL
+// (empty string for backends without an HTTP server, e.g. Claude Code).
+func (s *SessionsClient) Create(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
 	body := struct {
 		SessionID string             `json:"session_id"`
 		Request   agent.StartRequest `json:"request"`
 	}{sessionID, req}
 	var snap struct {
-		SessionID   string              `json:"session_id"`
-		ExternalID  string              `json:"external_id"`
-		Status      agent.SessionStatus `json:"status"`
-		ProjectDir  string              `json:"project_dir"`
-		WorktreeDir string              `json:"worktree_dir"`
+		SessionID  string              `json:"session_id"`
+		ExternalID string              `json:"external_id"`
+		Status     agent.SessionStatus `json:"status"`
+		ServerURL  string              `json:"server_url"`
 	}
 	if err := s.c.do(ctx, http.MethodPost, "/sessions", body, &snap); err != nil {
-		return nil, host.CreateInfo{}, err
+		return nil, "", err
 	}
-	return newHTTPSessionBackend(s.c, sessionID, snap.ExternalID, snap.Status), host.CreateInfo{
-		ProjectDir:  snap.ProjectDir,
-		WorktreeDir: snap.WorktreeDir,
-	}, nil
+	return newHTTPSessionBackend(s.c, sessionID, snap.ExternalID, snap.Status), snap.ServerURL, nil
 }

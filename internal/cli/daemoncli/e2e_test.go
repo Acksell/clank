@@ -133,8 +133,8 @@ func TestE2E_HubHostOpenCode_StartsSession(t *testing.T) {
 	if info.ID == "" {
 		t.Fatal("created session has empty ID")
 	}
-	if info.ProjectDir != repo {
-		t.Errorf("ProjectDir = %q, want %q (host did not resolve GitRef → workdir)", info.ProjectDir, repo)
+	if info.GitRef.Kind != agent.GitRefLocal || info.GitRef.Path != repo {
+		t.Errorf("GitRef = %+v, want {Kind:local Path:%q}", info.GitRef, repo)
 	}
 
 	// Round-trip: the session must show up in List, proving the hub

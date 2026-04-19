@@ -24,10 +24,10 @@ func TestPersistence_RoundTrip(t *testing.T) {
 
 	// Create a session.
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
-		Prompt:        "fix the bug",
-		TicketID:      "TICKET-42",
+		Backend:  agent.BackendOpenCode,
+		GitRef:   agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:   "fix the bug",
+		TicketID: "TICKET-42",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -106,8 +106,8 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	}
 
 	// Verify backend-owned fields survived.
-	if after.ProjectDir != repoDir {
-		t.Errorf("ProjectDir = %q, want %q", after.ProjectDir, repoDir)
+	if after.GitRef.URL != testRemoteURL {
+		t.Errorf("GitRef.URL = %q, want %q", after.GitRef.URL, testRemoteURL)
 	}
 	if after.TicketID != "TICKET-42" {
 		t.Errorf("TicketID = %q, want %q", after.TicketID, "TICKET-42")
@@ -124,9 +124,9 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
-		Prompt:        "hello",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -178,9 +178,9 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 	ctx := context.Background()
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
-		Prompt:        "do something",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "do something",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -352,9 +352,9 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
-		Prompt:        "hello",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		Prompt:  "hello",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)

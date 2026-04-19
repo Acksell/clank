@@ -394,14 +394,11 @@ type SessionInfo struct {
 	ExternalID      string            `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
 	Backend         BackendType       `json:"backend"`
 	Status          SessionStatus     `json:"status"`
-	Visibility      SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
-	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
-	ProjectDir      string            `json:"project_dir"`
-	ProjectName     string            `json:"project_name"`
+	Visibility      SessionVisibility `json:"visibility,omitempty"`      // User-set: "", "done", or "archived"
+	FollowUp        bool              `json:"follow_up,omitempty"`       // User-set flag to mark session for follow-up
 	Hostname        string            `json:"hostname,omitempty"`        // Canonical identity: host (Phase 3); "local" by default.
 	GitRef          GitRef            `json:"git_ref,omitempty"`         // Canonical identity: repo (kind + url|path).
 	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Canonical identity: git branch.
-	WorktreeDir     string            `json:"worktree_dir,omitempty"`    // Runtime metadata (host-local): filesystem path of the git worktree. Not identity.
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`

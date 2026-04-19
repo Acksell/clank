@@ -55,7 +55,6 @@ func TestNativeCLICmd_MissingServerURL(t *testing.T) {
 		ID:         "ses-123",
 		ExternalID: "oc-ext-456",
 		Backend:    agent.BackendOpenCode,
-		ProjectDir: "/home/user/project",
 	}
 
 	_, err := nativeCLICmd(info)

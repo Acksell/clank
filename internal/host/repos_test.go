@@ -150,12 +150,12 @@ func TestService_CreateSessionRequiresRegisteredRepo(t *testing.T) {
 		t.Fatalf("AddRepo: %v", err)
 	}
 
-	_, info, err := svc.CreateSession(context.Background(), "sid-1", req)
-	if err != nil {
+	if _, _, err := svc.CreateSession(context.Background(), "sid-1", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if info.ProjectDir != dir {
-		t.Errorf("CreateInfo.ProjectDir = %q, want %q", info.ProjectDir, dir)
+	ref := host.GitRef{Kind: host.GitRefRemote, URL: "git@github.com:acksell/clank.git"}
+	if got, ok := svc.Repo(ref); !ok || got.RootDir != dir {
+		t.Errorf("Repo(%v).RootDir = %q (ok=%v), want %q", ref, got.RootDir, ok, dir)
 	}
 }
 
@@ -270,9 +270,10 @@ func TestService_RepoStore_PersistsAcrossRestart(t *testing.T) {
 		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
 		Prompt:  "hi",
 	}
-	if _, info, err := svc2.CreateSession(context.Background(), "sid-after-restart", req); err != nil {
+	if _, _, err := svc2.CreateSession(context.Background(), "sid-after-restart", req); err != nil {
 		t.Fatalf("CreateSession after restart: %v", err)
-	} else if info.ProjectDir != dir {
-		t.Errorf("CreateSession.ProjectDir = %q, want %q", info.ProjectDir, dir)
+	}
+	if got, ok := svc2.Repo(ref); !ok || got.RootDir != dir {
+		t.Errorf("Repo(%v).RootDir = %q (ok=%v), want %q", ref, got.RootDir, ok, dir)
 	}
 }

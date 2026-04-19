@@ -15,16 +15,12 @@ func TestDaemonCreateSession(t *testing.T) {
 	s, client, cleanup := testDaemon(t)
 	defer cleanup()
 
-	// Re-derive the registered repo's rootDir from the host catalog
-	// so we can assert info.ProjectDir matches the host-resolved
-	// CreateInfo (Phase 3D-2: hub no longer carries paths over the
-	// wire, but SessionInfo still surfaces them as runtime metadata).
+	// Sanity-check the host has exactly one repo registered (the seed).
 	hc, _ := s.Host("local")
 	repos, err := hc.Repos(context.Background())
 	if err != nil || len(repos) != 1 {
 		t.Fatalf("ListRepos: %v len=%d", err, len(repos))
 	}
-	wantDir := repos[0].RootDir
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
@@ -47,14 +43,8 @@ func TestDaemonCreateSession(t *testing.T) {
 	if info.Hostname != "local" {
 		t.Errorf("expected host_id=local, got %s", info.Hostname)
 	}
-	if info.ProjectDir != wantDir {
-		t.Errorf("expected project_dir=%s, got %s", wantDir, info.ProjectDir)
-	}
 	if info.Prompt != "Fix the bug" {
 		t.Errorf("expected prompt='Fix the bug', got %s", info.Prompt)
-	}
-	if info.ProjectName != filepath.Base(wantDir) {
-		t.Errorf("expected project_name=%s, got %s", filepath.Base(wantDir), info.ProjectName)
 	}
 }
 
@@ -470,8 +460,11 @@ func TestDaemonForkSession(t *testing.T) {
 	if forked.Title != "Forked session" {
 		t.Errorf("expected Title=%q, got %q", "Forked session", forked.Title)
 	}
-	if forked.ProjectDir != info.ProjectDir {
-		t.Errorf("expected ProjectDir=%s, got %s", info.ProjectDir, forked.ProjectDir)
+	if forked.GitRef.Canonical() != info.GitRef.Canonical() {
+		t.Errorf("expected GitRef=%s, got %s", info.GitRef.Canonical(), forked.GitRef.Canonical())
+	}
+	if forked.WorktreeBranch != info.WorktreeBranch {
+		t.Errorf("expected WorktreeBranch=%s, got %s", info.WorktreeBranch, forked.WorktreeBranch)
 	}
 	if forked.Backend != info.Backend {
 		t.Errorf("expected Backend=%s, got %s", info.Backend, forked.Backend)
@@ -1652,20 +1645,20 @@ func TestDaemonSearchSessions(t *testing.T) {
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "myproject",
-			Title: "Fix authentication bug", Prompt: "fix login",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/myproject.git"},
+			Title:  "Fix authentication bug", Prompt: "fix login",
 			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour),
 		},
 		{
 			ID: "ses-s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "myproject",
-			Title: "Add dark mode", Prompt: "implement dark mode toggle",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/myproject.git"},
+			Title:  "Add dark mode", Prompt: "implement dark mode toggle",
 			CreatedAt: now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
 		},
 		{
 			ID: "ses-s3", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "otherproject",
-			Title: "Refactor database layer", Prompt: "clean up db queries",
+			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/otherproj.git"},
+			Title:  "Refactor database layer", Prompt: "clean up db queries",
 			CreatedAt: now, UpdatedAt: now,
 		},
 	} {
@@ -1903,21 +1896,18 @@ func TestDaemonSearchSessionsVisibility(t *testing.T) {
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-active", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "active session", Prompt: "do stuff",
 			Visibility: agent.VisibilityVisible,
 			CreatedAt:  now.Add(-3 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour),
 		},
 		{
 			ID: "ses-done", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "done session", Prompt: "finished task",
 			Visibility: agent.VisibilityDone,
 			CreatedAt:  now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
 		},
 		{
 			ID: "ses-archived", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL}, ProjectName: "proj",
 			Title: "archived session", Prompt: "old stuff",
 			Visibility: agent.VisibilityArchived,
 			CreatedAt:  now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
