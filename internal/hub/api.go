@@ -148,7 +148,11 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 			Agent:          in.Agent,
 			Model:          in.Model,
 		}
-		backend, serverURL, err := s.hostClient.Sessions().Create(s.ctx, id, req)
+		h, err := s.hostFor(req.Hostname)
+		if err != nil {
+			return err
+		}
+		backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 		if err != nil {
 			return err
 		}
@@ -363,7 +367,10 @@ func (s *Service) DeleteSession(ctx context.Context, id string) error {
 	s.mu.Unlock()
 
 	if ms.backend != nil {
-		if err := s.hostClient.Session(id).Stop(s.ctx); err != nil {
+		h, err := s.hostFor(ms.info.Hostname)
+		if err != nil {
+			s.log.Printf("error stopping session %s: %v", id, err)
+		} else if err := h.Session(id).Stop(s.ctx); err != nil {
 			s.log.Printf("error stopping session %s on host: %v", id, err)
 		}
 	}

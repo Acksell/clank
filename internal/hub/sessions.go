@@ -21,12 +21,18 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 	// snapshots. Discovery is best-effort per backend — failures are
 	// logged but do not abort the whole call.
 	var snapshots []agent.SessionSnapshot
-	backends, err := s.hostClient.Backends(ctx)
+	// Discovery currently targets only the local host. When multi-host
+	// discovery lands this needs to fan out across s.snapshotHosts().
+	h, err := s.hostFor("local")
+	if err != nil {
+		return DiscoverResult{}, err
+	}
+	backends, err := h.Backends(ctx)
 	if err != nil {
 		return DiscoverResult{}, err
 	}
 	for _, bi := range backends {
-		found, err := s.hostClient.Backend(bi.Name).Discover(ctx, projectDir)
+		found, err := h.Backend(bi.Name).Discover(ctx, projectDir)
 		if err != nil {
 			s.log.Printf("discover sessions (%s): %v", bi.Name, err)
 			continue
@@ -131,7 +137,11 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
-	backend, _, err := s.hostClient.Sessions().Create(s.ctx, id, agent.StartRequest{
+	h, err := s.hostFor(ms.info.Hostname)
+	if err != nil {
+		return err
+	}
+	backend, _, err := h.Sessions().Create(s.ctx, id, agent.StartRequest{
 		Backend:        ms.info.Backend,
 		Hostname:       ms.info.Hostname,
 		GitRef:         ms.info.GitRef,
@@ -315,7 +325,11 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// (GitRef, WorktreeBranch) → workDir internally and returns the
 	// resolved server URL (OpenCode only) for per-session shell-out.
 	id := ulid.Make().String()
-	backend, serverURL, err := s.hostClient.Sessions().Create(s.ctx, id, req)
+	h, err := s.hostFor(req.Hostname)
+	if err != nil {
+		return nil, err
+	}
+	backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
 	}

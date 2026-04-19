@@ -36,10 +36,10 @@ import (
 // (a Unix domain socket in production).
 type Service struct {
 	// hosts is the catalog of registered Host endpoints, keyed by
-	// Hostname. Phase 2 only uses a single "local" host whose client is
-	// also mirrored into hostClient below for the legacy single-host
-	// fast path; multi-host dispatch arrives with the TCP+TLS transport
-	// in Phase 4.
+	// Hostname. Phase 2 only uses a single "local" host. Multi-host
+	// dispatch arrives with the TCP+TLS transport in Phase 4. All
+	// session-targeting code paths resolve through s.hostFor(hostname)
+	// against this map; there is no shortcut field.
 	hostsMu sync.RWMutex
 	hosts   map[host.Hostname]*hostclient.HTTP
 
@@ -63,21 +63,11 @@ type Service struct {
 	// As of Phase 1, this field is **only used by tests**. Production
 	// clankd injects a HostClient via SetHostClient (the clank-host
 	// subprocess owns the real BackendManagers). Tests still use the
-	// `s.BackendManagers[X] = mgr` pattern; when Run() finds hostClient
-	// nil it builds an in-process host from this map.
+	// `s.BackendManagers[X] = mgr` pattern; when Run() finds no host
+	// registered in the catalog it builds an in-process host from this map.
 	//
 	// Removed in Phase 2 once tests get a `WithHost` constructor option.
 	BackendManagers map[agent.BackendType]agent.BackendManager
-
-	// hostClient is the Hub-side abstraction over host. Per Decision #3
-	// it is the concrete *hostclient.HTTP — no Go interface, no
-	// in-process shortcut. The caller (production clankd, or the test
-	// helper) injects it before Run() either via SetHostClient or by
-	// registering a host into the catalog.
-	//
-	// All HUB-tagged code paths go through this so the call shape matches
-	// the wire path.
-	hostClient *hostclient.HTTP
 
 	// Store is the optional SQLite persistence layer. When non-nil, session
 	// metadata is written through on every mutation and loaded on startup.
@@ -160,11 +150,11 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 	}
 
 	// Per Decision #3 (no in-process Host shortcut), the caller MUST
-	// inject a host client before Run(). Production clankd does this
-	// via SetHostClient(*hostclient.HTTP) pointed at the clank-host
-	// subprocess; tests do it through the test helper which spins a
-	// real host.Service behind an httptest server.
-	if s.hostClient == nil {
+	// register at least the "local" host before Run(). Production clankd
+	// does this via SetHostClient(*hostclient.HTTP) pointed at the
+	// clank-host subprocess; tests do it through the test helper which
+	// spins a real host.Service behind an httptest server.
+	if _, err := s.hostFor("local"); err != nil {
 		return fmt.Errorf("hub.Service.Run: no host client registered (call SetHostClient before Run)")
 	}
 

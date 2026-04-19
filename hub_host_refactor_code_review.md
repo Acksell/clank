@@ -1,5 +1,13 @@
 # Hub/Host Refactor — Principal Engineer Code Review
 
+> **STATUS (current).** §7.8 execution sequence is functionally complete:
+> steps 2–9 all marked `[DONE]`; step 1 (supervisor) explicitly deferred
+> per user (separate shared-binary plan); step 10 is a process rule, not
+> a unit of work. All §1 major deviations are RESOLVED or DEFERRED. The
+> original TL;DR below describes the *pre-refactor* state and is kept for
+> historical context — read §7 for the locked decisions and §7.8 for the
+> close-out trail.
+
 **Reviewer perspective:** unfiltered, skeptical. Goal is to call out drift,
 shortcuts, and rationalizations between `hub_host_refactor.md` and the code
 that actually landed. Treat this as a punch-list, not as a pat on the back.
@@ -24,6 +32,10 @@ up with a refactor whose intent only lives in the head of one agent.
 
 ### 1.1 `internal/hub/mux/` does not exist
 
+> **RESOLVED.** `internal/hub/mux/` was extracted in commit `353d18b`
+> ("step 2/10"). See §7.8 step 2 `[DONE]` for the file layout and the
+> single intentional Service-side handler exception (`HandleVoiceAudio`).
+
 The doc's Phase 2 "done when" criterion is that Hub HTTP wiring lives in
 `internal/hub/mux/`, symmetric with `internal/host/mux/`. In reality:
 
@@ -43,6 +55,11 @@ domain methods stay on `hub.Service`; the mux package owns the
 
 ### 1.2 Voice landed in `internal/voice/`, not in `hub.Service`
 
+> **RESOLVED.** Per §7.1 (decision row "Voice") and §7.8 step 9, the
+> peer-package layout is ratified. See step 9's `[DONE]` notes for the
+> exact responsibility split between `internal/voice/` and the
+> `internal/hub/voice.go` glue.
+
 The design says voice is "Hub-resident" and explicitly shows it
 migrating into the Hub package in Phase 2. What actually landed is a
 peer top-level package `internal/voice/` (`voice.go`, `bridge.go`,
@@ -61,6 +78,10 @@ remains in `internal/hub/voice.go`. Pick one, write it down.
 Human comment: Possibly keeping voice as isolated package, but hub uses the client and registers its tool capabilities. Can keep tool regstering in voice package for now if it's easier.
 
 ### 1.3 `hostclient.Client` is an interface — Decision #3 violated
+
+> **RESOLVED.** `hostclient.Client` interface and `InProcess` impl
+> deleted. Hub depends on `*hostclient.HTTP` directly. Tests use
+> `httptest.NewServer(hostmux.New(svc))`. See §7.8 step 3 `[DONE]`.
 
 The doc's Decision #3 is unambiguous: no Host Go interface, concrete
 types only. The code has an interface (`internal/host/client/client.go`)
@@ -95,6 +116,10 @@ Human comment: ok, my mistake allowing the client interface. Please update.
 
 ### 1.4 Supervisor doesn't supervise
 
+> **DEFERRED.** Per user decision (see human comment below and §7.8 step
+> 1 note in step 4): tracked under a separate shared-binary plan. Not
+> scheduled in the hub-host refactor sequence.
+
 `internal/cli/daemoncli/host_supervisor.go` is 151 lines and openly
 admits at line 18: `// Phase 1 limitation: no restart-on-crash.` What
 exists today is "spawn once, signal on shutdown." Specifically:
@@ -123,6 +148,12 @@ Human comment: This was agreed upon as fine and noted for later. Don't do this y
 
 ### 1.5 Hub still type-asserts Host internals
 
+> **RESOLVED.** `internal/hub/agents_models.go` no longer imports
+> `*host.OpenCodeBackendManager` or does any concrete type-assert into
+> host internals. The warm-cache path was rewired to use the catalog
+> keyed on `(backend, hostname, gitRef.canonical)` per §7.8 step 8e-2a.
+> Only typed aliases (`host.Hostname`) cross the boundary now.
+
 `internal/hub/agents_models.go` imports `internal/host` and does a
 concrete type-assertion to `*host.OpenCodeBackendManager` for the
 warm-cache path. This violates Decision #6 ("BackendManagers live on
@@ -134,6 +165,15 @@ over the wire). If it's not load-bearing, delete it.
 Human comment: Yes I'm not sure why it's even in the hub to begin with (but im not an expert)
 
 ### 1.6 Phase 3 is half-done, in the worst way
+
+> **RESOLVED.** Path-as-identity is gone. `ProjectDir`/`WorktreeDir`/
+> `ProjectName` stripped from `SessionInfo` in step 8e-2b; `host.CreateInfo`
+> deleted; `POST /sessions/discover` no longer takes paths; `git.RemoteURL`
+> calls live on the host side. Identity is now `GitRef` everywhere on the
+> wire. The user's concern in the human-comment about `workDir` as a
+> second parameter was addressed by step 8e-2a (`ListAgents`/`ListModels`
+> take `GitRef`; the host resolves ref→workdir internally via `repostore`).
+> See §7.8 steps 4 → 8e-2b for the full sequence.
 
 `StartRequest` got the new path-free fields (`HostID`, `RepoRemoteURL`,
 `Branch`). Good. But:
@@ -158,6 +198,15 @@ Human comment: I think the agent is perhaps aware of some of the issues here, bu
 
 ### 1.7 `RegisterRepoOnHost` punches paths through the wire
 
+> **RESOLVED.** Per the user's human-comment, `RegisterRepoOnHost` was
+> deleted from the wire entirely (§7.8 step 6). The host now handles
+> add/clone implicitly inside `CreateSession` per the §7.5 algorithm:
+> on an unknown `GitRef`, it either uses the optional `Dir` hint
+> (verifies match), uses the local-kind path, or clones when
+> `AllowClone=true`. No paths flow over the wire in steady state.
+> `hubclient.ResolveRepo` was also deleted; TUI inlines `git.RepoRoot`
+> + `git.RemoteURL` + GitRef construction in a private helper.
+
 The TUI calls `client.RegisterRepoOnHost(ctx, hostID, ref, root)` from
 `internal/tui/inbox.go`, sending a host-side filesystem path over the
 wire. This is a legitimate bootstrap (shell context → API identity, the
@@ -180,23 +229,28 @@ Human comment: RegisterRepoOnHost even existing seems weird, why isnt this just 
 ## 2. Smaller issues
 
 - **Log file still named `daemon.log`.** Half-rename. Either commit to
-  `clankd.log` or document why the legacy name stays.
-- **`s.hostClient` shortcut field in `hub.Service` doubles
-  `s.hosts["local"]`.** Almost every call site uses the shortcut and
-  bypasses the catalog. Either delete the catalog (it's vestigial) or
-  delete the shortcut and force everyone through the catalog. As-is
-  it's two sources of truth for the same thing.
+  `clankd.log` or document why the legacy name stays. *(STILL OPEN —
+  see `internal/cli/daemoncli/daemoncli.go:94`.)*
+- **~~`s.hostClient` shortcut field in `hub.Service` doubles
+  `s.hosts["local"]`.~~** *(RESOLVED — `hub.Service.hostClient` field
+  deleted. All production call sites in `internal/hub/api.go` and
+  `internal/hub/sessions.go` route through new helper
+  `(*Service).hostFor(hostname string)` which defaults to `"local"` and
+  errors if the host is missing. `SetHostClient` kept as the ergonomic
+  `RegisterHost("local", c)` alias used by `cmd/clankd`.)*
 - **`host.Service.Run` is misleading.** Godoc implies it ties lifetime
   to `ctx`; the body just initializes and returns. Rename to `Init` or
   actually block on `ctx.Done()`.
 - **`host.Service.Shutdown` not idempotent under concurrent
   `CreateSession`.** No mutex around the registry teardown vs. inserts.
   Easy to hit during signal-triggered shutdown.
-- **Socket-file ownership race** (see 1.4). Single owner.
-- **`host.CreateInfo` over the wire** (see 1.6). Path leak.
-- **`hostclient` package godoc is currently a defense brief for
-  Decision #3 deviation.** Once the interface is gone, delete the
-  defense.
+- **Socket-file ownership race** (see 1.4). Single owner. *(DEFERRED
+  with §1.4.)*
+- **~~`host.CreateInfo` over the wire~~** *(RESOLVED — `host.CreateInfo`
+  deleted in §7.8 step 8e-2b.)*
+- **~~`hostclient` package godoc is currently a defense brief for
+  Decision #3 deviation.~~** *(RESOLVED — godoc now reaffirms Decision
+  #3; see `internal/host/client/client.go` package comment.)*
 
 ---
 
@@ -252,17 +306,21 @@ In strict order. Do not start the next item until the previous lands.
 
 ## 5. Opportunities (per AGENTS.md)
 
-- **Reliability.** Until #1 above lands, recommend adding a Hub
+- **Reliability.** Until §1.4 lands, recommend adding a Hub
   startup-time assertion that pings `clank-host` once per second and
   panics if it disappears. Loud failure beats silent dead-client today.
-- **Tests.** No integration test currently spans `clankd → unix socket
-  → clank-host → real openagent backend`. Add one before Phase 3
-  finishes; otherwise wire-shape regressions land silently.
-- **DX.** Splitting `internal/hub/sessions.go` (972 lines) is overdue
-  on its own merits, independent of the mux extraction.
+  *(STILL OPEN — paired with §1.4 deferral.)*
+- **~~Tests.~~** *(RESOLVED — `clankd → unix socket → clank-host → real
+  backend` integration coverage landed with §7.8 step 3; see
+  `internal/hub/service_test.go::ensureHostFixture` and the e2e test
+  in commit `b3e6f66`.)*
+- **~~DX.~~** *(RESOLVED — `internal/hub/sessions.go` is now 476 lines
+  after the §7.8 step 2 mux extraction split handlers into
+  `internal/hub/mux/sessions.go`.)*
 - **Security.** Confirm `~/.clank/host.sock` is created with 0600
   perms; it currently inherits umask. The Hub→Host channel is
   unauthenticated and assumes filesystem perms are the boundary.
+  *(STILL OPEN.)*
 
 ---
 
@@ -515,7 +573,10 @@ methods take only the args genuinely scoped to that op.
 ### 7.8 Execution sequence (strict)
 
 1. **Supervisor.** Restart loop, exponential backoff (1→2→4…→30s), no-restart on clean signal-driven exit, 10s SIGTERM grace, single socket owner. Integration test: SIGKILL `clank-host` mid-session, assert next request succeeds.
-2. **Extract `internal/hub/mux/`** mirroring `internal/host/mux/`. Move HTTP handlers off `*hub.Service`. Split `sessions.go`. Service methods become pure domain.
+2. **[DONE] Extract `internal/hub/mux/`** mirroring `internal/host/mux/`. Move HTTP handlers off `*hub.Service`. Split `sessions.go`. Service methods become pure domain.
+    - Mux package files (1:1 with topical service files): `mux.go` (router + JSON helpers), `sessions.go`, `repos.go`, `agents_models.go`, `events.go`, `permissions.go`, `voice.go`.
+    - Pure-domain surface lives in `internal/hub/api.go` (the non-HTTP version of every former `handleX` method on `*Service`). Per the file's own header comment, this carve-out keeps step 2 reviewable as an extraction-and-rename rather than a rewrite spread across topical files.
+    - **One intentional exception**: `*hub.Service.HandleVoiceAudio` stays an HTTP handler on Service because it owns websocket lifecycle bound to Service-internal singleton state (`s.voice`, `s.voiceAudioConn`, `s.wg`, `s.mu`). The mux's `voice.go` only exposes `handleVoiceStatus` (status JSON) and routes `/voice/audio` through to `Service.HandleVoiceAudio`. Consistent with step 9's responsibility split.
 3. **[DONE] Delete `hostclient.InProcess` + `Client` interface.** Hub depends on `*hostclient.HTTP`. Tests migrate to `httptest.NewServer(hostmux.New(svc))`. Decision #3 deviation (§1.3) is closed: `internal/host/client/` now exposes only `*HTTP`, plus a one-line compile assertion that `*httpSessionBackend` satisfies `agent.SessionBackend`.
    - Hub-side cleanup change: `hub.Service.shutdown` now calls `stopActiveBackends()` to release sessions over HTTP before `wg.Wait`, replacing the deleted `s.host.Shutdown()` cascade. Without it the SSE relay goroutines deadlock when the host plane outlives hub (test fixture or production host supervisor).
    - Host-side wire fix: `POST /sessions/{id}/fork` no longer rejects empty `message_id` — empty means "fork from start" and the in-process path always allowed it. The host mux validation was a regression introduced when handlers moved off `*host.Service`.
@@ -560,7 +621,12 @@ methods take only the args genuinely scoped to that op.
    - **Local-kind add (§7.5 step 3)** actually shipped in step 6 alongside the rest of `resolveRepoRoot`, not deferred. See `host/service.go::resolveRepoRoot` lines 402-410 and tests `TestCreateSession_LocalAdd` / `TestCreateSession_LocalAdd_RejectsNonGit`.
    - **`BackendManager.CreateBackend(BackendInvocation)`** signature was already in place pre-step-8 (carved out during the `BackendInvocation` DTO introduction); no migration needed in this step.
    - **Clone-with-AllowClone test** is now active (was skipped per line 551 pending step 8). `TestCreateSession_CloneByAllowClone` uses a `file://` source URL to avoid needing a hermetic git daemon.
-9. **Voice** stays in `internal/voice/`. Ratify in design doc.
+9. **[DONE] Voice** stays in `internal/voice/` as a peer top-level package. §1.2 deviation marked RESOLVED.
+    - **Responsibility split**:
+        - `internal/voice/` (peer pkg) owns: agent prompt/instructions (`voice.go`), websocket protocol framing (`audio_ws.go`), tool registration & implementations (`tools.go`), and the bridge between mindmouth and a hub-provided tool provider (`bridge.go`).
+        - `internal/hub/voice.go` (glue) owns: `HandleVoiceAudio` HTTP/websocket handler bound to `*hub.Service` singleton state (`s.voice`, `s.voiceAudioConn`, `s.wg`, `s.mu`), the `hubToolProvider` adapter implementing `voice.ToolProvider` by routing to `*hub.Service` methods, and the `writeVoiceJSON` helper.
+    - **Boundary rule**: `internal/voice/` never imports `internal/hub`. The hub depends on voice via the `voice.ToolProvider` interface and `voice.New(...)` constructor. Lifecycle (singleton agent, single audio websocket) stays on `*hub.Service` because the websocket handler must coordinate with Service-internal locks and waitgroups.
+    - **Why this layout, not the original "Hub-resident" plan**: voice has zero coupling to session/repo storage internals — it consumes the hub's public-ish methods through a narrow interface. Folding it into `internal/hub/` would only inflate that package's already-flagged size (§1.1) without removing any dependency.
 10. **Design doc updates** ship in the same commit as each step that changes a load-bearing decision. No more godoc-rationalizations.
 
 Cross-cutting (AGENTS.md):

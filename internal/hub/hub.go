@@ -35,11 +35,6 @@ import (
 // server and register the resulting HTTP client; production registers
 // the supervisor's HTTP client over a Unix socket.
 //
-// As a Phase 2 transitional convenience, registering the "local" host
-// also wires it into the legacy single-host code path (s.hostClient),
-// which most session/permission/event code still routes through.
-// Phase 3+ removes that field in favour of per-request catalog lookup.
-//
 // Re-registering the same Hostname replaces the previous entry without
 // closing it (the caller is responsible).
 func (s *Service) RegisterHost(id host.Hostname, c *hostclient.HTTP) error {
@@ -52,10 +47,6 @@ func (s *Service) RegisterHost(id host.Hostname, c *hostclient.HTTP) error {
 	s.hostsMu.Lock()
 	s.hosts[id] = c
 	s.hostsMu.Unlock()
-
-	if id == "local" {
-		s.hostClient = c
-	}
 	return nil
 }
 
@@ -69,9 +60,6 @@ func (s *Service) UnregisterHost(id host.Hostname) *hostclient.HTTP {
 		return nil
 	}
 	delete(s.hosts, id)
-	if id == "local" && s.hostClient == c {
-		s.hostClient = nil
-	}
 	return c
 }
 
@@ -82,6 +70,23 @@ func (s *Service) Host(id host.Hostname) (*hostclient.HTTP, bool) {
 	defer s.hostsMu.RUnlock()
 	c, ok := s.hosts[id]
 	return c, ok
+}
+
+// hostFor resolves a hostname to a registered host client. Empty hostname
+// defaults to "local" — the default for sessions/requests that omit the
+// field, matching the json-tag default in agent.StartRequest. Returns an
+// error if the host is not in the catalog so callers fail fast rather
+// than nil-deref the way the deleted s.hostClient shortcut would have.
+func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
+	id := host.Hostname(hostname)
+	if id == "" {
+		id = "local"
+	}
+	c, ok := s.Host(id)
+	if !ok {
+		return nil, fmt.Errorf("hub: host %q not registered", id)
+	}
+	return c, nil
 }
 
 // Hosts returns a snapshot of all registered host IDs.
