@@ -75,14 +75,14 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
 
-	// Hosts / repos / worktrees. Path parameters carry the identity (no
-	// filesystem paths on the wire). Branch arrives in body or query
-	// because branch names contain "/".
-	mx.HandleFunc("GET /hosts/{hostname}/repos", m.handleListReposOnHost)
-	mx.HandleFunc("GET /hosts/{hostname}/repos/{gitRef}/branches", m.handleListBranchesOnRepo)
-	mx.HandleFunc("POST /hosts/{hostname}/repos/{gitRef}/worktrees", m.handleCreateWorktreeOnRepo)
-	mx.HandleFunc("DELETE /hosts/{hostname}/repos/{gitRef}/worktrees", m.handleRemoveWorktreeOnRepo)
-	mx.HandleFunc("POST /hosts/{hostname}/repos/{gitRef}/worktrees/merge", m.handleMergeBranchOnRepo)
+	// Hosts / worktrees. Identity (`GitRef`, branch) is in the request
+	// body — branch names contain "/" so they cannot ride in the path,
+	// and there is no host-side repo registry to bind path params to
+	// post-§7.
+	mx.HandleFunc("POST /hosts/{hostname}/worktrees/list-branches", m.handleListBranchesOnHost)
+	mx.HandleFunc("POST /hosts/{hostname}/worktrees/resolve", m.handleResolveWorktreeOnHost)
+	mx.HandleFunc("POST /hosts/{hostname}/worktrees/remove", m.handleRemoveWorktreeOnHost)
+	mx.HandleFunc("POST /hosts/{hostname}/worktrees/merge", m.handleMergeBranchOnHost)
 
 	// Voice. The websocket handler stays on *hub.Service because it owns
 	// the voice singleton state and the long-lived ws connection; mux

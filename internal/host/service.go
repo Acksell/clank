@@ -4,17 +4,10 @@ package host
 // BackendManagers that run agent sessions and the git/worktree logic tied
 // to repos on this host's filesystem.
 //
-// A Service exists in two places in the end-state architecture:
-//   - Inside the `clank-host` process, this is the real thing — it owns
-//     BackendManagers that spawn processes and touches the filesystem.
-//   - Inside tests, a Service can be constructed in-process with mock
-//     BackendManagers and driven directly without spinning up HTTP.
-//
-// The Hub (`clankd`) never holds a *Service directly; it always goes
-// through the `internal/host/client` package. That client has two
-// implementations: an in-process adapter that calls Service methods
-// directly (used in tests) and an HTTP adapter that dials a Unix socket
-// or TCP+TLS endpoint (used in production).
+// The Host has NO repo registry. It resolves a wire GitRef to a working
+// directory on demand via workDirFor(): local refs use the path
+// directly; remote refs are cloned into a deterministic
+// <ClonesDir>/<CloneDirName(remote)>/ on first use.
 
 import (
 	"context"
@@ -22,7 +15,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -30,15 +22,15 @@ import (
 	"github.com/acksell/clank/internal/git"
 )
 
-// Service is the Host plane's domain object. Construct with New; call Run
-// to block until ctx cancels, and Shutdown to release resources.
+// Service is the Host plane's domain object. Construct with New; call
+// Init to kick off background goroutines, and Shutdown to release
+// resources.
 //
 // Service owns a registry of live SessionBackends keyed by the
 // Hub-assigned session ID (a ULID). The Hub is the source of truth for
 // session IDs because it owns the durable registry; the Host stores
 // backends under those IDs so HTTP handlers can look them up by URL
-// path. The in-process hostclient adapter uses the same ID-keyed API for
-// parity with the HTTP adapter.
+// path.
 type Service struct {
 	id              Hostname
 	startedAt       time.Time
@@ -53,31 +45,11 @@ type Service struct {
 	// concurrently with Shutdown cannot leak into a torn-down registry.
 	closed bool
 
-	reposMu sync.RWMutex
-	repos   map[string]Repo // key: GitRef.Canonical()
-	// repoStore is the optional persistence layer for the repo registry.
-	// When non-nil, AddRepo writes through (in-memory map first,
-	// then store) and New() loads any pre-existing rows into the map at
-	// construction time. Tests that don't care about persistence leave
-	// it nil and get pure in-memory behaviour. See §7.6 / step 5.
-	repoStore RepoStore
-
-	// cloneRoot is the parent directory under which CreateSession clones
-	// repos when StartRequest.AllowClone is true. Each clone lands in
-	// `<cloneRoot>/<sanitized-canonical>/`. Defaults to ~/.clank/repos at
-	// construction time; tests override via Options.CloneRoot.
-	cloneRoot string
-}
-
-// RepoStore is the persistence contract for the host's repo registry.
-// internal/host/repostore.Store satisfies it; tests can supply their own
-// in-memory implementation if they need to assert on persisted state
-// without the SQLite cost. The interface is intentionally narrow — the
-// host owns the canonical-derivation rules; the store is dumb storage.
-type RepoStore interface {
-	SaveRepo(repo Repo) error
-	ListRepos() ([]Repo, error)
-	ForgetRepo(canonical string) error
+	// clonesDir is the parent directory under which workDirFor clones
+	// remote refs on first use. Each clone lands in
+	// `<clonesDir>/<CloneDirName(remote)>/`. Defaults to ~/.clank/clones
+	// at construction time; tests override via Options.ClonesDir.
+	clonesDir string
 }
 
 // Options configures a Service at construction time.
@@ -89,15 +61,10 @@ type Options struct {
 	// Log is the logger. Defaults to a logger writing to stderr with the
 	// "[clank-host]" prefix.
 	Log *log.Logger
-	// RepoStore is the optional repo persistence layer. When set, New
-	// preloads existing rows into the in-memory registry and AddRepo
-	// write-throughs every change. Leave nil for pure in-memory operation
-	// (e.g. unit tests).
-	RepoStore RepoStore
-	// CloneRoot is the parent directory under which CreateSession clones
-	// repos when StartRequest.AllowClone is true. Defaults to
-	// ~/.clank/repos when empty. Tests should set this to a t.TempDir().
-	CloneRoot string
+	// ClonesDir is the parent directory under which workDirFor clones
+	// remote refs on first use. Defaults to ~/.clank/clones when empty.
+	// Tests should set this to a t.TempDir().
+	ClonesDir string
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -121,33 +88,14 @@ func New(opts Options) *Service {
 		backendManagers: opts.BackendManagers,
 		log:             lg,
 		sessions:        make(map[string]agent.SessionBackend),
-		repos:           make(map[string]Repo),
-		repoStore:       opts.RepoStore,
-		cloneRoot:       opts.CloneRoot,
+		clonesDir:       opts.ClonesDir,
 	}
-	if s.cloneRoot == "" {
+	if s.clonesDir == "" {
 		// Best-effort default; if the home dir lookup fails the field
-		// stays empty and CreateSession will reject AllowClone with a
+		// stays empty and workDirFor will reject remote refs with a
 		// loud error rather than guessing a path.
 		if home, err := os.UserHomeDir(); err == nil {
-			s.cloneRoot = filepath.Join(home, ".clank", "repos")
-		}
-	}
-	if opts.RepoStore != nil {
-		// Preload at construction time so the registry is hot before any
-		// HTTP handler dispatches. A failure here is logged but
-		// non-fatal: the host can still serve registrations and accept
-		// new repos; the operator gets one loud line in the log.
-		existing, err := opts.RepoStore.ListRepos()
-		if err != nil {
-			lg.Printf("warning: load persisted repos: %v", err)
-		} else {
-			for _, r := range existing {
-				s.repos[r.Ref.Canonical()] = r
-			}
-			if len(existing) > 0 {
-				lg.Printf("loaded %d persisted repos", len(existing))
-			}
+			s.clonesDir = filepath.Join(home, ".clank", "clones")
 		}
 	}
 	return s
@@ -162,14 +110,7 @@ func (s *Service) ID() Hostname { return s.id }
 // skip warm-up.
 //
 // Init does NOT block — initialization kicks off reconciler goroutines that
-// live for the duration of ctx. The caller is expected to manage the
-// overall process lifecycle; clank-host blocks on a signal, tests block on
-// t.Cleanup → Shutdown.
-//
-// (Renamed from Run in the §2 cleanup pass: Go convention is that Run
-// blocks for the lifetime of the work, e.g. http.Server.ListenAndServe
-// or errgroup.Wait. This function returns immediately after kicking off
-// goroutines, so Init reflects the actual semantics.)
+// live for the duration of ctx.
 func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([]string, error)) error {
 	for bt, mgr := range s.backendManagers {
 		bt := bt
@@ -240,7 +181,7 @@ func (s *Service) ListBackends(_ context.Context) ([]BackendInfo, error) {
 // ListAgents returns the agents supported by the given backend for the
 // repo identified by ref. Per §7.3 of hub_host_refactor_code_review.md
 // the wire is path-free: callers send a GitRef and the host resolves it
-// to a working directory via its repo registry.
+// to a working directory via workDirFor.
 //
 // Returns (nil, nil) when the backend is unknown to this host or its
 // manager does not implement listing — both are normal "this host does
@@ -254,16 +195,14 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 	if !ok {
 		return nil, nil
 	}
-	workDir, err := s.repoRoot(ref.Canonical())
+	workDir, err := s.workDirFor(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	return lister.ListAgents(ctx, workDir)
 }
 
-// ListModels mirrors ListAgents for model catalogs. Same nil/nil
-// semantics for unknown backends and non-listing managers; same
-// path-free wire contract (caller sends GitRef, host resolves).
+// ListModels mirrors ListAgents for model catalogs.
 func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]ModelInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
@@ -273,7 +212,7 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agen
 	if !ok {
 		return nil, nil
 	}
-	workDir, err := s.repoRoot(ref.Canonical())
+	workDir, err := s.workDirFor(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -283,9 +222,6 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agen
 // DiscoverSessions asks the given backend manager for historical sessions
 // it already knows about. Returns nil, nil for managers that do not
 // implement discovery (e.g. Claude Code, which is stateless across runs).
-// Returns (nil, nil) for unknown backend or backend without discovery
-// capability — best-effort semantics so the Hub can fan out across all
-// known backends without dealing with per-backend feature errors.
 func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, seedDir string) ([]agent.SessionSnapshot, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
@@ -306,37 +242,16 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 // HTTP server, e.g. Claude Code). The hub uses serverURL on a per-session
 // basis (e.g. for `opencode attach <url>` shell-out).
 //
-// Identity (Hostname, GitRef, WorktreeBranch) is path-free; the
-// host implements the §7.5 resolution algorithm to map identity → workDir:
-//
-//  1. Use req.GitRef as the canonical key (kind + url|path).
-//  2. If the key is already in the repo registry: use its rootDir.
-//     If the caller also passed req.Dir and it disagrees with the stored
-//     rootDir, error loudly — auto-rebind is YAGNI; operator must edit
-//     the host's repo store.
-//  3. Else if req.Dir is set: verify that req.Dir is a git repo whose
-//     remotes (any of them) canonicalize to the key, then add it to the
-//     registry. Mismatch → error.
-//  4. Else if req.AllowClone is true: clone the remote URL into
-//     <cloneRoot>/<sanitized-key>/ and add it.
-//  5. Else: error — the caller must say how to obtain the repo.
-//
-// Then resolve (rootDir, WorktreeBranch) → workDir via resolveWorktree
-// when WorktreeBranch is non-empty (otherwise workDir == rootDir).
-//
-// Note: this does not call req.Validate(). The watch-only activation
-// path (re-attaching to a historical session) creates a backend without
-// a prompt, which Validate() would reject. Callers that send prompts
-// validate at their own boundary.
+// Identity (Hostname, GitRef) is path-free. The host resolves
+// req.GitRef → workDir via workDirFor (clone-on-first-use for Remote
+// refs, direct path for Local refs, plus optional WorktreeBranch
+// resolution).
 func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent.StartRequest) (agent.SessionBackend, string, error) {
 	if sessionID == "" {
 		return nil, "", fmt.Errorf("session id is required")
 	}
 	if req.Backend == "" {
 		return nil, "", fmt.Errorf("backend is required")
-	}
-	if req.Dir != "" && req.AllowClone {
-		return nil, "", fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
 	mgr, ok := s.backendManagers[req.Backend]
 	if !ok {
@@ -353,32 +268,12 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	s.mu.Unlock()
 
-	ref := req.GitRef
-	if ref.Kind == "" {
-		return nil, "", fmt.Errorf("git_ref is required")
-	}
-	if err := ref.Validate(); err != nil {
+	if err := req.GitRef.Validate(); err != nil {
 		return nil, "", fmt.Errorf("git_ref: %w", err)
 	}
-	if req.AllowClone && ref.Kind == GitRefLocal {
-		return nil, "", fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
-	}
-	canonical := ref.Canonical()
-	if canonical == "" {
-		return nil, "", fmt.Errorf("git_ref %+v has empty canonical form", ref)
-	}
-	rootDir, err := s.resolveRepoRoot(ref, canonical, req)
+	workDir, err := s.workDirFor(ctx, req.GitRef)
 	if err != nil {
 		return nil, "", err
-	}
-
-	workDir := rootDir
-	if req.WorktreeBranch != "" {
-		wt, err := s.resolveWorktree(ctx, rootDir, req.WorktreeBranch)
-		if err != nil {
-			return nil, "", fmt.Errorf("resolve worktree for branch %q: %w", req.WorktreeBranch, err)
-		}
-		workDir = wt.WorktreeDir
 	}
 
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
@@ -390,9 +285,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 	// Re-check closed under the lock before publishing. mgr.CreateBackend
 	// can take seconds (process spawn, HTTP probe) and Shutdown may have
-	// run in the interim. Without this check the backend would be
-	// inserted into a wiped registry and outlive the manager that owns
-	// it.
+	// run in the interim.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -420,113 +313,70 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	return b, serverURL, nil
 }
 
-// resolveRepoRoot implements the §7.5 add/clone resolution. Returns the
-// rootDir for canonical, adding it to the registry if necessary.
-func (s *Service) resolveRepoRoot(ref GitRef, canonical string, req agent.StartRequest) (string, error) {
-	// Step 2: lookup.
-	if stored, ok := s.repoByCanonical(canonical); ok {
-		if req.Dir != "" && req.Dir != stored.RootDir {
-			return "", fmt.Errorf("host already knows repo %q at %q; remove the entry from the host's registry file if you moved the repo (auto-rebind is not supported)", canonical, stored.RootDir)
+// workDirFor resolves a GitRef to an absolute working directory on this
+// host. Local refs use the path directly (after asserting RepoRoot);
+// remote refs are cloned into <clonesDir>/<CloneDirName(remote)>/ on
+// first use. When ref.WorktreeBranch is non-empty, the result is the
+// worktree path for that branch; otherwise it is the repo root.
+func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
+	var base string
+	switch {
+	case ref.Local != nil:
+		if !filepath.IsAbs(ref.Local.Path) {
+			return "", fmt.Errorf("local ref path must be absolute, got %q", ref.Local.Path)
 		}
-		return stored.RootDir, nil
-	}
-	// Step 3: local-kind GitRef — RootDir is the path itself. No verify-via-Dir
-	// step needed; the path IS the identity.
-	if ref.Kind == GitRefLocal {
-		if _, err := git.RepoRoot(ref.Path); err != nil {
-			return "", fmt.Errorf("git_ref.path %q is not a git repository: %w", ref.Path, err)
-		}
-		if _, err := s.AddRepo(ref, ref.Path); err != nil {
-			return "", err
-		}
-		return ref.Path, nil
-	}
-	// Step 4: caller pinned a directory — verify-and-add.
-	if req.Dir != "" {
-		if err := s.verifyDirMatchesRef(req.Dir, canonical); err != nil {
-			return "", err
-		}
-		if _, err := s.AddRepo(ref, req.Dir); err != nil {
-			return "", err
-		}
-		return req.Dir, nil
-	}
-	// Step 5: clone if explicitly allowed.
-	if req.AllowClone {
-		dest, err := s.cloneRepo(ref, canonical)
+		root, err := git.RepoRoot(ref.Local.Path)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("local ref path %q is not a git repository: %w", ref.Local.Path, err)
 		}
-		if _, err := s.AddRepo(ref, dest); err != nil {
-			return "", err
+		// Require the path to BE the repo root, not a subdir inside one.
+		// Accepting a subdir would silently change the worktree base from
+		// what the caller passed. Resolve symlinks on both sides because
+		// macOS reports /var/folders as /private/var/folders for the root.
+		givenAbs, err := filepath.EvalSymlinks(ref.Local.Path)
+		if err != nil {
+			return "", fmt.Errorf("resolve symlinks for %q: %w", ref.Local.Path, err)
 		}
-		return dest, nil
-	}
-	// Step 6: nothing to go on.
-	return "", fmt.Errorf("%w: repo %q unknown to host; pass `dir` to add an existing checkout or set `allow_clone=true` to clone", ErrNotFound, canonical)
-}
-
-// verifyDirMatchesRef confirms dir is a git repo whose `git remote` set
-// contains at least one URL that canonicalizes to want. People fork and
-// add upstream remotes all the time — accepting any matching remote
-// keeps the UX sane while still preventing the wrong-repo footgun.
-//
-// Path comparison evaluates symlinks on both sides because `git
-// rev-parse --show-toplevel` returns the realpath while callers
-// commonly pass the symlinked form (e.g. macOS /tmp → /private/tmp).
-func (s *Service) verifyDirMatchesRef(dir, want string) error {
-	root, err := git.RepoRoot(dir)
-	if err != nil {
-		return fmt.Errorf("verify dir %q: %w", dir, err)
-	}
-	rootResolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("resolve repo root %q: %w", root, err)
-	}
-	dirResolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return fmt.Errorf("resolve dir %q: %w", dir, err)
-	}
-	if rootResolved != dirResolved {
-		return fmt.Errorf("dir %q is inside repo %q but is not the repo root", dir, root)
-	}
-	remotes, err := git.RemoteURLs(dir)
-	if err != nil {
-		return fmt.Errorf("verify dir %q: %w", dir, err)
-	}
-	for _, url := range remotes {
-		if (GitRef{Kind: GitRefRemote, URL: url}).Canonical() == want {
-			return nil
+		rootAbs, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)
 		}
+		if filepath.Clean(rootAbs) != filepath.Clean(givenAbs) {
+			return "", fmt.Errorf("local ref path %q is not the repo root (root is %q)", ref.Local.Path, root)
+		}
+		base = ref.Local.Path
+	case ref.Remote != nil:
+		if s.clonesDir == "" {
+			return "", fmt.Errorf("cannot resolve remote ref: host has no clones_dir configured")
+		}
+		name, err := agent.CloneDirName(*ref.Remote)
+		if err != nil {
+			return "", fmt.Errorf("clone dir name for %q: %w", ref.Remote.URL, err)
+		}
+		base = filepath.Join(s.clonesDir, name)
+		if _, err := os.Stat(base); os.IsNotExist(err) {
+			if err := os.MkdirAll(s.clonesDir, 0o755); err != nil {
+				return "", fmt.Errorf("create clones dir %q: %w", s.clonesDir, err)
+			}
+			s.log.Printf("cloning %s into %s", ref.Remote.URL, base)
+			if err := git.Clone(ref.Remote.URL, base); err != nil {
+				return "", fmt.Errorf("clone %q: %w", ref.Remote.URL, err)
+			}
+		} else if err != nil {
+			return "", fmt.Errorf("stat clone dir %q: %w", base, err)
+		}
+	default:
+		return "", fmt.Errorf("git ref must set exactly one of local or remote")
 	}
-	return fmt.Errorf("dir %q remotes (%v) do not match requested repo %q", dir, remotes, want)
-}
 
-// cloneRepo clones ref.URL into <cloneRoot>/<sanitized-canonical>/ and
-// returns the destination path. Errors when cloneRoot is unset or the
-// destination already exists (which would mean the registry lost track
-// of an existing clone — a louder failure than silently using it).
-func (s *Service) cloneRepo(ref GitRef, canonical string) (string, error) {
-	if s.cloneRoot == "" {
-		return "", fmt.Errorf("cannot clone repo %q: host has no clone_root configured", canonical)
+	if ref.WorktreeBranch != "" {
+		wt, err := s.resolveWorktree(ctx, base, ref.WorktreeBranch)
+		if err != nil {
+			return "", fmt.Errorf("resolve worktree for branch %q: %w", ref.WorktreeBranch, err)
+		}
+		return wt.WorktreeDir, nil
 	}
-	dest := filepath.Join(s.cloneRoot, sanitizeCanonical(canonical))
-	if _, err := os.Stat(dest); err == nil {
-		return "", fmt.Errorf("clone destination %q already exists but repo is not in registry; remove the directory or add it manually", dest)
-	}
-	if err := git.Clone(ref.URL, dest); err != nil {
-		return "", err
-	}
-	return dest, nil
-}
-
-// sanitizeCanonical maps a canonical GitRef string to a single
-// filesystem-safe path component. The canonical form is
-// "github.com/owner/repo" for remote refs; replace separators with
-// dashes so we get one directory per repo under cloneRoot.
-func sanitizeCanonical(canonical string) string {
-	r := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
-	return r.Replace(canonical)
+	return base, nil
 }
 
 // Session returns the SessionBackend registered under id, or nil and
@@ -554,6 +404,55 @@ func (s *Service) StopSession(id string) error {
 }
 
 // --- Worktree / branch ops ----------------------------------------------
+
+// ListBranches returns the branches (and their checked-out worktrees)
+// for the repository identified by ref. Skips bare and detached entries.
+// ref.WorktreeBranch is ignored — listing operates on the repo root.
+func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef) ([]BranchInfo, error) {
+	repoRef := ref
+	repoRef.WorktreeBranch = ""
+	root, err := s.workDirFor(ctx, repoRef)
+	if err != nil {
+		return nil, err
+	}
+	return s.listBranches(ctx, root)
+}
+
+// ResolveWorktree ensures a worktree exists for (ref's repo, branch) and
+// returns its info. ref.WorktreeBranch is ignored — pass branch as a
+// distinct argument so the caller's intent ("resolve THIS branch") is
+// explicit at the call site.
+func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch string) (WorktreeInfo, error) {
+	repoRef := ref
+	repoRef.WorktreeBranch = ""
+	root, err := s.workDirFor(ctx, repoRef)
+	if err != nil {
+		return WorktreeInfo{}, err
+	}
+	return s.resolveWorktree(ctx, root, branch)
+}
+
+// RemoveWorktree removes the worktree for (ref's repo, branch).
+func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch string, force bool) error {
+	repoRef := ref
+	repoRef.WorktreeBranch = ""
+	root, err := s.workDirFor(ctx, repoRef)
+	if err != nil {
+		return err
+	}
+	return s.removeWorktree(ctx, root, branch, force)
+}
+
+// MergeBranch merges branch into ref's repo's default branch.
+func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (MergeResult, error) {
+	repoRef := ref
+	repoRef.WorktreeBranch = ""
+	root, err := s.workDirFor(ctx, repoRef)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	return s.mergeBranch(ctx, root, branch, commitMessage)
+}
 
 // listBranches returns the branches (and their checked-out worktrees)
 // for the repository at projectDir. Skips bare and detached entries.
@@ -662,10 +561,6 @@ type MergeResult struct {
 // merging, it `git add -A`s the feature worktree; if there are staged
 // changes, commitMessage is used to commit them first (required in that
 // case).
-//
-// Returns an error with a stable sentinel (via errors.Is) for each
-// user-facing failure mode so handlers can translate to appropriate HTTP
-// status codes.
 func (s *Service) mergeBranch(_ context.Context, projectDir, branch, commitMessage string) (MergeResult, error) {
 	defaultBranch, err := git.DefaultBranch(projectDir)
 	if err != nil {

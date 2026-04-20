@@ -151,10 +151,6 @@ func (s *Store) migrate() error {
 		version = 10
 	}
 	if version < 11 {
-		// Phase 3A: introduce host-scoped, path-free identity alongside legacy
-		// project_dir/worktree_branch columns. Default host_id to 'local' so
-		// existing rows remain valid; repo_remote_url is backfilled lazily by
-		// the hub on next session start (or DiscoverSessions).
 		_, err := s.db.Exec(`
 			ALTER TABLE sessions ADD COLUMN host_id TEXT NOT NULL DEFAULT 'local';
 			ALTER TABLE sessions ADD COLUMN repo_remote_url TEXT NOT NULL DEFAULT '';
@@ -166,11 +162,6 @@ func (s *Store) migrate() error {
 		version = 11
 	}
 	if version < 12 {
-		// Step 8d: replace the single repo_remote_url string with the
-		// three-field GitRef shape (kind + url|path) as discrete columns.
-		// Existing non-empty values are remote URLs by construction, so
-		// we backfill kind='remote' for those rows; empty rows stay empty
-		// and will be re-resolved on next session start.
 		_, err := s.db.Exec(`
 			ALTER TABLE sessions RENAME COLUMN repo_remote_url TO git_ref_url;
 			ALTER TABLE sessions ADD COLUMN git_ref_kind TEXT NOT NULL DEFAULT '';
@@ -184,12 +175,6 @@ func (s *Store) migrate() error {
 		version = 12
 	}
 	if version < 13 {
-		// Step 8e-2a: rekey the primary_agents catalog cache from
-		// (backend, project_dir) to (backend, host_id, git_ref) per §7.8
-		// of hub_host_refactor_code_review.md. The wire identity is now
-		// (Hostname, GitRef); the cache must follow. We drop the table
-		// outright (no migration of stale rows) — the cache is a
-		// pure-derived warmup and will be repopulated on next list call.
 		_, err := s.db.Exec(`
 			DROP TABLE IF EXISTS primary_agents;
 			CREATE TABLE primary_agents (
@@ -210,28 +195,54 @@ func (s *Store) migrate() error {
 		version = 13
 	}
 	if version < 14 {
-		// Step 8e-2b: drop project_dir, project_name, worktree_dir columns
-		// from sessions. Per §7.1 (line 307) of hub_host_refactor_code_review.md:
-		// SessionInfo is now path-free. Identity = (Hostname, GitRef,
-		// WorktreeBranch); the host resolves workdirs internally on
-		// demand. Display name is derived from GitRef.DisplayName.
-		//
-		// SQLite < 3.35 lacks DROP COLUMN, but modernc.org/sqlite ships
-		// a recent SQLite. Use ALTER TABLE DROP COLUMN.
-		_, err := s.db.Exec(`
-			ALTER TABLE sessions DROP COLUMN project_dir;
-			ALTER TABLE sessions DROP COLUMN project_name;
-			ALTER TABLE sessions DROP COLUMN worktree_dir;
-			PRAGMA user_version = 14;
-		`)
-		if err != nil {
+		if err := s.dropMigrationV14(); err != nil {
 			return fmt.Errorf("migration v14: %w", err)
 		}
 		version = 14
 	}
+	if version < 15 {
+		// Step 8 of hub_host_refactor_code_review.md §7.8: collapse
+		// (kind, url, path) → (project_dir, git_remote_url) on both
+		// sessions and primary_agents. The new GitRef pointer-shape
+		// (Local *LocalRef | Remote *RemoteRef) maps cleanly to two
+		// optional columns: at most one is non-empty.
+		if err := s.migrateV15(); err != nil {
+			return fmt.Errorf("migration v15: %w", err)
+		}
+		version = 15
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil
+}
+
+// gitRefToColumns projects a GitRef into the (project_dir, git_remote_url)
+// pair the schema stores. Exactly one is non-empty for a valid ref; both
+// empty means "no ref" (e.g. orphan session awaiting startup discovery).
+func gitRefToColumns(g agent.GitRef) (projectDir, remoteURL string) {
+	switch {
+	case g.Local != nil:
+		return g.Local.Path, ""
+	case g.Remote != nil:
+		return "", g.Remote.URL
+	default:
+		return "", ""
+	}
+}
+
+// gitRefFromColumns reconstructs a GitRef from the (project_dir,
+// git_remote_url, worktree_branch) triple. Remote takes precedence when
+// both happen to be set (should not occur in practice — schema-level
+// invariant enforced by callers).
+func gitRefFromColumns(projectDir, remoteURL, worktreeBranch string) agent.GitRef {
+	switch {
+	case remoteURL != "":
+		return agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: worktreeBranch}
+	case projectDir != "":
+		return agent.GitRef{Local: &agent.LocalRef{Path: projectDir}, WorktreeBranch: worktreeBranch}
+	default:
+		return agent.GitRef{WorktreeBranch: worktreeBranch}
+	}
 }
 
 // LoadSessions returns all persisted sessions. Returns an empty (non-nil)
@@ -239,8 +250,7 @@ func (s *Store) migrate() error {
 func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       worktree_branch,
-		       host_id, git_ref_kind, git_ref_url, git_ref_path,
+		       host_id, project_dir, git_remote_url, worktree_branch,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -255,7 +265,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 		var info agent.SessionInfo
 		var followUp int
 		var lastReadAt sql.NullTime
-		var refKind, refURL, refPath string
+		var projectDir, remoteURL, worktreeBranch string
 		err := rows.Scan(
 			&info.ID,
 			&info.ExternalID,
@@ -263,11 +273,10 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 			&info.Status,
 			&info.Visibility,
 			&followUp,
-			&info.WorktreeBranch,
 			&info.Hostname,
-			&refKind,
-			&refURL,
-			&refPath,
+			&projectDir,
+			&remoteURL,
+			&worktreeBranch,
 			&info.Prompt,
 			&info.Title,
 			&info.TicketID,
@@ -280,9 +289,7 @@ func (s *Store) LoadSessions() ([]agent.SessionInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scan session row: %w", err)
 		}
-		if refKind != "" {
-			info.GitRef = agent.GitRef{Kind: agent.GitRefKind(refKind), URL: refURL, Path: refPath}
-		}
+		info.GitRef = gitRefFromColumns(projectDir, remoteURL, worktreeBranch)
 		info.FollowUp = followUp != 0
 		if lastReadAt.Valid {
 			info.LastReadAt = lastReadAt.Time
@@ -311,20 +318,19 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		lastReadAt = &info.LastReadAt
 	}
 
-	branch := info.WorktreeBranch
 	hostname := info.Hostname
 	if hostname == "" {
 		hostname = "local"
 	}
+	projectDir, remoteURL := gitRefToColumns(info.GitRef)
 
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
-			 worktree_branch,
-			 host_id, git_ref_kind, git_ref_url, git_ref_path,
+			 host_id, project_dir, git_remote_url, worktree_branch,
 			 prompt, title, ticket_id, agent, draft,
 			 created_at, updated_at, last_read_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		info.ID,
 		info.ExternalID,
@@ -332,11 +338,10 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 		string(info.Status),
 		string(info.Visibility),
 		followUp,
-		branch,
 		hostname,
-		string(info.GitRef.Kind),
-		info.GitRef.URL,
-		info.GitRef.Path,
+		projectDir,
+		remoteURL,
+		info.GitRef.WorktreeBranch,
 		info.Prompt,
 		info.Title,
 		info.TicketID,
@@ -375,26 +380,29 @@ type AgentTarget struct {
 // LoadPrimaryAgents returns the cached primary agent list for the
 // (backend, hostname, gitRef) tuple. Returns nil (not an error) if no
 // cached entry exists. Hostname defaults to "local" when empty (matches
-// the sessions table convention).
+// the sessions table convention). The catalog cache key intentionally
+// drops WorktreeBranch — agent definitions are committed to git and
+// shared across branches.
 func (s *Store) LoadPrimaryAgents(backend agent.BackendType, hostname string, ref agent.GitRef) ([]agent.AgentInfo, error) {
 	if hostname == "" {
 		hostname = "local"
 	}
+	projectDir, remoteURL := gitRefToColumns(ref)
 	var agentsJSON string
 	err := s.db.QueryRow(`
 		SELECT primary_agents_json FROM primary_agents
 		WHERE backend = ? AND host_id = ?
-		  AND git_ref_kind = ? AND git_ref_url = ? AND git_ref_path = ?
-	`, string(backend), hostname, string(ref.Kind), ref.URL, ref.Path).Scan(&agentsJSON)
+		  AND project_dir = ? AND git_remote_url = ?
+	`, string(backend), hostname, projectDir, remoteURL).Scan(&agentsJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
+		return nil, fmt.Errorf("load primary agents for %s/%s/%s: %w", backend, hostname, agent.RepoDisplayName(ref), err)
 	}
 	var agents []agent.AgentInfo
 	if err := json.Unmarshal([]byte(agentsJSON), &agents); err != nil {
-		return nil, fmt.Errorf("decode primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
+		return nil, fmt.Errorf("decode primary agents for %s/%s/%s: %w", backend, hostname, agent.RepoDisplayName(ref), err)
 	}
 	return agents, nil
 }
@@ -406,21 +414,22 @@ func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, 
 	if hostname == "" {
 		hostname = "local"
 	}
-	if ref.Kind == "" {
+	if ref.Local == nil && ref.Remote == nil {
 		return fmt.Errorf("upsert primary agents: git ref is required")
 	}
+	projectDir, remoteURL := gitRefToColumns(ref)
 	data, err := json.Marshal(agents)
 	if err != nil {
 		return fmt.Errorf("encode primary agents: %w", err)
 	}
 	_, err = s.db.Exec(`
 		INSERT OR REPLACE INTO primary_agents
-			(backend, host_id, git_ref_kind, git_ref_url, git_ref_path,
+			(backend, host_id, project_dir, git_remote_url,
 			 primary_agents_json, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, string(backend), hostname, string(ref.Kind), ref.URL, ref.Path, string(data), time.Now())
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, string(backend), hostname, projectDir, remoteURL, string(data), time.Now())
 	if err != nil {
-		return fmt.Errorf("upsert primary agents for %s/%s/%s: %w", backend, hostname, ref.Canonical(), err)
+		return fmt.Errorf("upsert primary agents for %s/%s/%s: %w", backend, hostname, agent.RepoDisplayName(ref), err)
 	}
 	return nil
 }
@@ -432,9 +441,9 @@ func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, 
 // skipped — they are not addressable as catalog targets yet.
 func (s *Store) KnownAgentTargets() ([]AgentTarget, error) {
 	rows, err := s.db.Query(`
-		SELECT DISTINCT backend, host_id, git_ref_kind, git_ref_url, git_ref_path
+		SELECT DISTINCT backend, host_id, project_dir, git_remote_url
 		FROM sessions
-		WHERE git_ref_kind != ''
+		WHERE project_dir != '' OR git_remote_url != ''
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query agent targets: %w", err)
@@ -443,13 +452,14 @@ func (s *Store) KnownAgentTargets() ([]AgentTarget, error) {
 	var out []AgentTarget
 	for rows.Next() {
 		var t AgentTarget
-		var be, host, kind, url, path string
-		if err := rows.Scan(&be, &host, &kind, &url, &path); err != nil {
+		var be, host, projectDir, remoteURL string
+		if err := rows.Scan(&be, &host, &projectDir, &remoteURL); err != nil {
 			return nil, fmt.Errorf("scan agent target: %w", err)
 		}
 		t.Backend = agent.BackendType(be)
 		t.Hostname = host
-		t.GitRef = agent.GitRef{Kind: agent.GitRefKind(kind), URL: url, Path: path}
+		// Catalog targets carry no worktree branch — pass "".
+		t.GitRef = gitRefFromColumns(projectDir, remoteURL, "")
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -461,11 +471,10 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	var info agent.SessionInfo
 	var followUp int
 	var lastReadAt sql.NullTime
-	var refKind, refURL, refPath string
+	var projectDir, remoteURL, worktreeBranch string
 	err := s.db.QueryRow(`
 		SELECT id, external_id, backend, status, visibility, follow_up,
-		       worktree_branch,
-		       host_id, git_ref_kind, git_ref_url, git_ref_path,
+		       host_id, project_dir, git_remote_url, worktree_branch,
 		       prompt, title, ticket_id, agent, draft,
 		       created_at, updated_at, last_read_at
 		FROM sessions
@@ -477,11 +486,10 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 		&info.Status,
 		&info.Visibility,
 		&followUp,
-		&info.WorktreeBranch,
 		&info.Hostname,
-		&refKind,
-		&refURL,
-		&refPath,
+		&projectDir,
+		&remoteURL,
+		&worktreeBranch,
 		&info.Prompt,
 		&info.Title,
 		&info.TicketID,
@@ -501,8 +509,6 @@ func (s *Store) FindByExternalID(externalID string) (*agent.SessionInfo, error) 
 	if lastReadAt.Valid {
 		info.LastReadAt = lastReadAt.Time
 	}
-	if refKind != "" {
-		info.GitRef = agent.GitRef{Kind: agent.GitRefKind(refKind), URL: refURL, Path: refPath}
-	}
+	info.GitRef = gitRefFromColumns(projectDir, remoteURL, worktreeBranch)
 	return &info, nil
 }

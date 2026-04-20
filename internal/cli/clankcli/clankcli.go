@@ -35,7 +35,6 @@ func Command() *cobra.Command {
 		codeCmd(),
 		inboxCmd(),
 		voiceCmd(),
-		sessionsCmd(),
 	)
 
 	return root
@@ -109,12 +108,11 @@ The daemon is auto-started if not already running.`,
 			}
 
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
-				Backend:        bt,
-				Hostname:       string(host.HostLocal),
-				GitRef:         agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL},
-				WorktreeBranch: worktreeBranch,
-				Prompt:         prompt,
-				TicketID:       ticketID,
+				Backend:  bt,
+				Hostname: string(host.HostLocal),
+				GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: worktreeBranch},
+				Prompt:   prompt,
+				TicketID: ticketID,
 			})
 			if err != nil {
 				sseCancel()

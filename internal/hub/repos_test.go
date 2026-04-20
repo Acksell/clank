@@ -30,7 +30,7 @@ func (m *noopHostBackendManager) CreateBackend(_ context.Context, _ agent.Backen
 }
 func (m *noopHostBackendManager) Shutdown() {}
 
-func initRepoForHub(t *testing.T, remote string) string {
+func initRepoForHub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	run := func(args ...string) {
@@ -43,7 +43,6 @@ func initRepoForHub(t *testing.T, remote string) string {
 	run("git", "init", "-b", "main")
 	run("git", "config", "user.email", "t@t")
 	run("git", "config", "user.name", "T")
-	run("git", "remote", "add", "origin", remote)
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -52,26 +51,23 @@ func initRepoForHub(t *testing.T, remote string) string {
 	return dir
 }
 
-// TestHubReposEndToEnd exercises Phase 3B's full path:
-// hubclient → hub HTTP handler → *hostclient.HTTP → httptest server →
-// hostmux → host.Service → real git. Per Decision #3, the Hub side
-// always talks HTTP — the test wires a real httptest.Server in front
-// of the host service rather than an in-process shortcut.
-func TestHubReposEndToEnd(t *testing.T) {
+// TestHubWorktreesEndToEnd exercises the §7 path-free wire shape:
+// hubclient.Host(h).{ListBranches,ResolveWorktree,RemoveWorktree}
+// → hub mux → *hostclient.HTTP → httptest server → hostmux →
+// host.Service.workDirFor → real git. The host registry is gone — refs
+// resolve via local path or deterministic clone path with no AddRepo call.
+func TestHubWorktreesEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	const remote = "git@github.com:acksell/clank.git"
-	dir := initRepoForHub(t, remote)
+	dir := initRepoForHub(t)
 
 	hostSvc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: &noopHostBackendManager{},
 		},
+		ClonesDir: t.TempDir(),
 	})
 	t.Cleanup(hostSvc.Shutdown)
-	if _, err := hostSvc.AddRepo(host.GitRef{Kind: host.GitRefRemote, URL: remote}, dir); err != nil {
-		t.Fatalf("AddRepo: %v", err)
-	}
 
 	hostHTTP := httptest.NewServer(hostmux.New(hostSvc, nil).Handler())
 	t.Cleanup(hostHTTP.Close)
@@ -85,44 +81,36 @@ func TestHubReposEndToEnd(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
+	ref := agent.GitRef{Local: &agent.LocalRef{Path: dir}}
 
-	// ListReposOnHost surfaces the registered repo.
-	repos, err := client.Host(host.HostLocal).Repos(ctx)
+	// ListBranches runs against real git.
+	branches, err := client.Host(host.HostLocal).ListBranches(ctx, ref)
 	if err != nil {
-		t.Fatalf("ListReposOnHost: %v", err)
-	}
-	if len(repos) != 1 || repos[0].Ref.Canonical() != "github.com/acksell/clank" {
-		t.Fatalf("repos = %+v", repos)
-	}
-
-	// ListBranchesOnRepo runs against real git.
-	branches, err := client.Host(host.HostLocal).Repo(repos[0].Ref.Canonical()).Branches(ctx)
-	if err != nil {
-		t.Fatalf("ListBranchesOnRepo: %v", err)
+		t.Fatalf("ListBranches: %v", err)
 	}
 	if len(branches) == 0 || branches[0].Name != "main" {
 		t.Fatalf("branches = %+v", branches)
 	}
 
-	// CreateWorktreeOnRepo creates a new branch + worktree.
-	wt, err := client.Host(host.HostLocal).Repo(repos[0].Ref.Canonical()).Worktree("feat/x").Resolve(ctx)
+	// ResolveWorktree creates a new branch + worktree.
+	wt, err := client.Host(host.HostLocal).ResolveWorktree(ctx, ref, "feat/x")
 	if err != nil {
-		t.Fatalf("CreateWorktreeOnRepo: %v", err)
+		t.Fatalf("ResolveWorktree: %v", err)
 	}
 	if wt.WorktreeDir == "" || wt.Branch != "feat/x" {
 		t.Fatalf("wt = %+v", wt)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(wt.WorktreeDir) })
 
-	// RemoveWorktreeOnRepo cleans up.
-	if err := client.Host(host.HostLocal).Repo(repos[0].Ref.Canonical()).Worktree("feat/x").Remove(ctx, true); err != nil {
-		t.Fatalf("RemoveWorktreeOnRepo: %v", err)
+	// RemoveWorktree cleans up.
+	if err := client.Host(host.HostLocal).RemoveWorktree(ctx, ref, "feat/x", true); err != nil {
+		t.Fatalf("RemoveWorktree: %v", err)
 	}
 }
 
-// TestHubReposUnknownHost verifies the 404 path when hostname is not
-// registered in the catalog.
-func TestHubReposUnknownHost(t *testing.T) {
+// TestHubWorktreesUnknownHost verifies the 404 path when hostname is
+// not registered in the catalog.
+func TestHubWorktreesUnknownHost(t *testing.T) {
 	t.Parallel()
 
 	s := hub.New()
@@ -131,7 +119,8 @@ func TestHubReposUnknownHost(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
-	if _, err := client.Host("ghost").Repos(context.Background()); err == nil {
+	ref := agent.GitRef{Local: &agent.LocalRef{Path: "/does/not/matter"}}
+	if _, err := client.Host("ghost").ListBranches(context.Background(), ref); err == nil {
 		t.Fatal("expected error for unknown host")
 	}
 }

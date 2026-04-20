@@ -46,7 +46,7 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 	)
 	var ref agent.GitRef
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		ref = agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL}
+		ref = agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}}
 	}
 	return &SessionViewModel{
 		client:      client,
@@ -218,11 +218,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	req := agent.StartRequest{
-		Backend:        m.backend,
-		Hostname:       string(host.HostLocal),
-		GitRef:         agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL},
-		WorktreeBranch: m.worktreeBranch,
-		Prompt:         prompt,
+		Backend:  m.backend,
+		Hostname: string(host.HostLocal),
+		GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: m.worktreeBranch},
+		Prompt:   prompt,
 	}
 	if len(m.agents) > 0 {
 		req.Agent = m.agents[m.selectedAgent].Name

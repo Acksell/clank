@@ -83,9 +83,9 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
 			existingMS.info.RevertMessageID = snap.RevertMessageID
-			if existingMS.info.WorktreeBranch == "" {
+			if existingMS.info.GitRef.WorktreeBranch == "" {
 				if branch, ok := wtPathToBranch[snap.Directory]; ok {
-					existingMS.info.WorktreeBranch = branch
+					existingMS.info.GitRef.WorktreeBranch = branch
 				}
 			}
 			if existingMS.backend == nil && (existingMS.info.Status == agent.StatusBusy || existingMS.info.Status == agent.StatusStarting || existingMS.info.Status == agent.StatusDead) {
@@ -106,15 +106,15 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
 		var gitRef agent.GitRef
 		if remoteURL != "" {
-			gitRef = agent.GitRef{Kind: agent.GitRefRemote, URL: remoteURL}
+			gitRef = agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}}
 		}
+		gitRef.WorktreeBranch = wtBranch
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
 			Backend:         agent.BackendOpenCode,
 			Status:          agent.StatusIdle,
 			GitRef:          gitRef,
-			WorktreeBranch:  wtBranch,
 			Title:           snap.Title,
 			RevertMessageID: snap.RevertMessageID,
 			CreatedAt:       snap.CreatedAt,
@@ -142,11 +142,10 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 		return err
 	}
 	backend, _, err := h.Sessions().Create(s.ctx, id, agent.StartRequest{
-		Backend:        ms.info.Backend,
-		Hostname:       ms.info.Hostname,
-		GitRef:         ms.info.GitRef,
-		WorktreeBranch: ms.info.WorktreeBranch,
-		SessionID:      ms.info.ExternalID,
+		Backend:   ms.info.Backend,
+		Hostname:  ms.info.Hostname,
+		GitRef:    ms.info.GitRef,
+		SessionID: ms.info.ExternalID,
 	})
 	if err != nil {
 		return fmt.Errorf("activate backend: %w", err)
@@ -271,7 +270,7 @@ func (s *Service) searchSessions(p agent.SearchParams) []agent.SessionInfo {
 
 		// Text filter: match if ANY OR group matches (all terms in the group present).
 		if hasQuery {
-			hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + si.GitRef.DisplayName())
+			hay := strings.ToLower(si.Title + " " + si.Prompt + " " + si.Draft + " " + agent.RepoDisplayName(si.GitRef))
 			matched := false
 			for _, terms := range orGroups {
 				allMatch := true
@@ -337,18 +336,17 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	now := time.Now()
 
 	sessInfo := agent.SessionInfo{
-		ID:             id,
-		Backend:        req.Backend,
-		Status:         agent.StatusStarting,
-		Hostname:       req.Hostname,
-		GitRef:         req.GitRef,
-		WorktreeBranch: req.WorktreeBranch,
-		ServerURL:      serverURL,
-		Prompt:         req.Prompt,
-		TicketID:       req.TicketID,
-		Agent:          req.Agent,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:        id,
+		Backend:   req.Backend,
+		Status:    agent.StatusStarting,
+		Hostname:  req.Hostname,
+		GitRef:    req.GitRef,
+		ServerURL: serverURL,
+		Prompt:    req.Prompt,
+		TicketID:  req.TicketID,
+		Agent:     req.Agent,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	ms := &managedSession{

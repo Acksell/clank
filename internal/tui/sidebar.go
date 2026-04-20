@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
@@ -62,8 +63,8 @@ type SidebarModel struct {
 	// and for non-branch concerns (project filter); branch operations now
 	// route through hostname/gitRef instead.
 	projectDir string
-	hostname     host.Hostname
-	gitRef     string
+	hostname   host.Hostname
+	gitRef     agent.GitRef
 
 	branches []host.BranchInfo
 	cursor   int
@@ -87,7 +88,7 @@ type SidebarModel struct {
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
 // are addressed by (hostname, gitRef).
-func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef string, projectDir string) SidebarModel {
+func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -100,7 +101,7 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef st
 
 	return SidebarModel{
 		client:     client,
-		hostname:     hostname,
+		hostname:   hostname,
 		gitRef:     gitRef,
 		projectDir: projectDir,
 		input:      ti,
@@ -467,7 +468,7 @@ func (m *SidebarModel) loadBranches() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		branches, err := client.Host(hostname).Repo(gitRef).Branches(ctx)
+		branches, err := client.Host(hostname).ListBranches(ctx, gitRef)
 		if err != nil {
 			return branchLoadedMsg{err: err}
 		}
@@ -483,7 +484,7 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.Host(hostname).Repo(gitRef).Worktree(branch).Resolve(ctx)
+		_, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
 		return branchWorktreeCreatedMsg{branch: branch, err: err}
 	}
 }

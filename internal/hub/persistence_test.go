@@ -25,7 +25,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	// Create a session.
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:  agent.BackendOpenCode,
-		GitRef:   agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:   "fix the bug",
 		TicketID: "TICKET-42",
 	})
@@ -106,8 +106,8 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	}
 
 	// Verify backend-owned fields survived.
-	if after.GitRef.URL != testRemoteURL {
-		t.Errorf("GitRef.URL = %q, want %q", after.GitRef.URL, testRemoteURL)
+	if after.GitRef.Remote == nil || after.GitRef.Remote.URL != testRemoteURL {
+		t.Errorf("GitRef.Remote = %+v, want URL=%q", after.GitRef.Remote, testRemoteURL)
 	}
 	if after.TicketID != "TICKET-42" {
 		t.Errorf("TicketID = %q, want %q", after.TicketID, "TICKET-42")
@@ -125,7 +125,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "hello",
 	})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "do something",
 	})
 	if err != nil {
@@ -353,7 +353,7 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "hello",
 	})
 	if err != nil {

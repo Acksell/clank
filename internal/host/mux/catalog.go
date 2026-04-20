@@ -70,15 +70,18 @@ func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // refFromQuery extracts the GitRef from the query string. Callers send
-// the three discrete fields (kind/url/path) rather than the canonical
-// form so the host doesn't have to round-trip parse: a Hub that cached
-// the GitRef as a struct can reconstruct the wire shape verbatim.
+// the discrete pointer-shape fields (git_local_path | git_remote_url +
+// optional worktree_branch) rather than a canonical form so the host
+// doesn't have to round-trip parse, and a Hub that cached the GitRef as
+// a struct can reconstruct the wire shape verbatim.
 func refFromQuery(r *http.Request) (agent.GitRef, error) {
 	q := r.URL.Query()
-	ref := agent.GitRef{
-		Kind: agent.GitRefKind(q.Get("git_ref_kind")),
-		URL:  q.Get("git_ref_url"),
-		Path: q.Get("git_ref_path"),
+	ref := agent.GitRef{WorktreeBranch: q.Get("worktree_branch")}
+	if p := q.Get("git_local_path"); p != "" {
+		ref.Local = &agent.LocalRef{Path: p}
+	}
+	if u := q.Get("git_remote_url"); u != "" {
+		ref.Remote = &agent.RemoteRef{URL: u}
 	}
 	if err := ref.Validate(); err != nil {
 		return agent.GitRef{}, err

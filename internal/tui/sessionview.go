@@ -450,7 +450,7 @@ func (m *SessionViewModel) fetchAgents() tea.Cmd {
 	backend := m.backend
 	hostname := m.hostname
 	ref := m.gitRef
-	if ref.Kind == "" {
+	if ref.Local == nil && ref.Remote == nil {
 		return func() tea.Msg { return agentsResultMsg{} }
 	}
 	return func() tea.Msg {
@@ -472,7 +472,7 @@ func (m *SessionViewModel) fetchModels() tea.Cmd {
 	backend := m.backend
 	hostname := m.hostname
 	ref := m.gitRef
-	if ref.Kind == "" {
+	if ref.Local == nil && ref.Remote == nil {
 		return func() tea.Msg { return modelsResultMsg{} }
 	}
 	return func() tea.Msg {
@@ -622,7 +622,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// before the complete conversation renders.
 
 		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && m.info.GitRef.Kind != "" {
+		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && (m.info.GitRef.Local != nil || m.info.GitRef.Remote != nil) {
 			m.backend = m.info.Backend
 			// projectDir is not on SessionInfo (path-free wire per §7);
 			// relPath becomes a no-op for sessions opened from the inbox.

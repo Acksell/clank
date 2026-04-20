@@ -332,33 +332,14 @@ type AgentInfo struct {
 // GitRef is the sole repo identity on the wire (§7.3 of
 // hub_host_refactor_code_review.md).
 type StartRequest struct {
-	Backend        BackendType    `json:"backend"`
-	Hostname       string         `json:"hostname,omitempty"`        // Target host; empty defaults to "local" at the hub.
-	GitRef         GitRef         `json:"git_ref"`                   // Wire-canonical repo identity (kind + url|path); required.
-	WorktreeBranch string         `json:"worktree_branch,omitempty"` // Git branch; when set, the host creates/reuses a worktree
-	Prompt         string         `json:"prompt"`
-	SessionID      string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session. Distinct from the host's clank session ID and from BackendInvocation.ResumeExternalID (which today equals this).
-	TicketID       string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
-	Agent          string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
-	Model          *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
-
-	// Implicit add / clone hints for the host's CreateSession resolver
-	// (see §7.5 of hub_host_refactor_code_review.md). At most one of
-	// Dir / AllowClone may be set.
-	//
-	// Dir: absolute filesystem path on the host. When set, the host
-	// verifies the directory's `git remote get-url origin` matches the
-	// remote and adds (canonical → Dir) to its repo registry before
-	// resolving the workDir. Used by clankcli running on the same
-	// machine as the host.
-	//
-	// AllowClone: when true and the repo is not yet known, the host
-	// clones the remote into its managed clone root and adds the
-	// resulting directory to its registry. Used by remote callers
-	// (e.g. TUI talking to a hub on a different machine) where no
-	// pre-existing checkout is available. Rejected when GitRef.Kind=local.
-	Dir        string `json:"dir,omitempty"`
-	AllowClone bool   `json:"allow_clone,omitempty"`
+	Backend   BackendType    `json:"backend"`
+	Hostname  string         `json:"hostname,omitempty"` // Target host; empty defaults to "local" at the hub.
+	GitRef    GitRef         `json:"git_ref"`            // Wire-canonical repo identity; required. WorktreeBranch lives inside.
+	Prompt    string         `json:"prompt"`
+	SessionID string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
+	TicketID  string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link
+	Agent     string         `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
+	Model     *ModelOverride `json:"model,omitempty"`      // Per-message model override; nil = use default
 }
 
 // Validate checks that required fields are set per §7.3 of
@@ -370,20 +351,11 @@ func (r StartRequest) Validate() error {
 	if r.Backend != BackendOpenCode && r.Backend != BackendClaudeCode {
 		return fmt.Errorf("unknown backend: %s", r.Backend)
 	}
-	if r.GitRef.Kind == "" {
-		return fmt.Errorf("git_ref is required")
-	}
 	if err := r.GitRef.Validate(); err != nil {
 		return fmt.Errorf("git_ref: %w", err)
 	}
-	if r.AllowClone && r.GitRef.Kind == GitRefLocal {
-		return fmt.Errorf("allow_clone is incompatible with git_ref.kind=local")
-	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
-	}
-	if r.Dir != "" && r.AllowClone {
-		return fmt.Errorf("dir and allow_clone are mutually exclusive")
 	}
 	return nil
 }
@@ -394,11 +366,10 @@ type SessionInfo struct {
 	ExternalID      string            `json:"external_id,omitempty"` // Backend's native session ID (e.g. OpenCode session ID)
 	Backend         BackendType       `json:"backend"`
 	Status          SessionStatus     `json:"status"`
-	Visibility      SessionVisibility `json:"visibility,omitempty"`      // User-set: "", "done", or "archived"
-	FollowUp        bool              `json:"follow_up,omitempty"`       // User-set flag to mark session for follow-up
-	Hostname        string            `json:"hostname,omitempty"`        // Canonical identity: host (Phase 3); "local" by default.
-	GitRef          GitRef            `json:"git_ref,omitempty"`         // Canonical identity: repo (kind + url|path).
-	WorktreeBranch  string            `json:"worktree_branch,omitempty"` // Canonical identity: git branch.
+	Visibility      SessionVisibility `json:"visibility,omitempty"` // User-set: "", "done", or "archived"
+	FollowUp        bool              `json:"follow_up,omitempty"`  // User-set flag to mark session for follow-up
+	Hostname        string            `json:"hostname,omitempty"`   // Canonical identity: host (Phase 3); "local" by default.
+	GitRef          GitRef            `json:"git_ref,omitempty"`    // Canonical identity: repo (Local|Remote + WorktreeBranch).
 	Prompt          string            `json:"prompt"`
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`

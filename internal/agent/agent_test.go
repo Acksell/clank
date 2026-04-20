@@ -63,29 +63,9 @@ func TestParseTimeParam(t *testing.T) {
 	})
 }
 
-// Regression: §7.5 forbids supplying both Dir (verify-and-add) and
-// AllowClone (clone-if-missing) on the same StartRequest. They represent
-// mutually exclusive resolution strategies; accepting both would force
-// the host to pick one silently.
-func TestStartRequest_Validate_DirAndAllowCloneMutuallyExclusive(t *testing.T) {
-	t.Parallel()
-	req := agent.StartRequest{
-		Backend:    agent.BackendOpenCode,
-		GitRef:     agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
-		Prompt:     "hi",
-		Dir:        "/tmp/clank",
-		AllowClone: true,
-	}
-	err := req.Validate()
-	if err == nil {
-		t.Fatal("expected error when both Dir and AllowClone are set, got nil")
-	}
-}
-
 // §7.3: GitRef is the sole repo-identity field on StartRequest. Validate
-// must accept remote and local kinds, reject when missing, propagate
-// GitRef.Validate failures, and reject AllowClone+local because a
-// local-kind ref names an existing checkout that cannot be cloned.
+// must accept remote and local refs, reject when missing, and propagate
+// GitRef.Validate failures.
 func TestStartRequest_Validate_GitRef(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -97,7 +77,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_remote_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acksell/clank.git"},
+				GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}},
 				Prompt:  "hi",
 			},
 		},
@@ -105,7 +85,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_local_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendClaudeCode,
-				GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: "/tmp/repo"},
+				GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: "/tmp/repo"}},
 				Prompt:  "hi",
 			},
 		},
@@ -121,18 +101,20 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_invalid_propagates",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{Kind: agent.GitRefRemote}, // missing URL
+				GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: ""}}, // missing URL
 				Prompt:  "hi",
 			},
 			wantErr: true,
 		},
 		{
-			name: "allow_clone_local_rejected",
+			name: "git_ref_both_set_rejected",
 			req: agent.StartRequest{
-				Backend:    agent.BackendOpenCode,
-				GitRef:     agent.GitRef{Kind: agent.GitRefLocal, Path: "/tmp/repo"},
-				Prompt:     "hi",
-				AllowClone: true,
+				Backend: agent.BackendOpenCode,
+				GitRef: agent.GitRef{
+					Local:  &agent.LocalRef{Path: "/tmp/repo"},
+					Remote: &agent.RemoteRef{URL: "https://github.com/x/y"},
+				},
+				Prompt: "hi",
 			},
 			wantErr: true,
 		},

@@ -14,6 +14,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/acksell/clank/internal/agent"
+
 	"github.com/acksell/clank/internal/config"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
@@ -251,7 +253,7 @@ func runStatus() error {
 			if len(prompt) > 50 {
 				prompt = prompt[:47] + "..."
 			}
-			project := s.GitRef.DisplayName()
+			project := agent.RepoDisplayName(s.GitRef)
 			fmt.Printf("  [%s] %-8s %-12s %s\n", s.ID[:8], s.Status, project, prompt)
 		}
 	}

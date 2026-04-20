@@ -46,11 +46,18 @@ func (b *BackendClient) Models(ctx context.Context, hostname host.Hostname, ref 
 }
 
 func catalogQuery(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) url.Values {
-	return url.Values{
-		"backend":      {string(bt)},
-		"hostname":     {string(hostname)},
-		"git_ref_kind": {string(ref.Kind)},
-		"git_ref_url":  {ref.URL},
-		"git_ref_path": {ref.Path},
+	v := url.Values{
+		"backend":  {string(bt)},
+		"hostname": {string(hostname)},
 	}
+	if ref.Local != nil {
+		v.Set("git_local_path", ref.Local.Path)
+	}
+	if ref.Remote != nil {
+		v.Set("git_remote_url", ref.Remote.URL)
+	}
+	if ref.WorktreeBranch != "" {
+		v.Set("worktree_branch", ref.WorktreeBranch)
+	}
+	return v
 }

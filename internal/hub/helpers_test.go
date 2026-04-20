@@ -1,63 +1,64 @@
 package hub_test
 
 import (
+	"path/filepath"
 	"testing"
 
-	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/hub"
 )
 
-// testRemoteURL is the canonical remote URL used by hub tests.
-// It is paired with a per-test git repo registered through
-// registerTestRepo / testDaemon so that the host plane can resolve
-// (GitRef, WorktreeBranch) → workDir without callers passing paths.
+// testRemoteURL is the canonical remote URL used by hub tests. The hub
+// fixture pre-places a real git repo at the host's deterministic clone
+// path (`<ClonesDir>/<CloneDirName(testRemoteURL)>/`) so any test that
+// constructs `agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}}`
+// resolves on the host without needing a real network clone.
 const testRemoteURL = "git@github.com:acksell/clank.git"
 
-// registerTestRepo creates a real git repo (via initGitRepo from
-// service_test.go), wires up an `origin` remote pointing at
-// testRemoteURL, and registers it on the hub's local host plane.
-// Returns the repo root directory so callers can assert on
-// info.ProjectDir or build worktree paths if needed.
-//
-// The hub must already be running (i.e. startHubOnSocket has returned)
-// so that the "local" host is in the catalog.
+// registerTestRepo seeds a real git repo at the deterministic clone
+// path for testRemoteURL on the hub's local host fixture, returning
+// the absolute repo dir. The hub must already be running (i.e.
+// startHubOnSocket has returned) so the host fixture has been built
+// and its ClonesDir is known.
 func registerTestRepo(t *testing.T, s *hub.Service) string {
 	t.Helper()
-	dir := initGitRepo(t)
-	// Set origin remote so git.RemoteURL(dir, "origin") in the discover
-	// path can recover the GitRef — needed for lazy backend activation
-	// of historical sessions.
-	gitRun(t, dir, "remote", "add", "origin", testRemoteURL)
-	registerTestRepoAt(t, s, dir)
-	return dir
+	return registerTestRepoAtWithRef(t, s, agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}})
 }
 
-// registerTestRepoAt registers an existing git repo dir on the hub's
-// local host. Useful for two-phase persistence tests that need to
-// register the same repo on the post-restart daemon.
-//
-// Bypasses the (now-deleted) hub→host wire path and calls
-// host.Service.AddRepo directly via the package-level fixture map. The
-// production call site (host.Service.CreateSession §7.5 implicit add)
-// is exercised by the dedicated integration tests in
-// internal/host/repos_test.go.
-func registerTestRepoAt(t *testing.T, s *hub.Service, dir string) {
+// registerTestRepoAt is a back-compat alias for two-phase persistence
+// tests. The dir parameter is intentionally ignored — the host is now
+// path-free and resolves the testRemoteURL ref deterministically via
+// CloneDirName under its own ClonesDir tempdir. The supplied dir from
+// phase 1 is no longer reachable in phase 2 (each phase has its own
+// host fixture with its own ClonesDir).
+func registerTestRepoAt(t *testing.T, s *hub.Service, _ string) {
 	t.Helper()
-	registerTestRepoAtWithRef(t, s, host.GitRef{Kind: host.GitRefRemote, URL: testRemoteURL}, dir)
+	registerTestRepo(t, s)
 }
 
-// registerTestRepoAtWithRef registers an existing dir on the hub's local
-// host under an arbitrary GitRef. Used by catalog tests that key on
-// (backend, hostname, ref) and need to register a synthetic ref without
-// going through git.RemoteURL.
-func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref host.GitRef, dir string) {
+// registerTestRepoAtWithRef seeds a real git repo at the deterministic
+// clone path for the given ref on the hub's local host fixture.
+// Returns the seeded repo dir. Only Remote refs are supported (Local
+// refs need no seeding because they resolve to the path the caller
+// supplied directly).
+func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) string {
 	t.Helper()
+	if ref.Remote == nil {
+		t.Fatalf("registerTestRepoAtWithRef: expected Remote ref, got %+v", ref)
+	}
 	v, ok := hostFixturesByHub.Load(s)
 	if !ok {
-		t.Fatal("registerTestRepoAtWithRef: no host fixture found for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
+		t.Fatal("registerTestRepoAtWithRef: no host fixture for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
 	}
 	f := v.(*hostTestFixture)
-	if _, err := f.svc.AddRepo(ref, dir); err != nil {
-		t.Fatalf("AddRepo: %v", err)
+	name, err := agent.CloneDirName(*ref.Remote)
+	if err != nil {
+		t.Fatalf("CloneDirName: %v", err)
 	}
+	dir := filepath.Join(f.clonesDir, name)
+	// initGitRepoAt seeds a fresh repo with an `origin` remote so the
+	// hub's discover path (git.RemoteURL on snap.Directory) recovers
+	// the same Remote URL we keyed off of.
+	initGitRepoAt(t, dir, ref.Remote.URL)
+	return dir
 }

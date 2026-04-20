@@ -124,7 +124,7 @@ func listSessionsTool(tp ToolProvider) *tools.Tool {
 				if title == "" {
 					title = truncate(s.Prompt, 60)
 				}
-				project := s.GitRef.DisplayName()
+				project := agent.RepoDisplayName(s.GitRef)
 				fmt.Fprintf(&b, "- %s | %s | %s | %s | %s%s\n",
 					s.ID, s.Status, s.Backend, project, title, unread)
 			}
@@ -337,13 +337,13 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
 				Backend:  agent.BackendType(args.Backend),
 				Hostname: string(host.HostLocal),
-				GitRef:   agent.GitRef{Kind: agent.GitRefRemote, URL: remote},
+				GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remote}},
 				Prompt:   args.Prompt,
 			})
 			if err != nil {
 				return "", fmt.Errorf("create session: %w", err)
 			}
-			display := info.GitRef.DisplayName()
+			display := agent.RepoDisplayName(info.GitRef)
 			return fmt.Sprintf("Session created: %s (%s)", info.ID[:8], display), nil
 		},
 	}

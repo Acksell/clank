@@ -163,6 +163,15 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 	// to finish starting servers rather than starting them itself.
 	s.warmPrimaryAgentCaches()
 
+	// Backfill GitRef.Local for any sessions whose path metadata was
+	// lost. Runs in a background goroutine so listener readiness isn't
+	// blocked by an OpenCode server boot.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runStartupDiscover(s.ctx)
+	}()
+
 	server := &http.Server{Handler: handler}
 
 	// Start HTTP server in background.

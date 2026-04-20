@@ -320,9 +320,10 @@ func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient
 // httptest.Server fronting it, so the test cleanup path can tear both
 // down in the right order.
 type hostTestFixture struct {
-	svc    *host.Service
-	srv    *httptest.Server
-	client *hostclient.HTTP
+	svc       *host.Service
+	srv       *httptest.Server
+	client    *hostclient.HTTP
+	clonesDir string // tempdir backing host.Options.ClonesDir
 }
 
 func (f *hostTestFixture) close() {
@@ -351,7 +352,8 @@ func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
 	if _, ok := s.Host("local"); ok {
 		return nil
 	}
-	svc := host.New(host.Options{BackendManagers: s.BackendManagers})
+	clonesDir := t.TempDir()
+	svc := host.New(host.Options{BackendManagers: s.BackendManagers, ClonesDir: clonesDir})
 	// Run() boots the backend reconciler (warm-start servers, etc.).
 	// Tests don't supply a knownDirs callback, so reconciler runs
 	// against an empty set — same as the production path before any
@@ -362,7 +364,7 @@ func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
 	c := hostclient.NewHTTP(srv.URL, nil)
 	s.SetHostClient(c)
-	f := &hostTestFixture{svc: svc, srv: srv, client: c}
+	f := &hostTestFixture{svc: svc, srv: srv, client: c, clonesDir: clonesDir}
 	hostFixturesByHub.Store(s, f)
 	t.Cleanup(func() { hostFixturesByHub.Delete(s) })
 	return f
@@ -537,4 +539,22 @@ func initGitRepo(t *testing.T) string {
 	gitRun(t, dir, "add", ".")
 	gitRun(t, dir, "commit", "-m", "initial commit")
 	return dir
+}
+
+// initGitRepoAt creates a fresh git repo at the given dir (creating
+// parents as needed) with an `origin` remote pointing at remoteURL.
+// Used by registerTestRepoAtWithRef to seed the host's deterministic
+// clone path before tests that resolve Remote refs.
+func initGitRepoAt(t *testing.T, dir, remoteURL string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	gitRun(t, dir, "init")
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "remote", "add", "origin", remoteURL)
+	gitWriteFile(t, filepath.Join(dir, "README.md"), "# test\n")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "initial commit")
 }

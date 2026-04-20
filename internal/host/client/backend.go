@@ -42,13 +42,20 @@ func (b *BackendClient) Models(ctx context.Context, ref agent.GitRef) ([]host.Mo
 	return out, err
 }
 
+// refQuery serializes a GitRef as discrete query params. Mirrors
+// hostmux.refFromQuery — keep the field names in sync.
 func refQuery(bt agent.BackendType, ref agent.GitRef) url.Values {
-	return url.Values{
-		"backend":      {string(bt)},
-		"git_ref_kind": {string(ref.Kind)},
-		"git_ref_url":  {ref.URL},
-		"git_ref_path": {ref.Path},
+	v := url.Values{"backend": {string(bt)}}
+	if ref.Local != nil {
+		v.Set("git_local_path", ref.Local.Path)
 	}
+	if ref.Remote != nil {
+		v.Set("git_remote_url", ref.Remote.URL)
+	}
+	if ref.WorktreeBranch != "" {
+		v.Set("worktree_branch", ref.WorktreeBranch)
+	}
+	return v
 }
 
 // Discover lists existing on-disk session snapshots for this backend

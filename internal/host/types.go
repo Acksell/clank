@@ -1,9 +1,6 @@
-// Package host defines the value types for Clank's Host plane and (in
-// later phases) the host.Service that runs agent backends, owns the repo
-// cache, and exposes an HTTP API to the Hub.
-//
-// Phase 0 only introduces the value types so the rest of the codebase can
-// start referring to host+repo+branch identity ahead of the daemon split.
+// Package host defines the value types for Clank's Host plane and the
+// host.Service that runs agent backends, owns clones of remote repos,
+// and exposes an HTTP API to the Hub.
 package host
 
 import (
@@ -23,25 +20,6 @@ const (
 	HostLocal Hostname = "local"
 )
 
-// GitRefKind, GitRef and constants are aliases for their canonical
-// definitions in the agent package. Aliasing keeps existing host-internal
-// call sites working while letting the wire-level StartRequest carry a
-// GitRef without an agent → host import cycle. See internal/agent/gitref.go.
-type GitRefKind = agent.GitRefKind
-
-const (
-	GitRefRemote = agent.GitRefRemote
-	GitRefLocal  = agent.GitRefLocal
-)
-
-type GitRef = agent.GitRef
-
-// Repo describes a repository known to a Host.
-type Repo struct {
-	Ref     GitRef `json:"ref"`
-	RootDir string `json:"root_dir"` // Local filesystem path on the Host (host-internal info, exposed for diagnostics)
-}
-
 // BackendInfo describes one backend installed on a Host (e.g. "opencode",
 // "claude-code"). Catalog endpoints return slices of these.
 type BackendInfo struct {
@@ -53,8 +31,7 @@ type BackendInfo struct {
 }
 
 // AgentInfo is re-exported from the agent package so callers in the host
-// plane import a single source. The underlying type is unchanged in Phase 0
-// to keep the diff small; Phase 3+ may move the canonical definition here.
+// plane import a single source.
 type AgentInfo = agent.AgentInfo
 
 // ModelInfo is re-exported from the agent package for the same reason as

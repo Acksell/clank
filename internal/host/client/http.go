@@ -134,10 +134,3 @@ func (c *HTTP) Backends(ctx context.Context) ([]host.BackendInfo, error) {
 	err := c.do(ctx, http.MethodGet, "/backends", nil, &out)
 	return out, err
 }
-
-// Repos lists the repos this host knows about.
-func (c *HTTP) Repos(ctx context.Context) ([]host.Repo, error) {
-	var out []host.Repo
-	err := c.do(ctx, http.MethodGet, "/repos", nil, &out)
-	return out, err
-}

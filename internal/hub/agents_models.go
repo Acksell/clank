@@ -14,7 +14,11 @@ import (
 // per §7.8 — branches deliberately share the same catalog because
 // opencode/claude config is committed to git.
 func catalogKey(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) string {
-	return string(bt) + "\x00" + string(hostname) + "\x00" + ref.Canonical()
+	// Drop the branch from the cache key — same repo, same catalog
+	// regardless of which worktree is checked out.
+	bareRef := ref
+	bareRef.WorktreeBranch = ""
+	return string(bt) + "\x00" + string(hostname) + "\x00" + agent.RepoKey(bareRef)
 }
 
 // HUB
@@ -24,7 +28,7 @@ func (s *Service) persistPrimaryAgents(bt agent.BackendType, hostname host.Hostn
 		return
 	}
 	if err := s.Store.UpsertPrimaryAgents(bt, string(hostname), ref, agents); err != nil {
-		s.log.Printf("warning: persist primary agents for %s/%s/%s: %v", bt, hostname, ref.Canonical(), err)
+		s.log.Printf("warning: persist primary agents for %s/%s/%s: %v", bt, hostname, agent.RepoKey(ref), err)
 	}
 }
 
@@ -61,7 +65,7 @@ func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, hostnam
 		}
 		agents, err := hc.Backend(bt).Agents(ctx, ref)
 		if err != nil {
-			s.log.Printf("background primary agent refresh for %s/%s/%s: %v", bt, hostname, ref.Canonical(), err)
+			s.log.Printf("background primary agent refresh for %s/%s/%s: %v", bt, hostname, agent.RepoKey(ref), err)
 			return
 		}
 		if agents == nil {

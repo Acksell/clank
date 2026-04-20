@@ -36,19 +36,23 @@ func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseCatalogQuery extracts (backend, hostname, gitRef) from the
-// query string. The three discrete GitRef fields are passed verbatim
-// (kind/url/path) so the client can reconstruct the wire shape from a
-// cached struct without canonical-form round-trip parsing — same shape
-// as the host's /agents endpoint (§7.3).
+// query string. The discrete GitRef fields are passed verbatim
+// (git_local_path | git_remote_url + worktree_branch) so the client can
+// reconstruct the wire shape from a cached struct without round-trip
+// canonical-form parsing — same shape as the host's /agents endpoint
+// (§7.3).
 func parseCatalogQuery(r *http.Request) (agent.BackendType, host.Hostname, agent.GitRef, error) {
 	q := r.URL.Query()
 	bt := agent.BackendType(q.Get("backend"))
 	hostname := host.Hostname(q.Get("hostname"))
-	ref := agent.GitRef{
-		Kind: agent.GitRefKind(q.Get("git_ref_kind")),
-		URL:  q.Get("git_ref_url"),
-		Path: q.Get("git_ref_path"),
+	var ref agent.GitRef
+	if p := q.Get("git_local_path"); p != "" {
+		ref.Local = &agent.LocalRef{Path: p}
 	}
+	if u := q.Get("git_remote_url"); u != "" {
+		ref.Remote = &agent.RemoteRef{URL: u}
+	}
+	ref.WorktreeBranch = q.Get("worktree_branch")
 	if bt == "" {
 		return "", "", agent.GitRef{}, errBadCatalogQuery("backend is required")
 	}

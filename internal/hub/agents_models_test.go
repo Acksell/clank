@@ -25,7 +25,7 @@ import (
 // Keeping this as a package-level fixture avoids re-deriving it in every
 // test and documents the intent: catalog identity = (backend, host, ref),
 // branch deliberately omitted.
-var testRef = agent.GitRef{Kind: agent.GitRefRemote, URL: "https://example.com/test.git"}
+var testRef = agent.GitRef{Remote: &agent.RemoteRef{URL: "https://example.com/test.git"}}
 
 func TestDaemonListAgents(t *testing.T) {
 	t.Parallel()
@@ -51,7 +51,7 @@ func TestDaemonListAgents(t *testing.T) {
 
 	// The host's catalog handler resolves ref→workdir via repoRoot, so
 	// we must register the repo on the local host fixture first.
-	registerTestRepoAtWithRef(t, s, testRef, "/tmp/test")
+	registerTestRepoAtWithRef(t, s, testRef)
 
 	ctx := context.Background()
 
@@ -132,7 +132,7 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
-	registerTestRepoAtWithRef(t, s, testRef, "/tmp/test-proj")
+	registerTestRepoAtWithRef(t, s, testRef)
 
 	ctx := context.Background()
 
@@ -201,7 +201,7 @@ func TestDaemonListAgentsFallsBackToListerOnCacheMiss(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
-	registerTestRepoAtWithRef(t, s, testRef, "/tmp/uncached-proj")
+	registerTestRepoAtWithRef(t, s, testRef)
 
 	ctx := context.Background()
 

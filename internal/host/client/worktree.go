@@ -3,46 +3,54 @@ package hostclient
 import (
 	"context"
 	"net/http"
-	"net/url"
-	"strconv"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
-// WorktreeClient is a per-(repo,branch) handle. Obtained via
-// RepoClient.Worktree(branch).
-type WorktreeClient struct {
-	c      *HTTP
-	ref    string
-	branch string
-}
+// Worktree/branch operations are GitRef-scoped (the host repo registry
+// was removed in §7.8). All requests carry the GitRef in the JSON body.
 
-// Resolve creates the worktree if absent and returns its info.
-func (w *WorktreeClient) Resolve(ctx context.Context) (host.WorktreeInfo, error) {
+// ListBranches returns branches in the repo identified by ref.
+func (c *HTTP) ListBranches(ctx context.Context, ref agent.GitRef) ([]host.BranchInfo, error) {
 	body := struct {
-		Branch string `json:"branch"`
-	}{w.branch}
-	var out host.WorktreeInfo
-	err := w.c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(w.ref)+"/worktrees", body, &out)
+		GitRef agent.GitRef `json:"git_ref"`
+	}{ref}
+	var out []host.BranchInfo
+	err := c.do(ctx, http.MethodPost, "/worktrees/list-branches", body, &out)
 	return out, err
 }
 
-// Remove deletes the worktree. force=true removes even with local changes.
-func (w *WorktreeClient) Remove(ctx context.Context, force bool) error {
-	q := url.Values{
-		"branch": {w.branch},
-		"force":  {strconv.FormatBool(force)},
-	}
-	return w.c.do(ctx, http.MethodDelete, "/repos/"+url.PathEscape(w.ref)+"/worktrees?"+q.Encode(), nil, nil)
+// ResolveWorktree creates (or reuses) the worktree for branch and
+// returns its info.
+func (c *HTTP) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch string) (host.WorktreeInfo, error) {
+	body := struct {
+		GitRef agent.GitRef `json:"git_ref"`
+		Branch string       `json:"branch"`
+	}{ref, branch}
+	var out host.WorktreeInfo
+	err := c.do(ctx, http.MethodPost, "/worktrees/resolve", body, &out)
+	return out, err
 }
 
-// Merge merges this branch into the repo's default branch.
-func (w *WorktreeClient) Merge(ctx context.Context, commitMessage string) (host.MergeResult, error) {
+// RemoveWorktree removes the worktree for branch. force forwards to git.
+func (c *HTTP) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch string, force bool) error {
 	body := struct {
-		Branch        string `json:"branch"`
-		CommitMessage string `json:"commit_message,omitempty"`
-	}{w.branch, commitMessage}
+		GitRef agent.GitRef `json:"git_ref"`
+		Branch string       `json:"branch"`
+		Force  bool         `json:"force,omitempty"`
+	}{ref, branch, force}
+	return c.do(ctx, http.MethodPost, "/worktrees/remove", body, nil)
+}
+
+// MergeBranch merges branch into the repo's default branch.
+func (c *HTTP) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (host.MergeResult, error) {
+	body := struct {
+		GitRef        agent.GitRef `json:"git_ref"`
+		Branch        string       `json:"branch"`
+		CommitMessage string       `json:"commit_message,omitempty"`
+	}{ref, branch, commitMessage}
 	var out host.MergeResult
-	err := w.c.do(ctx, http.MethodPost, "/repos/"+url.PathEscape(w.ref)+"/worktrees/merge", body, &out)
+	err := c.do(ctx, http.MethodPost, "/worktrees/merge", body, &out)
 	return out, err
 }

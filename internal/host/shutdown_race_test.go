@@ -69,13 +69,13 @@ func TestService_ShutdownDuringCreateSession_DoesNotLeakBackend(t *testing.T) {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
 			agent.BackendOpenCode: mgr,
 		},
-		CloneRoot: t.TempDir(),
+		ClonesDir: t.TempDir(),
 	})
 
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefLocal, Path: dir},
+		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
 		Prompt:  "race",
 	}
 

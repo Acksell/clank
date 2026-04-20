@@ -2188,14 +2188,14 @@ func TestProjectFilterToggle(t *testing.T) {
 func TestFilteredSessionsByProject(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
-	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
+	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
 
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
-		gitRef:      alpha.Canonical(),
+		gitRef:      alpha,
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
@@ -2218,7 +2218,7 @@ func TestFilteredSessionsByProject(t *testing.T) {
 		t.Fatalf("expected 2 sessions with project filter, got %d", len(filtered))
 	}
 	for _, s := range filtered {
-		if !s.GitRef.Equal(alpha) {
+		if agent.RepoKey(s.GitRef) != agent.RepoKey(alpha) {
 			t.Errorf("expected all filtered sessions to match alpha gitref, got %+v", s.GitRef)
 		}
 	}
@@ -2227,14 +2227,14 @@ func TestFilteredSessionsByProject(t *testing.T) {
 func TestProjectFilterRebuildsGroups(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
-	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
+	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
 
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:  "/home/user/alpha",
 		projectName: "alpha",
-		gitRef:      alpha.Canonical(),
+		gitRef:      alpha,
 		width:       120,
 		height:      40,
 		cachedSessions: []agent.SessionInfo{
@@ -2460,14 +2460,14 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/alpha"}
-	beta := agent.GitRef{Kind: agent.GitRefLocal, Path: "/home/user/beta"}
+	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
+	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
 
 	now := time.Now()
 	m := &InboxModel{
 		projectDir:    "/home/user/alpha",
 		projectName:   "alpha",
-		gitRef:        alpha.Canonical(),
+		gitRef:        alpha,
 		projectFilter: true,
 		width:         120,
 		height:        40,
@@ -2508,8 +2508,8 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 		height:      40,
 	}
 	m.buildSearchResults([]agent.SessionInfo{
-		{ID: "s1", GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
-		{ID: "s2", GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s1", GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/alpha.git"}}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/beta.git"}}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
 	})
 
 	// Verify precondition: 2 search results visible.

@@ -109,7 +109,7 @@ type InboxModel struct {
 	// git repo with an origin remote), these stay zero and the sidebar will
 	// surface the underlying load error.
 	hostname host.Hostname
-	gitRef   string
+	gitRef   agent.GitRef
 
 	// Pre-built display data.
 	displayLines []string
@@ -150,20 +150,20 @@ type InboxModel struct {
 //
 // Hostname is currently always HostLocal; remote hosts will be plumbed
 // through when they exist.
-func resolveLocalRepo(cwd string) (host.Hostname, string) {
+func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 	root, err := git.RepoRoot(cwd)
 	if err != nil {
-		return "", ""
+		return "", agent.GitRef{}
 	}
 	url, err := git.RemoteURL(root, "origin")
 	if err != nil {
-		return "", ""
+		return "", agent.GitRef{}
 	}
-	ref := host.GitRef{Kind: host.GitRefRemote, URL: url}
+	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: url}}
 	if err := ref.Validate(); err != nil {
-		return "", ""
+		return "", agent.GitRef{}
 	}
-	return host.HostLocal, ref.Canonical()
+	return host.HostLocal, ref
 }
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
@@ -628,23 +628,23 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	// Filter by repo identity (canonical GitRef). Sessions without a
 	// GitRef (e.g. adopted backends with no origin remote) are dropped
 	// from the project view since they can't be attributed to this repo.
-	if m.projectFilter && m.gitRef != "" {
+	if m.projectFilter && (m.gitRef.Local != nil || m.gitRef.Remote != nil) {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.GitRef.Canonical() == m.gitRef {
+			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
 				filtered = append(filtered, s)
 			}
 		}
 		sessions = filtered
 	}
 
-	// Filter by selected worktree branch. WorktreeBranch is the canonical
-	// identity on the wire (§7.1) — matching by branch name is correct
+	// Filter by branch (if a branch is selected in the sidebar). Match by
+	// branch name only, not on-disk path: a branch is a logical identity
 	// regardless of where the host materialized the worktree on disk.
 	if branch := m.sidebar.SelectedBranch(); branch != "" {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.WorktreeBranch == branch {
+			if s.GitRef.WorktreeBranch == branch {
 				filtered = append(filtered, s)
 			}
 		}
@@ -765,10 +765,10 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project) on top of
 	// the daemon's text search results.
-	if m.projectFilter && m.gitRef != "" {
+	if m.projectFilter && (m.gitRef.Local != nil || m.gitRef.Remote != nil) {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
-			if s.GitRef.Canonical() == m.gitRef {
+			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
 				filtered = append(filtered, s)
 			}
 		}
@@ -1420,7 +1420,7 @@ func (m *InboxModel) sessionPaneWidth() int {
 func (m *InboxModel) updateBranchSessionCounts() {
 	statusMap := make(map[string]branchSessionStatus)
 	for _, s := range m.cachedSessions {
-		branch := s.WorktreeBranch
+		branch := s.GitRef.WorktreeBranch
 		if branch == "" {
 			continue
 		}
@@ -1669,8 +1669,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	const branchBadgeWidth = 12
 	branchBadge := ""
 	branchExtra := 0
-	if m.sidebar.SelectedBranch() == "" && s.WorktreeBranch != "" {
-		branchLabel := s.WorktreeBranch
+	if m.sidebar.SelectedBranch() == "" && s.GitRef.WorktreeBranch != "" {
+		branchLabel := s.GitRef.WorktreeBranch
 		if len(branchLabel) > branchBadgeWidth-2 {
 			branchLabel = branchLabel[:branchBadgeWidth-3] + "…"
 		}
@@ -1683,7 +1683,7 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	projectName := s.GitRef.DisplayName()
+	projectName := agent.RepoDisplayName(s.GitRef)
 	if len(projectName) > 12 {
 		projectName = projectName[:11] + "…"
 	}

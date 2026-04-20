@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -28,45 +29,36 @@ func writeRepoErr(w http.ResponseWriter, err error) {
 func parseHostname(r *http.Request) (host.Hostname, error) {
 	id := host.Hostname(r.PathValue("hostname"))
 	if id == "" {
-		return "", errors.New("host id is required")
+		return "", errors.New("hostname is required")
 	}
 	return id, nil
 }
 
-func parseGitRef(r *http.Request) (string, error) {
-	ref := r.PathValue("gitRef")
-	if ref == "" {
-		return "", errors.New("git ref is required")
-	}
-	return ref, nil
+// worktreeRequest is the common body shape for /hosts/{h}/worktrees/*.
+// Branch is empty on list-branches; required on resolve/remove/merge.
+type worktreeRequest struct {
+	GitRef        agent.GitRef `json:"git_ref"`
+	Branch        string       `json:"branch,omitempty"`
+	Force         bool         `json:"force,omitempty"`
+	CommitMessage string       `json:"commit_message,omitempty"`
 }
 
-func (m *Mux) handleListReposOnHost(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleListBranchesOnHost(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	repos, err := m.svc.ListReposOnHost(r.Context(), hostname)
-	if err != nil {
-		writeRepoErr(w, err)
+	var body worktreeRequest
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, repos)
-}
-
-func (m *Mux) handleListBranchesOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostname, err := parseHostname(r)
-	if err != nil {
+	if err := body.GitRef.Validate(); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	gitRef, err := parseGitRef(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	branches, err := m.svc.ListBranchesOnRepo(r.Context(), hostname, gitRef)
+	branches, err := m.svc.ListBranchesOnHost(r.Context(), hostname, body.GitRef)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -74,31 +66,26 @@ func (m *Mux) handleListBranchesOnRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, branches)
 }
 
-type createWorktreeOnRepoRequest struct {
-	Branch string `json:"branch"`
-}
-
-func (m *Mux) handleCreateWorktreeOnRepo(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleResolveWorktreeOnHost(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	gitRef, err := parseGitRef(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	var body createWorktreeOnRepoRequest
+	var body worktreeRequest
 	if err := decodeJSON(r.Body, &body); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := body.GitRef.Validate(); err != nil {
+		writeBadRequest(w, err.Error())
 		return
 	}
 	if body.Branch == "" {
 		writeBadRequest(w, "branch is required")
 		return
 	}
-	wt, err := m.svc.CreateWorktreeOnRepo(r.Context(), hostname, gitRef, body.Branch)
+	wt, err := m.svc.ResolveWorktreeOnHost(r.Context(), hostname, body.GitRef, body.Branch)
 	if err != nil {
 		writeRepoErr(w, err)
 		return
@@ -106,56 +93,52 @@ func (m *Mux) handleCreateWorktreeOnRepo(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, wt)
 }
 
-func (m *Mux) handleRemoveWorktreeOnRepo(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleRemoveWorktreeOnHost(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	gitRef, err := parseGitRef(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	branch := r.URL.Query().Get("branch")
-	if branch == "" {
-		writeBadRequest(w, "branch is required")
-		return
-	}
-	force := r.URL.Query().Get("force") == "true"
-	if err := m.svc.RemoveWorktreeOnRepo(r.Context(), hostname, gitRef, branch, force); err != nil {
-		writeRepoErr(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-type mergeBranchOnRepoRequest struct {
-	Branch        string `json:"branch"`
-	CommitMessage string `json:"commit_message,omitempty"`
-}
-
-func (m *Mux) handleMergeBranchOnRepo(w http.ResponseWriter, r *http.Request) {
-	hostname, err := parseHostname(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	gitRef, err := parseGitRef(r)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	var body mergeBranchOnRepoRequest
+	var body worktreeRequest
 	if err := decodeJSON(r.Body, &body); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := body.GitRef.Validate(); err != nil {
+		writeBadRequest(w, err.Error())
 		return
 	}
 	if body.Branch == "" {
 		writeBadRequest(w, "branch is required")
 		return
 	}
-	res, err := m.svc.MergeBranchOnRepo(r.Context(), hostname, gitRef, body.Branch, body.CommitMessage)
+	if err := m.svc.RemoveWorktreeOnHost(r.Context(), hostname, body.GitRef, body.Branch, body.Force); err != nil {
+		writeRepoErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *Mux) handleMergeBranchOnHost(w http.ResponseWriter, r *http.Request) {
+	hostname, err := parseHostname(r)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	var body worktreeRequest
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := body.GitRef.Validate(); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if body.Branch == "" {
+		writeBadRequest(w, "branch is required")
+		return
+	}
+	res, err := m.svc.MergeBranchOnHost(r.Context(), hostname, body.GitRef, body.Branch, body.CommitMessage)
 	if err != nil {
 		writeRepoErr(w, err)
 		return

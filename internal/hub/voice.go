@@ -228,32 +228,20 @@ func (tp *hubToolProvider) KnownProjectDirs(ctx context.Context) ([]string, erro
 	if err != nil {
 		return nil, fmt.Errorf("known agent targets: %w", err)
 	}
-	// Voice tools only operate on local on-disk paths. Filter to
-	// local-host targets and resolve each repo's root via the local
-	// host. Non-local targets and unknown repos are skipped (best-effort
-	// surface for the model — see voice.tools §createSession).
-	hc, ok := tp.s.Host(host.HostLocal)
-	if !ok {
-		return nil, nil
-	}
-	repos, err := hc.Repos(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list local repos: %w", err)
-	}
-	rootByRef := make(map[string]string, len(repos))
-	for _, r := range repos {
-		rootByRef[r.Ref.Canonical()] = r.RootDir
-	}
+	// Voice tools only operate on local on-disk paths. Surface the
+	// distinct local-host Local-ref paths from the known targets.
+	// Remote-ref repos are skipped — they may not have a stable
+	// user-known checkout location (the host clones them on demand
+	// to a deterministic but opaque path).
 	seen := make(map[string]struct{})
 	for _, t := range targets {
 		if host.Hostname(t.Hostname) != host.HostLocal {
 			continue
 		}
-		root, ok := rootByRef[t.GitRef.Canonical()]
-		if !ok || root == "" {
+		if t.GitRef.Local == nil {
 			continue
 		}
-		seen[root] = struct{}{}
+		seen[t.GitRef.Local.Path] = struct{}{}
 	}
 	dirs := make([]string, 0, len(seen))
 	for dir := range seen {

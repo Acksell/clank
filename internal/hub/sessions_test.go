@@ -12,20 +12,13 @@ import (
 )
 
 func TestDaemonCreateSession(t *testing.T) {
-	s, client, cleanup := testDaemon(t)
+	_, client, cleanup := testDaemon(t)
 	defer cleanup()
-
-	// Sanity-check the host has exactly one repo registered (the seed).
-	hc, _ := s.Host("local")
-	repos, err := hc.Repos(context.Background())
-	if err != nil || len(repos) != 1 {
-		t.Fatalf("ListRepos: %v len=%d", err, len(repos))
-	}
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "Fix the bug",
 	})
 	if err != nil {
@@ -37,8 +30,8 @@ func TestDaemonCreateSession(t *testing.T) {
 	if info.Backend != agent.BackendOpenCode {
 		t.Errorf("expected backend=opencode, got %s", info.Backend)
 	}
-	if info.GitRef.URL != testRemoteURL {
-		t.Errorf("expected git_ref.url=%s, got %s", testRemoteURL, info.GitRef.URL)
+	if info.GitRef.Remote == nil || info.GitRef.Remote.URL != testRemoteURL {
+		t.Errorf("expected git_ref.remote.url=%s, got %+v", testRemoteURL, info.GitRef.Remote)
 	}
 	if info.Hostname != "local" {
 		t.Errorf("expected host_id=local, got %s", info.Hostname)
@@ -56,7 +49,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 
 	// Missing backend.
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
-		GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt: "test",
 	})
 	if err == nil {
@@ -75,7 +68,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	// Missing prompt.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 	})
 	if err == nil {
 		t.Error("expected error for missing prompt")
@@ -84,7 +77,7 @@ func TestDaemonCreateSessionValidation(t *testing.T) {
 	// Invalid backend.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: "invalid",
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err == nil {
@@ -110,7 +103,7 @@ func TestDaemonListSessions(t *testing.T) {
 	// Create two sessions.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "task a",
 	})
 	if err != nil {
@@ -119,7 +112,7 @@ func TestDaemonListSessions(t *testing.T) {
 
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendClaudeCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "task b",
 	})
 	if err != nil {
@@ -145,7 +138,7 @@ func TestDaemonGetSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -175,7 +168,7 @@ func TestDaemonGetSessionMessages(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -237,7 +230,7 @@ func TestDaemonGetSessionMessagesEmpty(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -281,7 +274,7 @@ func TestDaemonSendMessage(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "initial prompt",
 	})
 	if err != nil {
@@ -321,7 +314,7 @@ func TestDaemonAbortSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "do stuff",
 	})
 	if err != nil {
@@ -359,7 +352,7 @@ func TestDaemonRevertSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "do stuff",
 	})
 	if err != nil {
@@ -393,7 +386,7 @@ func TestDaemonRevertSessionMissingMessageID(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -433,7 +426,7 @@ func TestDaemonForkSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "original session",
 	})
 	if err != nil {
@@ -460,11 +453,11 @@ func TestDaemonForkSession(t *testing.T) {
 	if forked.Title != "Forked session" {
 		t.Errorf("expected Title=%q, got %q", "Forked session", forked.Title)
 	}
-	if forked.GitRef.Canonical() != info.GitRef.Canonical() {
-		t.Errorf("expected GitRef=%s, got %s", info.GitRef.Canonical(), forked.GitRef.Canonical())
+	if agent.RepoKey(forked.GitRef) != agent.RepoKey(info.GitRef) {
+		t.Errorf("expected GitRef=%s, got %s", agent.RepoKey(info.GitRef), agent.RepoKey(forked.GitRef))
 	}
-	if forked.WorktreeBranch != info.WorktreeBranch {
-		t.Errorf("expected WorktreeBranch=%s, got %s", info.WorktreeBranch, forked.WorktreeBranch)
+	if forked.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
+		t.Errorf("expected WorktreeBranch=%s, got %s", info.GitRef.WorktreeBranch, forked.GitRef.WorktreeBranch)
 	}
 	if forked.Backend != info.Backend {
 		t.Errorf("expected Backend=%s, got %s", info.Backend, forked.Backend)
@@ -496,7 +489,7 @@ func TestDaemonForkSessionEmptyMessageID(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -543,7 +536,7 @@ func TestDaemonDeleteSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -590,7 +583,7 @@ func TestDaemonSendEmptyMessage(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -650,7 +643,7 @@ func TestDaemonMarkSessionRead(t *testing.T) {
 	// Create a session.
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -709,7 +702,7 @@ func TestDaemonMarkSessionReadThenUpdate(t *testing.T) {
 
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -776,7 +769,7 @@ func TestDaemonTitleUpdateOnSession(t *testing.T) {
 
 	created, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "Fix the login bug",
 	})
 	if err != nil {
@@ -828,7 +821,7 @@ func TestDaemonTitleVisibleInList(t *testing.T) {
 
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "Fix the login bug",
 	})
 	if err != nil {
@@ -874,7 +867,7 @@ func TestDaemonAgentStoredOnSession(t *testing.T) {
 	// Create session with agent specified.
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test with agent",
 		Agent:   "plan",
 	})
@@ -1042,7 +1035,7 @@ func TestDiscoverSessionsSkipsManagedSessions(t *testing.T) {
 	// Create a real session first. runBackend will set ExternalID to "oc-real-session".
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "do stuff",
 	})
 	if err != nil {
@@ -1201,7 +1194,7 @@ func TestDaemonSetVisibilityDone(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1235,7 +1228,7 @@ func TestDaemonSetVisibilityArchived(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1269,7 +1262,7 @@ func TestDaemonSetVisibilityBackToVisible(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1306,7 +1299,7 @@ func TestDaemonUnarchiveSession(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1356,7 +1349,7 @@ func TestDaemonSetVisibilityInvalid(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1391,7 +1384,7 @@ func TestDaemonSendMessageClearsDoneVisibility(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1437,7 +1430,7 @@ func TestDaemonSendMessageClearsArchivedVisibility(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1485,7 +1478,7 @@ func TestDaemonSetDraft(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1516,7 +1509,7 @@ func TestDaemonSetDraftClear(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1561,7 +1554,7 @@ func TestDaemonDraftVisibleInList(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1594,7 +1587,7 @@ func TestDaemonDraftClearedOnSendMessage(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Kind: agent.GitRefRemote, URL: testRemoteURL},
+		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}},
 		Prompt:  "test prompt",
 	})
 	if err != nil {
@@ -1645,19 +1638,19 @@ func TestDaemonSearchSessions(t *testing.T) {
 	for _, info := range []agent.SessionInfo{
 		{
 			ID: "ses-s1", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/myproject.git"},
+			GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/myproject.git"}},
 			Title:  "Fix authentication bug", Prompt: "fix login",
 			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour),
 		},
 		{
 			ID: "ses-s2", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/myproject.git"},
+			GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/myproject.git"}},
 			Title:  "Add dark mode", Prompt: "implement dark mode toggle",
 			CreatedAt: now.Add(-1 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
 		},
 		{
 			ID: "ses-s3", Backend: agent.BackendOpenCode, Status: agent.StatusIdle,
-			GitRef: agent.GitRef{Kind: agent.GitRefRemote, URL: "git@github.com:acme/otherproj.git"},
+			GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/otherproj.git"}},
 			Title:  "Refactor database layer", Prompt: "clean up db queries",
 			CreatedAt: now, UpdatedAt: now,
 		},
