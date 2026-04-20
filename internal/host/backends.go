@@ -95,18 +95,22 @@ func (m *OpenCodeBackendManager) ListServers() []agent.ServerInfo {
 	return m.serverMgr.ListServers()
 }
 
-// DiscoverSessions lists all projects from the OpenCode server, then lists
-// all sessions using the same seed server. This avoids starting a new server
-// per worktree (the old bug that caused triple-starts on startup).
+// DiscoverSessions returns every session known to opencode across every
+// project worktree. opencode's HTTP /session API is project-scoped to the
+// server's startup directory (even though the underlying SQLite DB is
+// global), so we must hit one server per project. We use the seed server
+// only to list the set of known projects, then iterate.
 //
-// Worktrees that are clearly invalid (e.g. "/") are filtered out. Valid
-// worktrees are added to the desired set so the reconciler starts servers
-// for them (needed for future backend connections), but session listing
-// uses the existing seed server.
+// Worktrees that are clearly invalid (root, empty, missing) are filtered
+// out. Discovered worktrees are added to the desired set so the reconciler
+// keeps servers running for future backend operations. Servers are started
+// (or reused) serially via GetOrStartServer, which coalesces concurrent
+// callers per dir.
+//
+// Sessions are deduped by ID in case opencode returns the same session
+// from multiple servers (it shouldn't, but defensive).
 func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir string) ([]agent.SessionSnapshot, error) {
-	// Get the seed server URL — this will wait for the reconciler if needed.
-	seedURL, err := m.serverMgr.GetOrStartServer(ctx, seedDir)
-	if err != nil {
+	if _, err := m.serverMgr.GetOrStartServer(ctx, seedDir); err != nil {
 		return nil, fmt.Errorf("get seed server: %w", err)
 	}
 
@@ -115,10 +119,8 @@ func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir s
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 
-	// Collect valid worktrees for the reconciler's desired set.
 	var validDirs []string
 	for _, proj := range projects {
-		// Filter bogus dirs: root dir, empty, or non-existent.
 		if proj.Worktree == "" || proj.Worktree == "/" {
 			continue
 		}
@@ -128,19 +130,32 @@ func (m *OpenCodeBackendManager) DiscoverSessions(ctx context.Context, seedDir s
 		validDirs = append(validDirs, proj.Worktree)
 	}
 
-	// Add discovered worktrees to desired set so they get servers for
-	// future backend operations. The reconciler will start them.
 	if len(validDirs) > 0 {
 		m.serverMgr.AddDesired(validDirs...)
 	}
 
-	// List sessions from the SEED server — all projects share the same
-	// OpenCode database, so one server can return all sessions.
-	sessions, err := m.serverMgr.ListSessionsFromServer(ctx, seedURL)
-	if err != nil {
-		return nil, fmt.Errorf("list sessions: %w", err)
+	seen := make(map[string]struct{})
+	var all []agent.SessionSnapshot
+	for _, dir := range validDirs {
+		url, err := m.serverMgr.GetOrStartServer(ctx, dir)
+		if err != nil {
+			log.Printf("[opencode] discover: skipping %s: get server: %v", dir, err)
+			continue
+		}
+		sessions, err := m.serverMgr.ListSessionsFromServer(ctx, url)
+		if err != nil {
+			log.Printf("[opencode] discover: skipping %s: list sessions: %v", dir, err)
+			continue
+		}
+		for _, s := range sessions {
+			if _, dup := seen[s.ID]; dup {
+				continue
+			}
+			seen[s.ID] = struct{}{}
+			all = append(all, s)
+		}
 	}
-	return sessions, nil
+	return all, nil
 }
 
 // ClaudeBackendManager implements agent.BackendManager for Claude Code sessions.
