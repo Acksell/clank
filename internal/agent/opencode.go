@@ -1706,6 +1706,15 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 	return m.ListSessionsFromServer(ctx, serverURL)
 }
 
+// sessionListLimit is the page size used when querying the opencode
+// /session endpoint. opencode defaults to 100, which silently truncates for
+// users with hundreds of sessions per project. The SDK's SessionListParams
+// does not expose Limit/Offset, so we override the query param directly via
+// option.WithQuery (verified end-to-end by TestDiscoverSessions_PaginatesPastDefaultLimit).
+// We pick a value comfortably above any realistic single-project session
+// count; if a user ever exceeds this we should switch to proper pagination.
+const sessionListLimit = "100000"
+
 // ListSessionsFromServer queries an already-known server URL for sessions.
 // Used by DiscoverSessions to avoid starting new servers per worktree.
 //
@@ -1713,15 +1722,9 @@ func (m *OpenCodeServerManager) ListSessions(ctx context.Context, projectDir str
 // startup directory, even though the underlying SQLite DB is global. To
 // list sessions across all projects, callers must hit one server per
 // project worktree (see DiscoverSessions).
-//
-// The opencode server caps results at its built-in default (100 at time
-// of writing). The SDK's SessionListParams does not expose Limit/Offset
-// and option.WithQuery is ignored by Session.List, so projects with more
-// than that many sessions will silently truncate. Switch to a paginated
-// API once one exists upstream.
 func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serverURL string) ([]SessionSnapshot, error) {
 	client := opencode.NewClient(option.WithBaseURL(strings.TrimRight(serverURL, "/")))
-	sessions, err := client.Session.List(ctx, opencode.SessionListParams{})
+	sessions, err := client.Session.List(ctx, opencode.SessionListParams{}, option.WithQuery("limit", sessionListLimit))
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
