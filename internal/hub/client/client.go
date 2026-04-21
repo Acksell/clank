@@ -53,6 +53,10 @@ type Client struct {
 }
 
 // NewClient creates a client that connects to clankd at the given socket path.
+//
+// The http.Client has no overall Timeout; long-poll, SSE, and websocket
+// upgrade endpoints rely on caller-supplied context for cancellation.
+// Per-request deadlines should be set via ctx.
 func NewClient(sockPath string) *Client {
 	return &Client{
 		sockPath: sockPath,
@@ -62,8 +66,8 @@ func NewClient(sockPath string) *Client {
 					var d net.Dialer
 					return d.DialContext(ctx, "unix", sockPath)
 				},
+				ResponseHeaderTimeout: 30 * time.Second,
 			},
-			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -95,6 +99,24 @@ func PIDPath() (string, error) {
 	return filepath.Join(dir, "hub.pid"), nil
 }
 
+// socketAlive returns true if a fresh process is currently accepting on
+// the hub socket. Used to avoid deleting a live socket when the PID file
+// is corrupt or refers to a recycled PID — the new daemon may have a
+// different PID than the file claims, but if the socket answers it is
+// alive and we must not unlink it.
+func socketAlive() bool {
+	sockPath, err := SocketPath()
+	if err != nil || sockPath == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // IsRunning checks if clankd is already running by reading the PID file and
 // verifying the process exists. Cleans up stale PID and socket files when
 // the recorded process is gone.
@@ -112,13 +134,14 @@ func IsRunning() (bool, int, error) {
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		// Corrupt PID file: clean it up along with any stale socket so
-		// the next startup can rebind. Without this, a future Listen
-		// will fail with "address already in use" even though IsRunning
-		// just concluded nothing is alive.
+		// Corrupt PID file. Probe the socket before unlinking — a live
+		// daemon with a corrupted pid file shouldn't have its socket
+		// torn out from under it.
 		os.Remove(pidPath)
-		if sockPath, _ := SocketPath(); sockPath != "" {
-			os.Remove(sockPath)
+		if !socketAlive() {
+			if sockPath, _ := SocketPath(); sockPath != "" {
+				os.Remove(sockPath)
+			}
 		}
 		return false, 0, nil
 	}
@@ -127,10 +150,14 @@ func IsRunning() (bool, int, error) {
 		return false, pid, nil
 	}
 	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		// Process doesn't exist; clean up stale PID + socket.
+		// Recorded PID is gone. Probe the socket: a recycled-PID
+		// scenario where a fresh daemon rebinds under a new PID would
+		// otherwise lose its socket here.
 		os.Remove(pidPath)
-		if sockPath, _ := SocketPath(); sockPath != "" {
-			os.Remove(sockPath)
+		if !socketAlive() {
+			if sockPath, _ := SocketPath(); sockPath != "" {
+				os.Remove(sockPath)
+			}
 		}
 		return false, pid, nil
 	}

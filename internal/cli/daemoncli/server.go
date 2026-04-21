@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
@@ -42,7 +43,13 @@ func runHubServer(s *hub.Service) error {
 	// already removes stale sockets when it sees a dead PID, but we
 	// still need to handle the case where the PID file was hand-removed.
 	// RemoveStale refuses to delete non-socket files so a misconfigured
-	// path cannot clobber user data.
+	// path cannot clobber user data. Probe the socket first: if a live
+	// daemon is answering, refuse to start so we don't unlink an active
+	// peer's listener.
+	if conn, dialErr := net.DialTimeout("unix", sockPath, 200*time.Millisecond); dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("clankd already running on %s", sockPath)
+	}
 	if err := socketutil.RemoveStale(sockPath); err != nil {
 		return err
 	}
