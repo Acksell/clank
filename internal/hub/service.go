@@ -52,7 +52,17 @@ type Service struct {
 	startTime time.Time
 	ctx       context.Context
 	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	// stopCh is the dedicated "please stop Run()" signal. It is closed
+	// by Stop() (and by the Serve-error goroutine on a fatal listener
+	// failure) so Run can begin shutdown WITHOUT cancelling s.ctx
+	// first. Cancelling s.ctx pre-drain would abort in-flight handlers
+	// that capture it, defeating the 5s graceful-shutdown window.
+	// s.cancel() is invoked at the very end of shutdown(), after
+	// server.Shutdown returns, so callers using s.ctx for long-lived
+	// background work still see termination.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 
 	// BackendManagers maps each backend type to its manager. The manager
 	// creates SessionBackend instances and owns shared resources (e.g.,
@@ -106,6 +116,7 @@ func New() *Service {
 		startTime:                    time.Now(),
 		ctx:                          ctx,
 		cancel:                       cancel,
+		stopCh:                       make(chan struct{}),
 		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
 		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
 		primaryAgentsRefreshInFlight: make(map[string]bool),
@@ -187,16 +198,23 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 			serveErrCh <- err
 			// Trigger shutdown so Run unblocks promptly on a
 			// listener-level failure rather than waiting for an
-			// external cancellation.
-			s.cancel()
+			// external cancellation. Use stopCh (not s.cancel)
+			// because shutdown() needs s.ctx alive during the
+			// HTTP drain.
+			s.triggerStop()
 			return
 		}
 		serveErrCh <- nil
 	}()
 
 	// Wait for shutdown (Stop(), external ctx cancellation, or a
-	// fatal Serve error above).
-	<-s.ctx.Done()
+	// fatal Serve error above). Selecting on both stopCh and
+	// s.ctx.Done() preserves the legacy "external context cancelled"
+	// path used by tests that wire ctx for cleanup.
+	select {
+	case <-s.stopCh:
+	case <-s.ctx.Done():
+	}
 	s.log.Printf("context cancelled, shutting down")
 
 	shutdownErr := s.shutdown(server)
@@ -211,9 +229,13 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 // shutdown gracefully tears down internal subsystems and the HTTP
 // server. The on-disk listener artifacts (socket file, PID file) are
 // the caller's responsibility — Run never created them.
+//
+// Order matters: drain HTTP first so in-flight handlers can complete
+// (they capture s.ctx and would abort early if we cancelled it up
+// front), then tear down the dependencies they touch, then cancel
+// s.ctx as the very last step to terminate any long-lived background
+// work that survives the drain.
 func (s *Service) shutdown(server *http.Server) error {
-	s.cancel()
-
 	// Drain HTTP first: stop accepting new connections and let
 	// in-flight handlers complete before we tear down the dependencies
 	// (store, host clients, subscribers) they may still be touching.
@@ -271,6 +293,12 @@ func (s *Service) shutdown(server *http.Server) error {
 	s.subMu.Unlock()
 
 	s.wg.Wait()
+	// Cancel s.ctx now that the HTTP drain and dependent shutdowns
+	// have finished. Any background goroutine still selecting on
+	// s.ctx.Done() (e.g. runStartupDiscover) will exit; in-flight
+	// handlers that captured s.ctx have already returned because
+	// server.Shutdown above waited for them.
+	s.cancel()
 	s.log.Printf("hub stopped")
 	return nil
 }
@@ -295,7 +323,13 @@ func (s *Service) SetHostClient(c *hostclient.HTTP) {
 // Stop requests the daemon to shut down. Safe to call from any
 // goroutine; idempotent.
 func (s *Service) Stop() {
-	s.cancel()
+	s.triggerStop()
+}
+
+// triggerStop closes stopCh exactly once. Used by Stop() and by the
+// Serve-error path so Run unblocks without cancelling s.ctx.
+func (s *Service) triggerStop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
 // closeHosts disconnects every host client in the catalog. Errors are
@@ -319,22 +353,27 @@ func (s *Service) closeHosts() {
 // session resources hub asked the host to allocate, in the order it
 // allocated them, without requiring host-process teardown to do it.
 //
-// Iterates a snapshot of *managedSession pointers so backend.Stop()
-// runs without holding s.mu (Stop performs an HTTP round-trip for
-// remote backends).
+// Captures stable (sessionID, backend) pairs while holding s.mu so a
+// concurrent activateBackend that mutates ms.backend cannot make us
+// stop the wrong handle (or skip a backend whose pointer was nil at
+// snapshot time but became non-nil before we got around to checking).
 func (s *Service) stopActiveBackends() {
+	type liveBackend struct {
+		id      string
+		backend agent.SessionBackend
+	}
 	s.mu.RLock()
-	live := make([]*managedSession, 0, len(s.sessions))
+	live := make([]liveBackend, 0, len(s.sessions))
 	for _, ms := range s.sessions {
 		if ms.backend != nil {
-			live = append(live, ms)
+			live = append(live, liveBackend{id: ms.info.ID, backend: ms.backend})
 		}
 	}
 	s.mu.RUnlock()
 
-	for _, ms := range live {
-		if err := ms.backend.Stop(); err != nil {
-			s.log.Printf("stop session %s: %v", ms.info.ID, err)
+	for _, item := range live {
+		if err := item.backend.Stop(); err != nil {
+			s.log.Printf("stop session %s: %v", item.id, err)
 		}
 	}
 }
