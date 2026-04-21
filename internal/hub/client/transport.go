@@ -75,6 +75,14 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 
 // openSSE opens an SSE GET to path on a no-timeout client and returns
 // the response. Caller is responsible for closing resp.Body.
+//
+// We allocate a fresh *http.Client (and *http.Transport) per call rather
+// than reusing c.httpClient because the latter has request timeouts
+// that would prematurely close long-lived event streams. The cost is
+// one transport per subscription; in practice the TUI subscribes once
+// per process, so this is not a hot path. If callers ever start
+// subscribing repeatedly, hoist a single SSE-tuned client onto Client
+// (idle conns disabled, no Timeout) instead of caching this one.
 func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, error) {
 	sseClient := &http.Client{
 		Transport: &http.Transport{

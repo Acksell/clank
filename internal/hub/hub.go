@@ -20,6 +20,7 @@ package hub
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
@@ -80,7 +81,7 @@ func (s *Service) Host(id host.Hostname) (*hostclient.HTTP, bool) {
 func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 	id := host.Hostname(hostname)
 	if id == "" {
-		id = "local"
+		id = host.HostLocal
 	}
 	c, ok := s.Host(id)
 	if !ok {
@@ -89,7 +90,9 @@ func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 	return c, nil
 }
 
-// Hosts returns a snapshot of all registered host IDs.
+// Hosts returns a snapshot of all registered host IDs, sorted
+// lexicographically so callers (UI, logs, tests) get a deterministic
+// order without having to sort themselves.
 func (s *Service) Hosts() []host.Hostname {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
@@ -97,6 +100,7 @@ func (s *Service) Hosts() []host.Hostname {
 	for id := range s.hosts {
 		ids = append(ids, id)
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
 }
 

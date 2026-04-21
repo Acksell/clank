@@ -93,18 +93,39 @@ func (m *Mux) register(mx *http.ServeMux) {
 
 // --- helpers ---
 
+func (m *Mux) writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		// Status/headers already flushed; we can't change the response
+		// shape, but log so failures are not invisible.
+		m.log.Printf("hubmux: writeJSON encode error: %v", err)
+	}
+}
+
+// writeJSON is the package-level shim used by handlers that don't have
+// access to the Mux receiver yet. Prefer (*Mux).writeJSON for new
+// handlers so encode errors get logged with the daemon logger.
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("hubmux: writeJSON encode error: %v", err)
+	}
 }
 
-func writeSSE(w io.Writer, event string, data interface{}) {
+// writeSSE writes a single Server-Sent Events frame. Returns the first
+// non-nil error from json.Marshal or the underlying writer so callers
+// can decide whether to abort the stream (typical: client disconnected).
+func writeSSE(w io.Writer, event string, data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal SSE %q payload: %w", event, err)
 	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData); err != nil {
+		return fmt.Errorf("write SSE %q frame: %w", event, err)
+	}
+	return nil
 }
 
 func writeBadRequest(w http.ResponseWriter, msg string) {
