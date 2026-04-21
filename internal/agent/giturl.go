@@ -5,6 +5,8 @@ package agent
 // it into a separate file keeps gitref.go focused on the type itself.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -14,10 +16,11 @@ import (
 // ".git") from any standard git URL form: https://, ssh://, scp-like
 // (git@host:owner/repo), or file://.
 //
-// Returns ("file", <cleaned-path>, nil) for file:// URLs since they have
-// no host; the path itself is the identity. The "file" prefix can't
-// collide with any real remote because real hosts canonicalize as
-// "<host>/<repo>" with no scheme prefix.
+// For file:// URLs the returned host is "file" when the URL has no
+// authority (file:///path) and "file://<authority>" when it does
+// (file://server/share). Without preserving the authority, two
+// distinct remotes like file://a/x and file://b/x would collapse to
+// the same identity and clone target.
 func parseGitURL(raw string) (host, path string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -55,7 +58,13 @@ func parseGitURL(raw string) (host, path string, err error) {
 		if path == "" {
 			return "", "", fmt.Errorf("file URL %q has empty path after trim", raw)
 		}
-		return "file", path, nil
+		host = "file"
+		if u.Host != "" {
+			// Preserve the authority so file://server/share/repo and
+			// file:///share/repo don't collapse to the same identity.
+			host = "file://" + strings.ToLower(u.Host)
+		}
+		return host, path, nil
 	}
 	if u.Host == "" {
 		return "", "", fmt.Errorf("URL %q has no host", raw)
@@ -73,15 +82,18 @@ func parseGitURL(raw string) (host, path string, err error) {
 // remote URL. Used by host.Service to pick a stable subdir under
 // ClonesDir for each remote.
 //
-// Format: lowercased "<host>-<path-with-slashes-as-dashes>", restricted
-// to [a-z0-9._-]. Dots, leading dots and ".."/"." are rejected to keep
-// the result safe to join into a path without escaping ClonesDir.
+// Format: lowercased "<host>-<path-with-slashes-as-dashes>" with all
+// chars outside [a-z0-9._-] replaced by "-", then a short hash of the
+// canonical (host, path) pair appended. The hash makes the result
+// collision-resistant: two distinct remotes that share the same lossy
+// sanitized name (e.g. case differences, escaped chars) get distinct
+// clone dirs and cannot accidentally reuse one checkout.
 //
 // Examples:
 //
-//	git@github.com:acksell/clank.git    → github.com-acksell-clank
-//	https://github.com/acksell/clank    → github.com-acksell-clank
-//	file:///srv/git/foo.git             → file--srv-git-foo
+//	git@github.com:acksell/clank.git    → github.com-acksell-clank-<hash>
+//	https://github.com/acksell/clank    → github.com-acksell-clank-<hash>
+//	file:///srv/git/foo.git             → file--srv-git-foo-<hash>
 func CloneDirName(remoteURL string) (string, error) {
 	host, path, err := parseGitURL(remoteURL)
 	if err != nil {
@@ -109,5 +121,8 @@ func CloneDirName(remoteURL string) (string, error) {
 	if strings.HasPrefix(name, ".") {
 		return "", fmt.Errorf("clone dir name for %q starts with dot: %q", remoteURL, name)
 	}
-	return name, nil
+	// Append a short hash of the canonical identity so distinct remotes
+	// that sanitize to the same name don't share a checkout.
+	sum := sha256.Sum256([]byte(host + "\x00" + path))
+	return name + "-" + hex.EncodeToString(sum[:6]), nil
 }
