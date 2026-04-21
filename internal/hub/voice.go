@@ -116,7 +116,13 @@ func (s *Service) HandleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Println("voice audio WebSocket connected, session created")
 
-	// Monitor voice session in background — clean up when it ends.
+	// Monitor voice session in background — clean up when it ends. If
+	// the session exits before the client disconnects (e.g. provider
+	// EOF, error), close the websocket so the handler's r.Context()
+	// fires and the connection record is released. Without the close,
+	// HandleVoiceAudio would block on the request context until the
+	// client noticed the silence and dropped, leaking voiceAudioConn
+	// in the meantime.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -127,7 +133,11 @@ func (s *Service) HandleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 		if s.voice == sess {
 			s.voice = nil
 		}
+		if s.voiceAudioConn == conn {
+			s.voiceAudioConn = nil
+		}
 		s.mu.Unlock()
+		conn.Close(websocket.StatusNormalClosure, "voice session ended")
 	}()
 
 	// Keep the handler alive until the connection closes — the HTTP
@@ -228,7 +238,7 @@ func (tp *hubToolProvider) SendMessage(ctx context.Context, sessionID string, te
 }
 
 func (tp *hubToolProvider) CreateSession(ctx context.Context, req agent.StartRequest) (*agent.SessionInfo, error) {
-	return tp.s.createSession(req)
+	return tp.s.CreateSession(ctx, req)
 }
 
 func (tp *hubToolProvider) AbortSession(ctx context.Context, sessionID string) error {
