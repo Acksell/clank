@@ -64,9 +64,17 @@ func RemoteURLs(dir string) (map[string]string, error) {
 		if line == "" {
 			continue
 		}
-		// Format: "<name>\t<url> (fetch|push)"
+		// Format: "<name>\t<url> (fetch|push)" — git emits one line per
+		// (remote, direction). Skip the push line so we don't silently
+		// overwrite the fetch URL when a remote is configured with
+		// distinct fetch/push targets (a real, if uncommon, setup).
+		// Callers want the fetch URL — that's the canonical identity
+		// for matching against GitRef.RemoteURL.
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 3 {
+			continue
+		}
+		if fields[2] != "(fetch)" {
 			continue
 		}
 		urls[fields[0]] = fields[1]

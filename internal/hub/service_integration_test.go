@@ -33,14 +33,14 @@ func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	pidPath := sockDir + "/test.pid"
 
 	d := NewWithPaths(sockPath, pidPath)
-	s.BackendManagers[agent.BackendOpenCode] = NewOpenCodeBackendManager()
-	s.BackendManagers[agent.BackendClaudeCode] = NewClaudeBackendManager()
+	d.BackendManagers[agent.BackendOpenCode] = NewOpenCodeBackendManager()
+	d.BackendManagers[agent.BackendClaudeCode] = NewClaudeBackendManager()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
 	go func() {
 		close(started)
-		s.Run()
+		d.Run()
 	}()
 	<-started
 	// Wait for socket to be ready.
@@ -51,7 +51,7 @@ func startTestDaemonWithRealOpenCode(t *testing.T) (*Client, func()) {
 	cleanup := func() {
 		cancel()
 		_ = ctx // keep ctx referenced
-		s.Stop()
+		d.Stop()
 		time.Sleep(500 * time.Millisecond)
 		os.RemoveAll(sockDir)
 	}
