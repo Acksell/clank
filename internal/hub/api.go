@@ -36,6 +36,15 @@ var ErrInvalidVisibility = errors.New("invalid visibility")
 // ErrInvalidRequest is returned for input-validation failures (mapped to 400).
 var ErrInvalidRequest = errors.New("invalid request")
 
+// ErrPartialActivation is returned by ForkSession when the new session
+// row was persisted and broadcast successfully but the backend failed
+// to activate. Callers receive a populated *SessionInfo alongside this
+// error and should treat the operation as a partial success: the user
+// can navigate to the session, but it has no live agent yet. Use
+// errors.Is to detect; the wrapped chain carries the underlying
+// activation failure for diagnostics.
+var ErrPartialActivation = errors.New("session forked but backend activation failed")
+
 // --- Sessions ---
 
 // Sessions returns a point-in-time snapshot of all session metadata
@@ -279,8 +288,19 @@ func (s *Service) ForkSession(ctx context.Context, id, messageID string) (*agent
 
 	if err := s.activateBackend(newID, newMS); err != nil {
 		s.log.Printf("fork: failed to activate backend for %s: %v", newID, err)
-		// Session is persisted but backend is inactive; user can still
-		// navigate to it.
+		// Session is persisted and broadcast so the user can still
+		// navigate to it, but callers must learn that activation
+		// failed — silently returning success here causes the UI to
+		// show a session that will never produce events. Wrap with
+		// ErrPartialActivation so handlers can errors.Is-detect this
+		// condition while still surfacing the underlying cause.
+		s.broadcast(agent.Event{
+			Type:      agent.EventSessionCreate,
+			SessionID: newID,
+			Timestamp: now,
+			Data:      newInfo,
+		})
+		return &newInfo, fmt.Errorf("%w: %s: %w", ErrPartialActivation, newID, err)
 	}
 
 	s.broadcast(agent.Event{

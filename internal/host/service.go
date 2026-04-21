@@ -336,17 +336,17 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 	var base string
 
 	if ref.LocalPath != "" {
-		usable, reason, hardErr := s.tryLocalPath(ref.LocalPath)
-		if hardErr != nil {
-			return "", hardErr
+		res := s.tryLocalPath(ref.LocalPath)
+		if res.HardErr != nil {
+			return "", res.HardErr
 		}
-		if usable {
+		if res.Usable {
 			base = ref.LocalPath
 		} else if ref.RemoteURL == "" {
 			// Surface the actual reason rather than a generic "not
 			// usable" — the caller has no remote fallback, so they
 			// need to know why their path was rejected.
-			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, reason)
+			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, res.SoftFail)
 		}
 	}
 
@@ -388,43 +388,55 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 // tryLocalPath inspects path and reports whether it can be used as a
 // local repo root on this host.
 //
-// Return shape: (usable, reason, hardErr).
+// localPathResult is the structured outcome of tryLocalPath, replacing
+// the prior (bool, error, error) return shape that conflated three
+// distinct cases. Exactly one of {Usable, SoftFail, HardErr} is
+// meaningful per result:
 //
-//   - usable=true,  reason=nil,  hardErr=nil:  use path directly.
-//   - usable=false, reason!=nil, hardErr=nil:  soft fail — path is
-//     missing or not a git repo on this host. Caller may fall back to
-//     cloning RemoteURL. The reason is surfaced if no fallback exists.
-//   - usable=false, reason=nil,  hardErr!=nil: caller bug — relative
-//     path, symlink failure, or a path that IS inside a git repo but
-//     isn't the root. Never fall back.
-func (s *Service) tryLocalPath(path string) (bool, error, error) {
+//   - Usable=true:                use the path directly.
+//   - SoftFail!=nil:              path is missing or not a git repo on
+//     this host. Caller may fall back to cloning RemoteURL; the reason
+//     is surfaced if no fallback exists.
+//   - HardErr!=nil:               caller bug — relative path, symlink
+//     failure, or a path that IS inside a git repo but isn't its root.
+//     Never fall back.
+type localPathResult struct {
+	Usable   bool
+	SoftFail error
+	HardErr  error
+}
+
+// tryLocalPath inspects path and reports whether it can be used as a
+// session work directory on this host. See localPathResult for the
+// semantics of each field.
+func (s *Service) tryLocalPath(path string) localPathResult {
 	if !filepath.IsAbs(path) {
-		return false, nil, fmt.Errorf("local_path must be absolute, got %q", path)
+		return localPathResult{HardErr: fmt.Errorf("local_path must be absolute, got %q", path)}
 	}
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return false, fmt.Errorf("path does not exist on this host"), nil
+			return localPathResult{SoftFail: fmt.Errorf("path does not exist on this host")}
 		}
-		return false, nil, fmt.Errorf("stat local_path %q: %w", path, err)
+		return localPathResult{HardErr: fmt.Errorf("stat local_path %q: %w", path, err)}
 	}
 	root, err := git.RepoRoot(path)
 	if err != nil {
-		return false, fmt.Errorf("not a git repo"), nil
+		return localPathResult{SoftFail: fmt.Errorf("not a git repo")}
 	}
 	// Resolve symlinks on both sides because macOS reports /var/folders
 	// as /private/var/folders for the root.
 	givenAbs, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return false, nil, fmt.Errorf("resolve symlinks for %q: %w", path, err)
+		return localPathResult{HardErr: fmt.Errorf("resolve symlinks for %q: %w", path, err)}
 	}
 	rootAbs, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return false, nil, fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)
+		return localPathResult{HardErr: fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)}
 	}
 	if filepath.Clean(rootAbs) != filepath.Clean(givenAbs) {
-		return false, nil, fmt.Errorf("local_path %q is not the repo root (root is %q)", path, root)
+		return localPathResult{HardErr: fmt.Errorf("local_path %q is not the repo root (root is %q)", path, root)}
 	}
-	return true, nil, nil
+	return localPathResult{Usable: true}
 }
 
 // Session returns the SessionBackend registered under id, or nil and

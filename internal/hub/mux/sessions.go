@@ -1,6 +1,7 @@
 package hubmux
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/acksell/clank/internal/agent"
@@ -132,6 +133,16 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info, err := m.svc.ForkSession(r.Context(), r.PathValue("id"), body.MessageID)
+	// Partial-success: the fork created a session row (info != nil) but
+	// activating its backend failed. Surface the cause via a header so
+	// existing clients keep working (body remains a SessionInfo) while
+	// curious clients can read X-Partial-Activation-Error to diagnose
+	// why the new session has no live backend yet.
+	if err != nil && errors.Is(err, hub.ErrPartialActivation) && info != nil {
+		w.Header().Set("X-Partial-Activation-Error", err.Error())
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
 	if err != nil {
 		writeServiceErr(w, err)
 		return
