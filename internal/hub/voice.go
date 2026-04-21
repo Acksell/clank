@@ -186,13 +186,18 @@ func (tp *hubToolProvider) SearchSessions(ctx context.Context, p agent.SearchPar
 func (tp *hubToolProvider) GetSession(ctx context.Context, id string) (*agent.SessionInfo, error) {
 	tp.s.mu.RLock()
 	ms, ok := tp.s.sessions[id]
-	tp.s.mu.RUnlock()
 	if !ok {
+		tp.s.mu.RUnlock()
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
+	// Copy the fields we need under the lock — ms.info and ms.backend
+	// are mutated under s.mu (e.g. activateBackend), so reading them
+	// after RUnlock would race.
 	info := ms.info
-	if ms.backend != nil {
-		info.Status = ms.backend.Status()
+	backend := ms.backend
+	tp.s.mu.RUnlock()
+	if backend != nil {
+		info.Status = backend.Status()
 	}
 	return &info, nil
 }
@@ -200,31 +205,49 @@ func (tp *hubToolProvider) GetSession(ctx context.Context, id string) (*agent.Se
 func (tp *hubToolProvider) GetSessionMessages(ctx context.Context, sessionID string) ([]agent.MessageData, error) {
 	tp.s.mu.RLock()
 	ms, ok := tp.s.sessions[sessionID]
-	tp.s.mu.RUnlock()
 	if !ok {
+		tp.s.mu.RUnlock()
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
-	if ms.backend == nil {
-		// Try to activate a read-only backend.
+	backend := ms.backend
+	tp.s.mu.RUnlock()
+	if backend == nil {
+		// Try to activate a read-only backend. activateBackend takes
+		// s.mu internally and assigns ms.backend; re-snapshot
+		// afterwards to use the assigned handle without dereferencing
+		// ms outside the lock.
 		if err := tp.s.activateBackend(sessionID, ms); err != nil {
 			return nil, fmt.Errorf("activate backend: %w", err)
 		}
+		tp.s.mu.RLock()
+		backend = ms.backend
+		tp.s.mu.RUnlock()
+		if backend == nil {
+			return nil, fmt.Errorf("activate backend: no backend after activation for %s", sessionID)
+		}
 	}
-	return ms.backend.Messages(ctx)
+	return backend.Messages(ctx)
 }
 
 func (tp *hubToolProvider) SendMessage(ctx context.Context, sessionID string, text string) error {
 	tp.s.mu.RLock()
 	ms, ok := tp.s.sessions[sessionID]
-	tp.s.mu.RUnlock()
 	if !ok {
+		tp.s.mu.RUnlock()
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	if ms.backend == nil {
+	backend := ms.backend
+	tp.s.mu.RUnlock()
+	if backend == nil {
 		return fmt.Errorf("session %s has no active backend", sessionID)
 	}
+	// Capture ctx into a local for the goroutine. The backend call
+	// must use the caller's ctx so cancelled voice/tool requests stop
+	// further backend work; tp.s.ctx would only terminate at daemon
+	// shutdown, defeating per-request cancellation.
+	sendCtx := ctx
 	go func() {
-		if err := ms.backend.SendMessage(tp.s.ctx, agent.SendMessageOpts{Text: text}); err != nil {
+		if err := backend.SendMessage(sendCtx, agent.SendMessageOpts{Text: text}); err != nil {
 			tp.s.log.Printf("voice send_message to %s: %v", sessionID, err)
 			tp.s.broadcast(agent.Event{
 				Type:      agent.EventError,
@@ -244,14 +267,16 @@ func (tp *hubToolProvider) CreateSession(ctx context.Context, req agent.StartReq
 func (tp *hubToolProvider) AbortSession(ctx context.Context, sessionID string) error {
 	tp.s.mu.RLock()
 	ms, ok := tp.s.sessions[sessionID]
-	tp.s.mu.RUnlock()
 	if !ok {
+		tp.s.mu.RUnlock()
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	if ms.backend == nil {
+	backend := ms.backend
+	tp.s.mu.RUnlock()
+	if backend == nil {
 		return fmt.Errorf("session %s has no active backend", sessionID)
 	}
-	return ms.backend.Abort(ctx)
+	return backend.Abort(ctx)
 }
 
 func (tp *hubToolProvider) KnownProjectDirs(ctx context.Context) ([]string, error) {
