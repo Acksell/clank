@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,7 +66,10 @@ The daemon is auto-started if not already running.`,
 				return runComposing(projectDir, worktreeBranch)
 			}
 
-			// Determine project directory.
+			// Determine project directory. Resolve to an absolute path
+			// so that GitRef.LocalPath is stable regardless of where
+			// the daemon happens to be running from when it consumes
+			// the request.
 			if projectDir == "" {
 				cwd, err := os.Getwd()
 				if err != nil {
@@ -73,6 +77,11 @@ The daemon is auto-started if not already running.`,
 				}
 				projectDir = cwd
 			}
+			absProjectDir, err := filepath.Abs(projectDir)
+			if err != nil {
+				return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
+			}
+			projectDir = absProjectDir
 
 			// Resolve backend type.
 			bt := agent.BackendOpenCode // default
@@ -182,6 +191,11 @@ func runComposing(projectDir, worktreeBranch string) error {
 		}
 		projectDir = cwd
 	}
+	absProjectDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("resolve project dir %q: %w", projectDir, err)
+	}
+	projectDir = absProjectDir
 
 	model := tui.NewSessionViewComposing(client, projectDir)
 	model.SetWorktreeBranch(worktreeBranch)
