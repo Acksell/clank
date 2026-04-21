@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -46,6 +47,21 @@ func newHTTPSessionBackend(c *HTTP, sessionID, externalID string, st agent.Sessi
 	}
 }
 
+// errEmptyHTTPSessionID guards against constructing requests for an
+// empty backend session id, which would silently produce malformed
+// routes like "/sessions//start".
+var errEmptyHTTPSessionID = errors.New("http session backend: empty session id")
+
+// path builds a URL path with the session id properly escaped so ids
+// containing reserved characters (slash, question mark, hash, …) or
+// empty ids cannot produce malformed routes.
+func (b *httpSessionBackend) path(suffix string) (string, error) {
+	if b.sessionID == "" {
+		return "", errEmptyHTTPSessionID
+	}
+	return "/sessions/" + url.PathEscape(b.sessionID) + suffix, nil
+}
+
 func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) error {
 	// Host mux returns the post-Start SessionSnapshot. Decoding into a
 	// local struct avoids a dependency on hostmux from this package.
@@ -54,7 +70,11 @@ func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) 
 		ExternalID string              `json:"external_id"`
 		Status     agent.SessionStatus `json:"status"`
 	}
-	if err := b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/start", req, &snap); err != nil {
+	p, err := b.path("/start")
+	if err != nil {
+		return err
+	}
+	if err := b.c.do(ctx, http.MethodPost, p, req, &snap); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -67,15 +87,27 @@ func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) 
 }
 
 func (b *httpSessionBackend) Watch(ctx context.Context) error {
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/watch", nil, nil)
+	p, err := b.path("/watch")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, nil, nil)
 }
 
 func (b *httpSessionBackend) SendMessage(ctx context.Context, opts agent.SendMessageOpts) error {
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/message", opts, nil)
+	p, err := b.path("/message")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, opts, nil)
 }
 
 func (b *httpSessionBackend) Abort(ctx context.Context) error {
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/abort", nil, nil)
+	p, err := b.path("/abort")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, nil, nil)
 }
 
 // Stop releases the session on the host. Maps to POST /sessions/{id}/stop.
@@ -83,7 +115,11 @@ func (b *httpSessionBackend) Stop() error {
 	// Use a background context — Stop is invoked during shutdown when the
 	// caller's context may already be cancelled. The HTTP write itself
 	// is fast.
-	return b.c.do(context.Background(), http.MethodPost, "/sessions/"+b.sessionID+"/stop", nil, nil)
+	p, err := b.path("/stop")
+	if err != nil {
+		return err
+	}
+	return b.c.do(context.Background(), http.MethodPost, p, nil, nil)
 }
 
 func (b *httpSessionBackend) Status() agent.SessionStatus {
@@ -100,15 +136,22 @@ func (b *httpSessionBackend) SessionID() string {
 
 func (b *httpSessionBackend) Messages(ctx context.Context) ([]agent.MessageData, error) {
 	var out []agent.MessageData
-	err := b.c.do(ctx, http.MethodGet, "/sessions/"+b.sessionID+"/messages", nil, &out)
-	return out, err
+	p, err := b.path("/messages")
+	if err != nil {
+		return nil, err
+	}
+	return out, b.c.do(ctx, http.MethodGet, p, nil, &out)
 }
 
 func (b *httpSessionBackend) Revert(ctx context.Context, messageID string) error {
 	body := struct {
 		MessageID string `json:"message_id"`
 	}{messageID}
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/revert", body, nil)
+	p, err := b.path("/revert")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, body, nil)
 }
 
 func (b *httpSessionBackend) Fork(ctx context.Context, messageID string) (agent.ForkResult, error) {
@@ -116,15 +159,22 @@ func (b *httpSessionBackend) Fork(ctx context.Context, messageID string) (agent.
 		MessageID string `json:"message_id"`
 	}{messageID}
 	var out agent.ForkResult
-	err := b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/fork", body, &out)
-	return out, err
+	p, err := b.path("/fork")
+	if err != nil {
+		return out, err
+	}
+	return out, b.c.do(ctx, http.MethodPost, p, body, &out)
 }
 
 func (b *httpSessionBackend) RespondPermission(ctx context.Context, permissionID string, allow bool) error {
 	body := struct {
 		Allow bool `json:"allow"`
 	}{allow}
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/permissions/"+permissionID+"/reply", body, nil)
+	p, err := b.path("/permissions/" + url.PathEscape(permissionID) + "/reply")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, body, nil)
 }
 
 // Events returns a channel of agent.Event values translated from the
@@ -229,7 +279,6 @@ func parseSSE(r io.Reader, onEvent func(eventType string, data []byte)) {
 			// Comment line; ignore.
 		default:
 			// Unknown line; ignore for forward-compat.
-			_ = fmt.Sprintf // keep import in sync if we add logging later
 		}
 	}
 	// Trailing event without blank-line terminator.
