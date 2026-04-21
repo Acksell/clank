@@ -773,12 +773,22 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // Results are shown in a single flat "Results" group, ranked by relevance
 // (the order returned by the daemon).
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
-	// Apply client-side structured filters (e.g. project) on top of
-	// the daemon's text search results.
+	// Apply client-side structured filters (e.g. project, branch) on
+	// top of the daemon's text search results so the search view
+	// honours the same sidebar selection as the unfiltered list.
 	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+	if branch := m.sidebar.SelectedBranch(); branch != "" {
+		filtered := make([]agent.SessionInfo, 0, len(sessions))
+		for _, s := range sessions {
+			if s.GitRef.WorktreeBranch == branch {
 				filtered = append(filtered, s)
 			}
 		}
@@ -1425,12 +1435,23 @@ func (m *InboxModel) sessionPaneWidth() int {
 // updateBranchSessionCounts computes per-branch session status summaries
 // from cachedSessions and passes them to the sidebar for display.
 // Sessions are attributed to branches by WorktreeBranch — the canonical
-// branch identity carried on the wire (§7.1).
+// branch identity carried on the wire (§7.1). When a project filter is
+// active the counts are scoped to that repo so the sidebar reflects the
+// same world the main pane is showing; otherwise unrelated repos that
+// happen to share a branch name (e.g. "main") would inflate the count.
 func (m *InboxModel) updateBranchSessionCounts() {
 	statusMap := make(map[string]branchSessionStatus)
+	scoped := m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "")
+	repoKey := ""
+	if scoped {
+		repoKey = agent.RepoKey(m.gitRef)
+	}
 	for _, s := range m.cachedSessions {
 		branch := s.GitRef.WorktreeBranch
 		if branch == "" {
+			continue
+		}
+		if scoped && agent.RepoKey(s.GitRef) != repoKey {
 			continue
 		}
 		st := statusMap[branch]
