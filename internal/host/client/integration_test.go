@@ -21,13 +21,17 @@ import (
 // fixture for the wire-layer SUT (mux + http client + SSE bridge). It
 // is not a mock of the system under test.
 type stubBackend struct {
-	events     chan agent.Event
-	id         string
-	status     agent.SessionStatus
-	startedReq agent.StartRequest
-	sentMsg    agent.SendMessageOpts
-	aborted    bool
-	stopped    bool
+	events chan agent.Event
+	// id is returned by SessionID(). For the real opencode backend this
+	// is empty at construction and only populated after Start creates
+	// the remote session; use idAfterStart to simulate that pattern.
+	id           string
+	idAfterStart string
+	status       agent.SessionStatus
+	startedReq   agent.StartRequest
+	sentMsg      agent.SendMessageOpts
+	aborted      bool
+	stopped      bool
 }
 
 func newStubBackend(id string) *stubBackend {
@@ -40,6 +44,9 @@ func newStubBackend(id string) *stubBackend {
 
 func (b *stubBackend) Start(_ context.Context, req agent.StartRequest) error {
 	b.startedReq = req
+	if b.idAfterStart != "" {
+		b.id = b.idAfterStart
+	}
 	return nil
 }
 func (b *stubBackend) Watch(_ context.Context) error { return nil }
@@ -228,6 +235,71 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 	}
 	if !stub.aborted {
 		t.Error("stub.aborted = false, want true")
+	}
+}
+
+// TestHTTPRoundTrip_StartPopulatesExternalID is a regression test for a
+// bug where the client-side httpSessionBackend returned a stale empty
+// ExternalID forever because:
+//
+//  1. POST /sessions (CreateBackend) returns before the backend has
+//     opened a real remote session, so the response body carries
+//     ExternalID="".
+//  2. POST /sessions/{id}/start then drives the backend to open its
+//     remote session (which is where the real opencode sessionID
+//     becomes known), but the host handler returned 204 No Content,
+//     so the client never learned the new ExternalID.
+//
+// Result: SessionBackend.SessionID() kept returning "" on the Hub even
+// after a successful Start, so the Hub persisted external_id="" on the
+// session row — causing duplicate rows to be created from
+// discoverSessions on next TUI open / daemon restart.
+//
+// The fix: Start returns a SessionSnapshot body; the client updates
+// its cached externalID and status from the response.
+func TestHTTPRoundTrip_StartPopulatesExternalID(t *testing.T) {
+	t.Parallel()
+
+	// Mirror how opencode's real backend only learns its sessionID
+	// after the remote session is opened inside Start().
+	stub := newStubBackend("")
+	stub.idAfterStart = "ext-late"
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &stubManager{next: stub},
+		},
+	})
+	t.Cleanup(svc.Shutdown)
+	dir := initGitRepo(t)
+	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
+	t.Cleanup(srv.Close)
+	c := hostclient.NewHTTP(srv.URL, nil)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	be, _, err := c.Sessions().Create(ctx, "sid-late", agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+		Prompt:  "hi",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Before Start the stub still returns "" for SessionID, so the
+	// client's cached externalID is also "".
+	if got := be.SessionID(); got != "" {
+		t.Errorf("before Start: SessionID = %q, want empty", got)
+	}
+
+	if err := be.Start(ctx, agent.StartRequest{Backend: agent.BackendOpenCode}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// After Start the host backend knows its external ID; the client
+	// must learn it from the Start response.
+	if got := be.SessionID(); got != "ext-late" {
+		t.Errorf("after Start: SessionID = %q, want ext-late", got)
 	}
 }
 

@@ -108,8 +108,15 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	// status while the agent is working.
 	b.setStatus(StatusBusy)
 
-	// Send the initial prompt via SDK. This blocks until the full response
-	// is received, but events stream in via SSE in the background.
+	// Build prompt params now (cheap), then dispatch the actual Prompt
+	// call asynchronously. The SDK's Session.Prompt blocks for the entire
+	// LLM response (often 5–60s). Returning early lets the hub observe
+	// SessionID() immediately and persist ExternalID, which closes the
+	// race window where a concurrent discover would create a duplicate
+	// session row. See TestDiscoverWhileSessionPromptInflight.
+	//
+	// We use b.ctx (not the caller's ctx) so the prompt survives the
+	// /start HTTP request lifetime; it is cancelled by Stop().
 	params := opencode.SessionPromptParams{
 		Parts: opencode.F([]opencode.SessionPromptParamsPartUnion{
 			opencode.TextPartInputParam{
@@ -127,20 +134,32 @@ func (b *OpenCodeBackend) Start(ctx context.Context, req StartRequest) error {
 			ProviderID: opencode.F(req.Model.ProviderID),
 		})
 	}
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
-	if err != nil && isConnectionError(err) && b.resolver != nil {
-		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
-		}
-	}
-	if err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("send prompt: %w", err)
-	}
+	sid := b.sessionID
+	go b.runPrompt(sid, params)
 
 	// Don't set status here — the SSE stream will deliver session.idle
 	// which triggers the idle transition.
 	return nil
+}
+
+// runPrompt dispatches Session.Prompt and translates errors into a status
+// transition + EventError. Used by Start to keep the prompt async without
+// losing failure visibility.
+func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
+	_, err := b.client.Session.Prompt(b.ctx, sid, params)
+	if err != nil && isConnectionError(err) && b.resolver != nil {
+		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
+			_, err = b.client.Session.Prompt(b.ctx, sid, params)
+		}
+	}
+	if err != nil {
+		// Don't surface ctx-cancelled errors from Stop().
+		if b.ctx.Err() != nil {
+			return
+		}
+		b.setStatus(StatusError)
+		b.emitError(fmt.Sprintf("send prompt: %v", err))
+	}
 }
 
 // Watch starts listening for SSE events on this session without sending a
@@ -1714,7 +1733,7 @@ func (m *OpenCodeServerManager) ListSessionsFromServer(ctx context.Context, serv
 	var result []SessionSnapshot
 	for _, s := range *sessions {
 		if s.ParentID != "" {
-			continue // Skip child/forked sessions
+			continue // Skip subtask sessions
 		}
 		result = append(result, SessionSnapshot{
 			ID:              s.ID,

@@ -90,7 +90,17 @@ func (m *Mux) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	snap := SessionSnapshot{
+		SessionID:  id,
+		ExternalID: b.SessionID(),
+		Status:     b.Status(),
+	}
+	// Return the post-Start snapshot so the client can refresh its
+	// cached ExternalID/Status. Some backends (opencode) only learn
+	// their sessionID inside Start; without this the client keeps the
+	// empty ExternalID it received from POST /sessions and persists
+	// external_id="" on the Hub, which breaks session deduplication.
+	writeJSON(w, http.StatusOK, snap)
 }
 
 // HOST

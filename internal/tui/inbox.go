@@ -206,7 +206,12 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 }
 
 func (m *InboxModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.discoverCmd(), m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	// Note: discoverCmd is intentionally NOT in the Init batch. Each TUI
+	// startup used to fire discover, which races with in-flight CreateSession
+	// calls in other TUIs/agents and produced duplicate inbox rows. Discover
+	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
+	// future explicit rediscover will be a keybind.
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}

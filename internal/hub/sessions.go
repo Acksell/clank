@@ -65,20 +65,31 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 	// snapshot while preserving user-owned fields (visibility, follow_up, draft,
 	// last_read_at) from the in-memory/DB copy.
 	added := 0
+	matchedExt := 0
+	matchedSID := 0
 	s.mu.Lock()
 	for _, snap := range snapshots {
 		var existingMS *managedSession
+		var matchKind string
 		for _, existing := range s.sessions {
 			if existing.info.ExternalID == snap.ID {
 				existingMS = existing
+				matchKind = "extID"
 				break
 			}
 			if existing.backend != nil && existing.backend.SessionID() == snap.ID {
 				existingMS = existing
+				matchKind = "backendSID"
 				break
 			}
 		}
 		if existingMS != nil {
+			if matchKind == "extID" {
+				matchedExt++
+			} else {
+				matchedSID++
+			}
+			s.log.Printf("discover: snap extID=%s matched existing hub_id=%s via %s", snap.ID, existingMS.info.ID, matchKind)
 			existingMS.info.Title = snap.Title
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
@@ -123,9 +134,12 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		}
 		s.sessions[id] = &managedSession{info: info, backend: nil}
 		s.persistSession(s.sessions[id])
+		s.log.Printf("discover: snap extID=%s NEW → hub_id=%s dir=%s", snap.ID, id, snap.Directory)
 		added++
 	}
 	s.mu.Unlock()
+
+	s.log.Printf("discover: %d snapshots, %d matched (extID=%d, backendSID=%d), %d added", len(snapshots), matchedExt+matchedSID, matchedExt, matchedSID, added)
 
 	return DiscoverResult{Discovered: added, Total: len(snapshots)}, nil
 }
@@ -417,6 +431,7 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
 
+	s.log.Printf("DBG hub.runBackend sid=%s agent=%q calling Start", id, req.Agent)
 	if err := ms.backend.Start(s.ctx, req); err != nil {
 		s.log.Printf("session %s: backend start error: %v", id, err)
 		s.updateSessionStatus(id, agent.StatusError)
@@ -431,7 +446,8 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 
 	// After Start() returns, capture the backend's native session ID so
 	// future discover calls can deduplicate against it.
-	if extID := ms.backend.SessionID(); extID != "" {
+	extID := ms.backend.SessionID()
+	if extID != "" {
 		s.mu.Lock()
 		if ms2, ok := s.sessions[id]; ok {
 			ms2.info.ExternalID = extID

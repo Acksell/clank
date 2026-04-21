@@ -17,17 +17,19 @@ import (
 // method call into an HTTP request against the host. Constructed by
 // HTTP.CreateSession; one instance per session.
 //
-// Status() and SessionID() are served from a local cache. The cache for
-// Status is updated by the Events() goroutine whenever it sees a
-// status-change event, so that subsequent Status() calls reflect the
-// latest known state without an extra HTTP round-trip.
+// Status(), SessionID() are served from a local cache guarded by mu.
+// The cache is updated by:
+//   - Start(), which refreshes externalID+status from the Start response
+//     (some backends, e.g. opencode, only learn their real sessionID
+//     once Start has opened the remote session).
+//   - the Events() goroutine, whenever it observes a status-change event.
 type httpSessionBackend struct {
-	c          *HTTP
-	sessionID  string
-	externalID string
+	c         *HTTP
+	sessionID string
 
-	mu     sync.RWMutex
-	status agent.SessionStatus
+	mu         sync.RWMutex
+	externalID string
+	status     agent.SessionStatus
 
 	// Events() is lazy-initialised; eventsCh and eventsOnce guard
 	// the single-subscription invariant.
@@ -45,7 +47,23 @@ func newHTTPSessionBackend(c *HTTP, sessionID, externalID string, st agent.Sessi
 }
 
 func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) error {
-	return b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/start", req, nil)
+	// Host mux returns the post-Start SessionSnapshot. Decoding into a
+	// local struct avoids a dependency on hostmux from this package.
+	var snap struct {
+		SessionID  string              `json:"session_id"`
+		ExternalID string              `json:"external_id"`
+		Status     agent.SessionStatus `json:"status"`
+	}
+	if err := b.c.do(ctx, http.MethodPost, "/sessions/"+b.sessionID+"/start", req, &snap); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.externalID = snap.ExternalID
+	if snap.Status != "" {
+		b.status = snap.Status
+	}
+	b.mu.Unlock()
+	return nil
 }
 
 func (b *httpSessionBackend) Watch(ctx context.Context) error {
@@ -75,6 +93,8 @@ func (b *httpSessionBackend) Status() agent.SessionStatus {
 }
 
 func (b *httpSessionBackend) SessionID() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	return b.externalID
 }
 
