@@ -674,7 +674,7 @@ func (s *Service) mergeBranch(_ context.Context, projectDir, branch, commitMessa
 		return MergeResult{}, fmt.Errorf("check worktree clean: %w", err)
 	}
 	if !clean {
-		return MergeResult{}, ErrMainDirty
+		return MergeResult{}, ErrTargetDirty
 	}
 
 	mergeMsg := fmt.Sprintf("Merge branch '%s'", branch)

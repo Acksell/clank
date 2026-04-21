@@ -24,9 +24,11 @@ var (
 	// supplied for the auto-commit.
 	ErrCommitMessageRequired = errors.New("host: commit_message is required when worktree has uncommitted changes")
 
-	// ErrMainDirty is returned when MergeBranch finds the default-branch
-	// worktree has uncommitted changes.
-	ErrMainDirty = errors.New("host: main worktree has uncommitted changes; commit or stash them first")
+	// ErrTargetDirty is returned when MergeBranch finds the merge
+	// target's worktree has uncommitted changes. Named branch-agnostic
+	// because the target may be any branch (default branch, a release
+	// branch, etc.) — not always "main".
+	ErrTargetDirty = errors.New("host: merge target worktree has uncommitted changes; commit or stash them first")
 
 	// ErrMergeConflict is returned when the merge produces a conflict
 	// that MergeBranch has already rolled back.

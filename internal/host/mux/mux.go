@@ -89,7 +89,7 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errResp{Code: "nothing_to_merge", Error: err.Error()})
 	case errors.Is(err, host.ErrCommitMessageRequired):
 		writeJSON(w, http.StatusConflict, errResp{Code: "commit_message_required", Error: err.Error()})
-	case errors.Is(err, host.ErrMainDirty):
+	case errors.Is(err, host.ErrTargetDirty):
 		writeJSON(w, http.StatusConflict, errResp{Code: "main_dirty", Error: err.Error()})
 	case errors.Is(err, host.ErrMergeConflict):
 		writeJSON(w, http.StatusConflict, errResp{Code: "merge_conflict", Error: err.Error()})

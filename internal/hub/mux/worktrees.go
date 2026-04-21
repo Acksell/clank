@@ -18,7 +18,7 @@ func writeRepoErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, host.ErrCannotMergeDefault),
 		errors.Is(err, host.ErrNothingToMerge),
 		errors.Is(err, host.ErrCommitMessageRequired),
-		errors.Is(err, host.ErrMainDirty),
+		errors.Is(err, host.ErrTargetDirty),
 		errors.Is(err, host.ErrMergeConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	default:

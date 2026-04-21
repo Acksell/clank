@@ -96,6 +96,15 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 	workDir := b.projectDir
 	b.mu.Unlock()
 
+	// Defensive guard: an empty workDir would silently inherit the
+	// daemon's cwd via claudecode.WithCwd(""), which usually means a
+	// caller forgot to populate ProjectDir before constructing the
+	// backend. Fail fast instead of running the agent against the
+	// wrong tree.
+	if workDir == "" {
+		return fmt.Errorf("claude backend: project dir is empty; refuse to inherit daemon cwd")
+	}
+
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),

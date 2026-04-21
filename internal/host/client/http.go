@@ -111,7 +111,7 @@ func errorFromResp(resp *http.Response) error {
 	case "commit_message_required":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrCommitMessageRequired)
 	case "main_dirty":
-		return fmt.Errorf("%s: %w", e.Error, host.ErrMainDirty)
+		return fmt.Errorf("%s: %w", e.Error, host.ErrTargetDirty)
 	case "merge_conflict":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrMergeConflict)
 	default:
