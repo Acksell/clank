@@ -3,10 +3,13 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -14,6 +17,27 @@ import (
 	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
 )
+
+// isBenignVoiceExit reports whether err from sess.Wait() represents an
+// expected shutdown path — client closed the WebSocket, context was
+// canceled by HandleVoiceAudio's defer, or the upstream voice agent
+// reached end-of-stream. Surfacing these at error level was noisy and
+// obscured real failures (e.g. provider auth rejections). Callers
+// should still log the unusual cases.
+func isBenignVoiceExit(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
+		return true
+	}
+	// WebSocket normal-closure paths don't expose a sentinel; the coder
+	// library wraps them into a string. Match conservatively.
+	msg := err.Error()
+	return strings.Contains(msg, "StatusNormalClosure") ||
+		strings.Contains(msg, "StatusGoingAway") ||
+		strings.Contains(msg, "use of closed network connection")
+}
 
 // HandleVoiceAudio upgrades to a WebSocket for bidirectional audio
 // streaming, then creates the voice session immediately.
@@ -96,8 +120,8 @@ func (s *Service) HandleVoiceAudio(w http.ResponseWriter, r *http.Request) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := sess.Wait(); err != nil {
-			s.log.Printf("voice session ended: %v", err)
+		if err := sess.Wait(); err != nil && !isBenignVoiceExit(err) {
+			s.log.Printf("voice session ended with error: %v", err)
 		}
 		s.mu.Lock()
 		if s.voice == sess {

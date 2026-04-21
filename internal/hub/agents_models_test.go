@@ -158,8 +158,14 @@ func TestDaemonListAgentsReturnsCachedFromStore(t *testing.T) {
 		t.Error("expected background refresh to be triggered")
 	}
 
-	// After the refresh completes, subsequent requests should get the fresh data.
-	time.Sleep(200 * time.Millisecond)
+	// After the refresh completes, subsequent requests should get the
+	// fresh data. Poll rather than sleep — the refresh runs on a
+	// goroutine and finishes well under 200ms in practice, but a
+	// congested CI can make the fixed sleep flaky either way.
+	waitFor(t, 2*time.Second, "cache refreshed to 3 agents", func() bool {
+		got, err := client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
+		return err == nil && len(got) == 3
+	})
 
 	agents, err = client.Backend(agent.BackendOpenCode).Agents(ctx, host.HostLocal, testRef)
 	if err != nil {
