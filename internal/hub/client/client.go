@@ -32,6 +32,7 @@ package hubclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -150,9 +151,18 @@ func IsRunning() (bool, int, error) {
 		return false, pid, nil
 	}
 	if err := proc.Signal(syscall.Signal(0)); err != nil {
-		// Recorded PID is gone. Probe the socket: a recycled-PID
-		// scenario where a fresh daemon rebinds under a new PID would
-		// otherwise lose its socket here.
+		// EPERM means the process exists but we lack permission to
+		// signal it (different uid). The daemon is alive — return
+		// running=true so the caller doesn't try to start a second
+		// one. Only ESRCH (and the nil-error path that already
+		// returned above) prove the PID is gone.
+		if errors.Is(err, syscall.EPERM) {
+			return true, pid, nil
+		}
+		// Recorded PID is gone (ESRCH or anything else). Probe the
+		// socket: a recycled-PID scenario where a fresh daemon
+		// rebinds under a new PID would otherwise lose its socket
+		// here.
 		os.Remove(pidPath)
 		if !socketAlive() {
 			if sockPath, _ := SocketPath(); sockPath != "" {
