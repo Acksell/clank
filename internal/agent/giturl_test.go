@@ -11,12 +11,14 @@ import (
 // identity/clone target.
 func TestParseGitURLFilePreservesAuthority(t *testing.T) {
 	t.Parallel()
-	_, _, errA := parseGitURL("file://server/share/repo.git")
+	hostA, pathA, errA := parseGitURL("file://server/share/repo.git")
 	if errA != nil {
 		t.Fatalf("file with authority failed: %v", errA)
 	}
-	hostA, pathA, _ := parseGitURL("file://server/share/repo.git")
-	hostB, pathB, _ := parseGitURL("file:///share/repo.git")
+	hostB, pathB, errB := parseGitURL("file:///share/repo.git")
+	if errB != nil {
+		t.Fatalf("bare file failed: %v", errB)
+	}
 	if hostA == hostB && pathA == pathB {
 		t.Fatalf("file URLs from different authorities collapsed: a=(%q,%q) b=(%q,%q)",
 			hostA, pathA, hostB, pathB)
@@ -51,14 +53,23 @@ func TestCloneDirNameCollisionResistant(t *testing.T) {
 func TestCloneDirNameStable(t *testing.T) {
 	t.Parallel()
 	// Same canonical input must always yield the same dir name.
-	a, _ := CloneDirName("https://github.com/acksell/clank.git")
-	b, _ := CloneDirName("https://github.com/acksell/clank.git")
+	a, err := CloneDirName("https://github.com/acksell/clank.git")
+	if err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	b, err := CloneDirName("https://github.com/acksell/clank.git")
+	if err != nil {
+		t.Fatalf("b: %v", err)
+	}
 	if a != b {
 		t.Fatalf("non-deterministic: %q vs %q", a, b)
 	}
 	// SCP-form and HTTPS form of the same repo should produce the same
 	// canonical (host, path) pair, hence the same dir name.
-	scp, _ := CloneDirName("git@github.com:acksell/clank.git")
+	scp, err := CloneDirName("git@github.com:acksell/clank.git")
+	if err != nil {
+		t.Fatalf("scp: %v", err)
+	}
 	if scp != a {
 		t.Fatalf("scp form %q differs from https form %q", scp, a)
 	}
