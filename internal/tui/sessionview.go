@@ -15,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
@@ -1694,21 +1695,47 @@ func (m *SessionViewModel) renderToolVerbose(p agent.Part, width int) []string {
 
 	var lines []string
 
+	// Width available for content after the 4-char indent. The nested
+	// "  " prefix inside input/output blocks costs another 2 chars, so
+	// wrap at width-2 there to make every returned line fit m.width.
+	innerWidth := width - 2
+	if innerWidth < 8 {
+		innerWidth = 8
+	}
+
 	// Render input arguments.
 	if len(p.Input) > 0 {
 		lines = append(lines, dim.Render(indent+"input:"))
-		lines = append(lines, renderInputMap(p.Input, indent+"  ", dim)...)
+		lines = append(lines, renderInputMap(p.Input, indent+"  ", innerWidth, dim)...)
 	}
 
 	// Render output.
 	if p.Output != "" {
 		lines = append(lines, dim.Render(indent+"output:"))
 		for _, ol := range strings.Split(p.Output, "\n") {
-			lines = append(lines, dim.Render(indent+"  "+ol))
+			for _, wrapped := range wrapToolLine(ol, innerWidth) {
+				lines = append(lines, dim.Render(indent+"  "+wrapped))
+			}
 		}
 	}
 
 	return lines
+}
+
+// wrapToolLine hard-wraps a single logical line of tool input/output so that
+// each returned chunk fits within `width` display columns. Long unbreakable
+// tokens (URLs, paths, base64 blobs) are force-broken at width; spaces are
+// preferred break points. An empty input yields a single empty string so the
+// caller preserves blank lines in the output.
+func wrapToolLine(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	if s == "" {
+		return []string{""}
+	}
+	wrapped := ansi.Wrap(s, width, " \t-")
+	return strings.Split(wrapped, "\n")
 }
 
 // diffOp represents a single line-level diff operation.
@@ -1904,8 +1931,9 @@ func renderTodoList(p agent.Part, indent string, dim lipgloss.Style) []string {
 }
 
 // renderInputMap formats a map[string]any as indented key: value lines.
-// Long string values are wrapped; non-string values are JSON-encoded.
-func renderInputMap(m map[string]any, indent string, style lipgloss.Style) []string {
+// Long string values are wrapped to fit `width` columns; non-string values
+// are JSON-encoded.
+func renderInputMap(m map[string]any, indent string, width int, style lipgloss.Style) []string {
 	// Sort keys for stable output.
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -1913,17 +1941,28 @@ func renderInputMap(m map[string]any, indent string, style lipgloss.Style) []str
 	}
 	sort.Strings(keys)
 
+	// Nested content lives under "  " inside the map block.
+	innerWidth := width - 2
+	if innerWidth < 8 {
+		innerWidth = 8
+	}
+
 	var lines []string
 	for _, k := range keys {
 		v := m[k]
 		switch val := v.(type) {
 		case string:
-			if len(val) <= 80 && !strings.Contains(val, "\n") {
+			// Short, single-line values stay inline on the key line; the
+			// whole "key: value" string is still wrapped so narrow terminals
+			// don't visually wrap it into multiple rows behind our back.
+			if !strings.Contains(val, "\n") && len(val) <= 80 && len(indent)+len(k)+2+len(val) <= width {
 				lines = append(lines, style.Render(fmt.Sprintf("%s%s: %s", indent, k, val)))
 			} else {
 				lines = append(lines, style.Render(fmt.Sprintf("%s%s:", indent, k)))
 				for _, sl := range strings.Split(val, "\n") {
-					lines = append(lines, style.Render(indent+"  "+sl))
+					for _, wrapped := range wrapToolLine(sl, innerWidth) {
+						lines = append(lines, style.Render(indent+"  "+wrapped))
+					}
 				}
 			}
 		default:
@@ -2537,7 +2576,17 @@ func (m *SessionViewModel) renderEntryUncached(e *displayEntry, selected bool, o
 			line = e.content
 		}
 		styled := lipgloss.NewStyle().Foreground(dimColor).Render("  " + line)
-		lines := []string{styled}
+		// The summary line is hard-truncated to 80 chars inside
+		// renderToolLine, but on narrow terminals (< 84 cols once the
+		// 2-char prefix + 4-char outer margin are counted) it can still
+		// exceed m.width. Wrap it so buildContentLines's logical line
+		// count matches what the terminal actually renders — otherwise
+		// scrollToBottom under-counts rows and the input box is pushed
+		// off-screen.
+		var lines []string
+		for _, wl := range strings.Split(ansi.Wrap(styled, maxWidth, " \t-"), "\n") {
+			lines = append(lines, wl)
+		}
 
 		// Show detail when owning navigable entry is expanded, or always for TodoWrite/Edit.
 		// expandForceShow overrides a collapsed owner; expandForceHide overrides an expanded owner.
