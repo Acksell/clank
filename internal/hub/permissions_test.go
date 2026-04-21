@@ -22,15 +22,18 @@ func TestDaemonPermissionReply(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{RemoteURL: testRemoteURL},
-		Prompt:        "do stuff",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		Prompt:  "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(0) // keep import in scope; replaced by waitFor below
+	waitFor(t, 2*time.Second, "backend started", func() bool {
+		return mgr.getLatest() != nil
+	})
 
 	err = client.Session(info.ID).ReplyPermission(ctx, "perm-42", true)
 	if err != nil {
@@ -38,7 +41,11 @@ func TestDaemonPermissionReply(t *testing.T) {
 	}
 
 	b := mgr.getLatest()
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, 2*time.Second, "permission reply propagated to backend", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.permissionReplied
+	})
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.permissionReplied {
@@ -70,15 +77,17 @@ func TestDaemonPendingPermission(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{RemoteURL: testRemoteURL},
-		Prompt:        "do stuff",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		Prompt:  "do stuff",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 2*time.Second, "backend started", func() bool {
+		return getBackend() != nil
+	})
 
 	// No pending permission yet.
 	perms, err := client.Session(info.ID).PendingPermissions(ctx)
@@ -101,8 +110,11 @@ func TestDaemonPendingPermission(t *testing.T) {
 		},
 	}
 
-	// Give the event relay goroutine time to process.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the event relay goroutine to surface the pending perm.
+	waitFor(t, 2*time.Second, "pending permission visible to client", func() bool {
+		got, err := client.Session(info.ID).PendingPermissions(ctx)
+		return err == nil && len(got) == 1
+	})
 
 	// Now pending permission should be available.
 	perms, err = client.Session(info.ID).PendingPermissions(ctx)
@@ -160,15 +172,17 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{RemoteURL: testRemoteURL},
-		Prompt:        "read two dirs",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		Prompt:  "read two dirs",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 2*time.Second, "backend started", func() bool {
+		return getBackend() != nil
+	})
 	b := getBackend()
 
 	// Emit two permission events in quick succession.
@@ -191,7 +205,10 @@ func TestDaemonPendingPermissionQueue(t *testing.T) {
 		},
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, 2*time.Second, "both permissions queued", func() bool {
+		got, err := client.Session(info.ID).PendingPermissions(ctx)
+		return err == nil && len(got) == 2
+	})
 
 	// Both permissions must be present.
 	perms, err := client.Session(info.ID).PendingPermissions(ctx)
@@ -247,15 +264,17 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
-		Backend:       agent.BackendOpenCode,
-		GitRef: agent.GitRef{RemoteURL: testRemoteURL},
-		Prompt:        "read two dirs",
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		Prompt:  "read two dirs",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, 2*time.Second, "backend started", func() bool {
+		return getBackend() != nil
+	})
 	b := getBackend()
 
 	b.events <- agent.Event{
@@ -277,7 +296,10 @@ func TestDaemonPendingPermissionRejectClearsQueue(t *testing.T) {
 		},
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, 2*time.Second, "both deny-test permissions queued", func() bool {
+		got, err := client.Session(info.ID).PendingPermissions(ctx)
+		return err == nil && len(got) == 2
+	})
 
 	perms, err := client.Session(info.ID).PendingPermissions(ctx)
 	if err != nil {

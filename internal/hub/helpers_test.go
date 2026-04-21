@@ -3,6 +3,7 @@ package hub_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/hub"
@@ -61,4 +62,24 @@ func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) s
 	// the same Remote URL we keyed off of.
 	initGitRepoAt(t, dir, ref.RemoteURL)
 	return dir
+}
+
+// waitFor polls cond every 5ms until it returns true or timeout
+// elapses. Used in place of fixed time.Sleep so tests don't pay the
+// full sleep duration on fast machines and don't flake on slow ones.
+// On timeout the test fails with msg + "timed out waiting" — callers
+// should phrase msg as the condition that should have become true
+// (e.g. "permission reply propagated to backend").
+func waitFor(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting: %s", msg)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
