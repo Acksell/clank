@@ -2188,8 +2188,8 @@ func TestProjectFilterToggle(t *testing.T) {
 func TestFilteredSessionsByProject(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
-	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
 
 	now := time.Now()
 	m := &InboxModel{
@@ -2227,8 +2227,8 @@ func TestFilteredSessionsByProject(t *testing.T) {
 func TestProjectFilterRebuildsGroups(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
-	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
 
 	now := time.Now()
 	m := &InboxModel{
@@ -2460,8 +2460,8 @@ func TestRightArrow_WhileCreatingBranch_PassesThrough(t *testing.T) {
 func TestBuildSearchResults_RespectsProjectFilter(t *testing.T) {
 	t.Parallel()
 
-	alpha := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/alpha"}}
-	beta := agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/beta"}}
+	alpha := agent.GitRef{LocalPath: "/home/user/alpha"}
+	beta := agent.GitRef{LocalPath: "/home/user/beta"}
 
 	now := time.Now()
 	m := &InboxModel{
@@ -2508,8 +2508,8 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 		height:      40,
 	}
 	m.buildSearchResults([]agent.SessionInfo{
-		{ID: "s1", GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/alpha.git"}}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
-		{ID: "s2", GitRef: agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acme/beta.git"}}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s1", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
 	})
 
 	// Verify precondition: 2 search results visible.

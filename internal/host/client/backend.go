@@ -46,11 +46,11 @@ func (b *BackendClient) Models(ctx context.Context, ref agent.GitRef) ([]host.Mo
 // hostmux.refFromQuery — keep the field names in sync.
 func refQuery(bt agent.BackendType, ref agent.GitRef) url.Values {
 	v := url.Values{"backend": {string(bt)}}
-	if ref.Local != nil {
-		v.Set("git_local_path", ref.Local.Path)
+	if ref.LocalPath != "" {
+		v.Set("git_local_path", ref.LocalPath)
 	}
-	if ref.Remote != nil {
-		v.Set("git_remote_url", ref.Remote.URL)
+	if ref.RemoteURL != "" {
+		v.Set("git_remote_url", ref.RemoteURL)
 	}
 	if ref.WorktreeBranch != "" {
 		v.Set("worktree_branch", ref.WorktreeBranch)

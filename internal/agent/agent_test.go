@@ -77,7 +77,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_remote_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}},
+				GitRef:  agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"},
 				Prompt:  "hi",
 			},
 		},
@@ -85,7 +85,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_local_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendClaudeCode,
-				GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: "/tmp/repo"}},
+				GitRef:  agent.GitRef{LocalPath: "/tmp/repo"},
 				Prompt:  "hi",
 			},
 		},
@@ -101,22 +101,22 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_invalid_propagates",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: ""}}, // missing URL
+				GitRef:  agent.GitRef{RemoteURL: ""}, // missing URL
 				Prompt:  "hi",
 			},
 			wantErr: true,
 		},
 		{
-			name: "git_ref_both_set_rejected",
+			name: "git_ref_both_set_allowed",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
 				GitRef: agent.GitRef{
-					Local:  &agent.LocalRef{Path: "/tmp/repo"},
-					Remote: &agent.RemoteRef{URL: "https://github.com/x/y"},
+					LocalPath: "/tmp/repo",
+					RemoteURL: "https://github.com/x/y",
 				},
 				Prompt: "hi",
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 	for _, tc := range cases {

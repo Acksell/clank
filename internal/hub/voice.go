@@ -238,10 +238,10 @@ func (tp *hubToolProvider) KnownProjectDirs(ctx context.Context) ([]string, erro
 		if host.Hostname(t.Hostname) != host.HostLocal {
 			continue
 		}
-		if t.GitRef.Local == nil {
+		if t.GitRef.LocalPath == "" {
 			continue
 		}
-		seen[t.GitRef.Local.Path] = struct{}{}
+		seen[t.GitRef.LocalPath] = struct{}{}
 	}
 	dirs := make([]string, 0, len(seen))
 	for dir := range seen {

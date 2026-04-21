@@ -87,7 +87,7 @@ func TestUpsertAndLoad(t *testing.T) {
 		Status:     agent.StatusBusy,
 		Visibility: agent.VisibilityDone,
 		FollowUp:   true,
-		GitRef:     agent.GitRef{Local: &agent.LocalRef{Path: "/tmp/repo"}, WorktreeBranch: "feat/login"},
+		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", WorktreeBranch: "feat/login"},
 		Prompt:     "Fix the login bug",
 		Title:      "Fix authentication",
 		TicketID:   "TICKET-42",
@@ -460,7 +460,7 @@ func TestLoadPrimaryAgentsEmpty(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}}
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	agents, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
@@ -474,7 +474,7 @@ func TestUpsertAndLoadPrimaryAgents(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}}
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	agents := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary", Hidden: false},
 		{Name: "plan", Description: "Plan agent", Mode: "primary", Hidden: false},
@@ -513,7 +513,7 @@ func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}}
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	initial := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary"},
 	}
@@ -545,8 +545,8 @@ func TestLoadPrimaryAgentsIsolatedByBackendHostAndRepo(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	refA := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/repo-a.git"}}
-	refB := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/repo-b.git"}}
+	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
+	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
 	agentsA := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
 	agentsB := []agent.AgentInfo{{Name: "plan", Mode: "primary"}}
 
@@ -606,8 +606,8 @@ func TestKnownAgentTargets(t *testing.T) {
 	s := mustOpen(t, tempDBPath(t))
 
 	now := time.Now().Truncate(time.Millisecond)
-	refA := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/repo-a.git"}}
-	refB := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/repo-b.git"}}
+	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
+	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
 	// Two sessions on local/repo-a (should dedupe), one on local/repo-b,
 	// one on remote-1/repo-a, one with no GitRef (must be skipped).
 	rows := []agent.SessionInfo{
@@ -635,10 +635,10 @@ func TestKnownAgentTargets(t *testing.T) {
 	seen := map[key]bool{}
 	refKey := func(r agent.GitRef) string {
 		switch {
-		case r.Remote != nil:
-			return "remote:" + r.Remote.URL
-		case r.Local != nil:
-			return "local:" + r.Local.Path
+		case r.RemoteURL != "":
+			return "remote:" + r.RemoteURL
+		case r.LocalPath != "":
+			return "local:" + r.LocalPath
 		default:
 			return ""
 		}
@@ -671,7 +671,7 @@ func TestMigrationV2Idempotent(t *testing.T) {
 		t.Fatalf("first Open: %v", err)
 	}
 	agents := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
-	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}}
+	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
 	if err := s1.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestConcurrentWrites(t *testing.T) {
 			agents := []agent.AgentInfo{
 				{Name: fmt.Sprintf("agent-%d", i), Mode: "primary"},
 			}
-			ref := agent.GitRef{Remote: &agent.RemoteRef{URL: fmt.Sprintf("git@github.com:acksell/repo-%d.git", i)}}
+			ref := agent.GitRef{RemoteURL: fmt.Sprintf("git@github.com:acksell/repo-%d.git", i)}
 			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 				errs <- fmt.Errorf("UpsertPrimaryAgents(%d): %w", i, err)
 			}
@@ -770,7 +770,7 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 		Backend:   agent.BackendOpenCode,
 		Status:    agent.StatusIdle,
 		Hostname:  "local",
-		GitRef:    agent.GitRef{Remote: &agent.RemoteRef{URL: "git@github.com:acksell/clank.git"}, WorktreeBranch: "feat/x"},
+		GitRef:    agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git", WorktreeBranch: "feat/x"},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -790,11 +790,11 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	if got.Hostname != "local" {
 		t.Errorf("Hostname = %q, want local", got.Hostname)
 	}
-	if got.GitRef.Remote == nil || got.GitRef.Remote.URL != "git@github.com:acksell/clank.git" {
-		t.Errorf("GitRef.Remote = %+v, want URL git@github.com:acksell/clank.git", got.GitRef.Remote)
+	if got.GitRef.RemoteURL == "" || got.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
+		t.Errorf("GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got.GitRef.RemoteURL)
 	}
-	if got.GitRef.Local != nil {
-		t.Errorf("GitRef.Local = %+v, want nil", got.GitRef.Local)
+	if got.GitRef.LocalPath != "" {
+		t.Errorf("GitRef.LocalPath = %q, want empty", got.GitRef.LocalPath)
 	}
 	// Branch round-trips through GitRef.WorktreeBranch.
 	if got.GitRef.WorktreeBranch != "feat/x" {
@@ -919,11 +919,11 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("missing ses-old-1 after migration")
 	}
-	if got1.GitRef.Remote == nil || got1.GitRef.Remote.URL != "git@github.com:acksell/clank.git" {
-		t.Errorf("ses-old-1 GitRef.Remote = %+v, want URL git@github.com:acksell/clank.git", got1.GitRef.Remote)
+	if got1.GitRef.RemoteURL == "" || got1.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
+		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got1.GitRef.RemoteURL)
 	}
 	got2 := byID["ses-old-2"]
-	if got2.GitRef.Remote != nil || got2.GitRef.Local != nil {
+	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" {
 		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
 	}
 

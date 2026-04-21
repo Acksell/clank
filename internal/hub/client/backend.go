@@ -50,11 +50,11 @@ func catalogQuery(bt agent.BackendType, hostname host.Hostname, ref agent.GitRef
 		"backend":  {string(bt)},
 		"hostname": {string(hostname)},
 	}
-	if ref.Local != nil {
-		v.Set("git_local_path", ref.Local.Path)
+	if ref.LocalPath != "" {
+		v.Set("git_local_path", ref.LocalPath)
 	}
-	if ref.Remote != nil {
-		v.Set("git_remote_url", ref.Remote.URL)
+	if ref.RemoteURL != "" {
+		v.Set("git_remote_url", ref.RemoteURL)
 	}
 	if ref.WorktreeBranch != "" {
 		v.Set("worktree_branch", ref.WorktreeBranch)

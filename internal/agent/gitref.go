@@ -1,8 +1,8 @@
 package agent
 
-// GitRef and friends live in the agent package because they are wire-level
-// identity types used inside StartRequest. The host package consumes them
-// directly; there is no host-side alias.
+// GitRef is the canonical wire-level identity for a git repository plus
+// an optional worktree branch. Lives in the agent package because it is
+// embedded in StartRequest; the host package consumes it directly.
 
 import (
 	"fmt"
@@ -10,66 +10,72 @@ import (
 	"strings"
 )
 
-// GitRef is the canonical reference to a git repository plus an optional
-// worktree branch. Exactly one of Local or Remote MUST be set; Validate
-// enforces this. The pointer-vs-pointer shape encodes the
-// mutually-exclusive choice in the type itself so callers can switch on
-// which field is non-nil rather than dispatching on a string Kind.
+// GitRef tells a host where to find a project's files.
+//
+// Two optional locator fields:
+//
+//   - LocalPath: an absolute filesystem path on the *target host*. When
+//     present and usable, the host opens this path directly — no clone.
+//   - RemoteURL: a git remote URL. When LocalPath is empty or not usable
+//     on the target host, the host clones RemoteURL into its clones dir
+//     and works from there.
+//
+// At least one MUST be set. Both is the common case for clients that
+// are running co-located with the target host (laptop TUI in $repo): the
+// host uses LocalPath and ignores RemoteURL. A client targeting a
+// *different* host (e.g. mobile) sends only RemoteURL; the host clones.
+// A laptop TUI targeting a different host can safely send both — the
+// remote host will fail the LocalPath check and fall through to clone.
+//
+// Resolution precedence on the host (see host.Service.workDirFor):
+//  1. If LocalPath is set, exists, and is the repo root → use it.
+//  2. Else if RemoteURL is set → clone into <clonesDir>/<CloneDirName>.
+//  3. Else → error.
+//
+// This is precedence, not a fallback in the AGENTS.md "no fallbacks"
+// sense: it's the documented contract every caller relies on. Clients
+// that have a LocalPath are expected to send it; mobile clients that
+// don't are expected to send only RemoteURL.
 type GitRef struct {
-	Local          *LocalRef  `json:"local,omitempty"`
-	Remote         *RemoteRef `json:"remote,omitempty"`
-	WorktreeBranch string     `json:"worktree_branch,omitempty"`
+	LocalPath      string `json:"local_path,omitempty"`
+	RemoteURL      string `json:"remote_url,omitempty"`
+	WorktreeBranch string `json:"worktree_branch,omitempty"`
 }
 
-// LocalRef points at an existing checkout on the host's filesystem.
-// Path must be absolute and must be a git RepoRoot.
-type LocalRef struct {
-	Path string `json:"path"`
-}
-
-// RemoteRef points at a remote git URL the host may clone on demand.
-// URL accepts any standard git URL form (https, ssh, scp-like, file).
-type RemoteRef struct {
-	URL string `json:"url"`
-}
-
-// Validate enforces the field rules from §7.2 of
-// hub_host_refactor_code_review.md: exactly one of Local/Remote, plus
-// per-variant well-formedness.
+// Validate enforces: at least one of LocalPath / RemoteURL is set, and
+// each set field is well-formed. Both being set is allowed (and normal
+// for laptop clients).
 func (g GitRef) Validate() error {
-	switch {
-	case g.Local != nil && g.Remote != nil:
-		return fmt.Errorf("git ref must set exactly one of local or remote, not both")
-	case g.Local != nil:
-		if strings.TrimSpace(g.Local.Path) == "" {
-			return fmt.Errorf("local ref requires path")
-		}
-		if !filepath.IsAbs(g.Local.Path) {
-			return fmt.Errorf("local ref path must be absolute, got %q", g.Local.Path)
-		}
-		return nil
-	case g.Remote != nil:
-		if strings.TrimSpace(g.Remote.URL) == "" {
-			return fmt.Errorf("remote ref requires url")
-		}
-		if _, _, err := parseGitURL(g.Remote.URL); err != nil {
-			return fmt.Errorf("remote ref url is not a recognized git URL: %w", err)
-		}
-		return nil
-	default:
-		return fmt.Errorf("git ref must set exactly one of local or remote")
+	hasLocal := strings.TrimSpace(g.LocalPath) != ""
+	hasRemote := strings.TrimSpace(g.RemoteURL) != ""
+	if !hasLocal && !hasRemote {
+		return fmt.Errorf("git ref must set at least one of local_path or remote_url")
 	}
+	if hasLocal && !filepath.IsAbs(g.LocalPath) {
+		return fmt.Errorf("local_path must be absolute, got %q", g.LocalPath)
+	}
+	if hasRemote {
+		if _, _, err := parseGitURL(g.RemoteURL); err != nil {
+			return fmt.Errorf("remote_url is not a recognized git URL: %w", err)
+		}
+	}
+	return nil
 }
 
-// RepoKey returns a stable map key for a GitRef. Used by in-memory
-// dedup tables (e.g. the primary-agents background-refresh set) where
-// the identity is (Local|Remote, branch). Empty for invalid refs.
+// RepoKey returns a stable map key for a GitRef. Used by in-memory dedup
+// tables (e.g. the primary-agents background-refresh set) where the
+// identity is (project, branch).
+//
+// Prefers RemoteURL because it is the cross-machine stable identity:
+// two clients on different hosts referring to the same project share a
+// RemoteURL but have different LocalPaths. Falls back to LocalPath for
+// repos with no configured origin. Returns "" for invalid refs.
 func RepoKey(g GitRef) string {
 	switch {
-	case g.Local != nil:
-		return "L\x00" + g.Local.Path + "\x00" + g.WorktreeBranch
-	case g.Remote != nil:
-		return "R\x00" + g.Remote.URL + "\x00" + g.WorktreeBranch
+	case g.RemoteURL != "":
+		return "R\x00" + g.RemoteURL + "\x00" + g.WorktreeBranch
+	case g.LocalPath != "":
+		return "L\x00" + g.LocalPath + "\x00" + g.WorktreeBranch
 	default:
 		return ""
 	}
@@ -77,31 +83,22 @@ func RepoKey(g GitRef) string {
 
 // RepoDisplayName returns a short human-readable label for UIs and logs.
 //
-// remote: the last path segment of the parsed URL (e.g. "clank" for
-//
-//	"https://github.com/acksell/clank").
-//
-// local : filepath.Base of the absolute path.
-//
-// Returns "" for invalid refs; callers that need errors should call
-// Validate first.
+// Prefers RemoteURL (parses the project name out of the URL) so the
+// display matches across hosts. Falls back to filepath.Base(LocalPath)
+// for repos with no configured origin. Returns "" for invalid refs.
 func RepoDisplayName(g GitRef) string {
-	switch {
-	case g.Local != nil:
-		if !filepath.IsAbs(g.Local.Path) {
-			return ""
+	if g.RemoteURL != "" {
+		_, path, err := parseGitURL(g.RemoteURL)
+		if err == nil {
+			if i := strings.LastIndex(path, "/"); i >= 0 {
+				return path[i+1:]
+			}
+			return path
 		}
-		return filepath.Base(g.Local.Path)
-	case g.Remote != nil:
-		_, path, err := parseGitURL(g.Remote.URL)
-		if err != nil {
-			return ""
-		}
-		if i := strings.LastIndex(path, "/"); i >= 0 {
-			return path[i+1:]
-		}
-		return path
-	default:
-		return ""
+		// Fall through to LocalPath if the remote URL is malformed.
 	}
+	if g.LocalPath != "" && filepath.IsAbs(g.LocalPath) {
+		return filepath.Base(filepath.Clean(g.LocalPath))
+	}
+	return ""
 }

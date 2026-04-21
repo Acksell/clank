@@ -44,9 +44,12 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
-	var ref agent.GitRef
+	// Send both LocalPath (so the local host skips cloning) and the
+	// origin URL when available (cross-host stable identity for future
+	// remote-host targeting). See agent.GitRef godoc.
+	ref := agent.GitRef{LocalPath: projectDir}
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		ref = agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}}
+		ref.RemoteURL = remoteURL
 	}
 	return &SessionViewModel{
 		client:      client,
@@ -210,17 +213,21 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
-	remoteURL, err := git.RemoteURL(m.projectDir, "origin")
-	if err != nil {
-		m.err = fmt.Errorf("resolve repo remote: %w", err)
-		m.submitting = false
-		return m, nil
+	// Both LocalPath and RemoteURL — local host uses path, future
+	// remote hosts fall through to clone. RemoteURL is best-effort
+	// (repos without origin still work locally).
+	gitRef := agent.GitRef{
+		LocalPath:      m.projectDir,
+		WorktreeBranch: m.worktreeBranch,
+	}
+	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
+		gitRef.RemoteURL = remoteURL
 	}
 
 	req := agent.StartRequest{
 		Backend:  m.backend,
 		Hostname: string(host.HostLocal),
-		GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: m.worktreeBranch},
+		GitRef:   gitRef,
 		Prompt:   prompt,
 	}
 	if len(m.agents) > 0 {

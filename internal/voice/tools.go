@@ -337,7 +337,7 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
 				Backend:  agent.BackendType(args.Backend),
 				Hostname: string(host.HostLocal),
-				GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remote}},
+				GitRef:   agent.GitRef{RemoteURL: remote},
 				Prompt:   args.Prompt,
 			})
 			if err != nil {

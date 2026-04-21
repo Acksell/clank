@@ -101,16 +101,16 @@ The daemon is auto-started if not already running.`,
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			remoteURL, err := git.RemoteURL(projectDir, "origin")
-			if err != nil {
-				sseCancel()
-				return fmt.Errorf("resolve repo remote: %w", err)
-			}
+			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host
 
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:  bt,
 				Hostname: string(host.HostLocal),
-				GitRef:   agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: worktreeBranch},
+				GitRef: agent.GitRef{
+					LocalPath:      projectDir,
+					RemoteURL:      remoteURL,
+					WorktreeBranch: worktreeBranch,
+				},
 				Prompt:   prompt,
 				TicketID: ticketID,
 			})

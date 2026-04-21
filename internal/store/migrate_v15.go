@@ -3,14 +3,14 @@ package store
 import "fmt"
 
 // migrateV15 collapses the (kind, url, path) GitRef triple into the
-// two-column (project_dir, git_remote_url) shape that mirrors the new
-// pointer-based agent.GitRef (Local *LocalRef | Remote *RemoteRef).
+// two-column (project_dir, git_remote_url) shape that mirrors the
+// flat agent.GitRef{LocalPath, RemoteURL}. Both columns may be set:
+// see agent.GitRef godoc for resolution precedence on the host.
 //
 // On the sessions table:
 //   - ADD COLUMN git_remote_url (renamed from git_ref_url).
-//   - Re-add COLUMN project_dir (was dropped in v14): for local refs the
-//     absolute path lives here; remote refs leave it empty and the host
-//     resolves a clone path on demand.
+//   - Re-add COLUMN project_dir (was dropped in v14): when set it
+//     carries the absolute path; the host prefers it over cloning.
 //   - DROP git_ref_kind, git_ref_path.
 //
 // On primary_agents we drop and recreate with the new PK

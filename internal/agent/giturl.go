@@ -82,8 +82,8 @@ func parseGitURL(raw string) (host, path string, err error) {
 //	git@github.com:acksell/clank.git    → github.com-acksell-clank
 //	https://github.com/acksell/clank    → github.com-acksell-clank
 //	file:///srv/git/foo.git             → file--srv-git-foo
-func CloneDirName(remote RemoteRef) (string, error) {
-	host, path, err := parseGitURL(remote.URL)
+func CloneDirName(remoteURL string) (string, error) {
+	host, path, err := parseGitURL(remoteURL)
 	if err != nil {
 		return "", err
 	}
@@ -104,10 +104,10 @@ func CloneDirName(remote RemoteRef) (string, error) {
 	}
 	name := b.String()
 	if name == "" || name == "." || name == ".." {
-		return "", fmt.Errorf("clone dir name for %q resolves to %q", remote.URL, name)
+		return "", fmt.Errorf("clone dir name for %q resolves to %q", remoteURL, name)
 	}
 	if strings.HasPrefix(name, ".") {
-		return "", fmt.Errorf("clone dir name for %q starts with dot: %q", remote.URL, name)
+		return "", fmt.Errorf("clone dir name for %q starts with dot: %q", remoteURL, name)
 	}
 	return name, nil
 }

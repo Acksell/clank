@@ -11,7 +11,7 @@ import (
 // testRemoteURL is the canonical remote URL used by hub tests. The hub
 // fixture pre-places a real git repo at the host's deterministic clone
 // path (`<ClonesDir>/<CloneDirName(testRemoteURL)>/`) so any test that
-// constructs `agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}}`
+// constructs `agent.GitRef{RemoteURL: testRemoteURL}`
 // resolves on the host without needing a real network clone.
 const testRemoteURL = "git@github.com:acksell/clank.git"
 
@@ -22,7 +22,7 @@ const testRemoteURL = "git@github.com:acksell/clank.git"
 // and its ClonesDir is known.
 func registerTestRepo(t *testing.T, s *hub.Service) string {
 	t.Helper()
-	return registerTestRepoAtWithRef(t, s, agent.GitRef{Remote: &agent.RemoteRef{URL: testRemoteURL}})
+	return registerTestRepoAtWithRef(t, s, agent.GitRef{RemoteURL: testRemoteURL})
 }
 
 // registerTestRepoAt is a back-compat alias for two-phase persistence
@@ -43,7 +43,7 @@ func registerTestRepoAt(t *testing.T, s *hub.Service, _ string) {
 // supplied directly).
 func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) string {
 	t.Helper()
-	if ref.Remote == nil {
+	if ref.RemoteURL == "" {
 		t.Fatalf("registerTestRepoAtWithRef: expected Remote ref, got %+v", ref)
 	}
 	v, ok := hostFixturesByHub.Load(s)
@@ -51,7 +51,7 @@ func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) s
 		t.Fatal("registerTestRepoAtWithRef: no host fixture for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
 	}
 	f := v.(*hostTestFixture)
-	name, err := agent.CloneDirName(*ref.Remote)
+	name, err := agent.CloneDirName(ref.RemoteURL)
 	if err != nil {
 		t.Fatalf("CloneDirName: %v", err)
 	}
@@ -59,6 +59,6 @@ func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) s
 	// initGitRepoAt seeds a fresh repo with an `origin` remote so the
 	// hub's discover path (git.RemoteURL on snap.Directory) recovers
 	// the same Remote URL we keyed off of.
-	initGitRepoAt(t, dir, ref.Remote.URL)
+	initGitRepoAt(t, dir, ref.RemoteURL)
 	return dir
 }

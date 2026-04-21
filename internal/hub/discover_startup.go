@@ -11,8 +11,6 @@ package hub
 import (
 	"context"
 	"os"
-
-	"github.com/acksell/clank/internal/agent"
 )
 
 // runStartupDiscover queries every backend on every registered host
@@ -67,7 +65,7 @@ func (s *Service) runStartupDiscover(ctx context.Context) {
 		if ms.info.ExternalID == "" {
 			continue
 		}
-		if ms.info.GitRef.Local != nil || ms.info.GitRef.Remote != nil {
+		if ms.info.GitRef.LocalPath != "" || ms.info.GitRef.RemoteURL != "" {
 			continue
 		}
 		dir, ok := resolved[snapKey{ms.info.Hostname, ms.info.ExternalID}]
@@ -75,7 +73,7 @@ func (s *Service) runStartupDiscover(ctx context.Context) {
 			orphans = append(orphans, id)
 			continue
 		}
-		ms.info.GitRef.Local = &agent.LocalRef{Path: dir}
+		ms.info.GitRef.LocalPath = dir
 		s.persistSession(ms)
 	}
 	s.mu.Unlock()

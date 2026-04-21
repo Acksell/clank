@@ -36,15 +36,16 @@ func (s *Service) markBranchSessionsDone(ref agent.GitRef, branch string) int {
 	return count
 }
 
-// sameRepo returns true when a and b name the same repo (Local.Path or
-// Remote.URL match). Branch is ignored — the caller checks separately.
+// sameRepo returns true when a and b name the same repo. Prefers
+// RemoteURL (cross-host stable identity); falls back to LocalPath when
+// either ref lacks a remote. Branch is ignored — caller checks
+// separately.
 func sameRepo(a, b agent.GitRef) bool {
-	switch {
-	case a.Local != nil && b.Local != nil:
-		return a.Local.Path == b.Local.Path
-	case a.Remote != nil && b.Remote != nil:
-		return a.Remote.URL == b.Remote.URL
-	default:
-		return false
+	if a.RemoteURL != "" && b.RemoteURL != "" {
+		return a.RemoteURL == b.RemoteURL
 	}
+	if a.LocalPath != "" && b.LocalPath != "" {
+		return a.LocalPath == b.LocalPath
+	}
+	return false
 }

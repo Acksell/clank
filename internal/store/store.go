@@ -217,31 +217,21 @@ func (s *Store) migrate() error {
 }
 
 // gitRefToColumns projects a GitRef into the (project_dir, git_remote_url)
-// pair the schema stores. Exactly one is non-empty for a valid ref; both
-// empty means "no ref" (e.g. orphan session awaiting startup discovery).
+// pair the schema stores. Either or both may be non-empty (laptop TUI
+// sessions populate both); both empty means "no ref" (e.g. orphan
+// session awaiting startup discovery).
 func gitRefToColumns(g agent.GitRef) (projectDir, remoteURL string) {
-	switch {
-	case g.Local != nil:
-		return g.Local.Path, ""
-	case g.Remote != nil:
-		return "", g.Remote.URL
-	default:
-		return "", ""
-	}
+	return g.LocalPath, g.RemoteURL
 }
 
 // gitRefFromColumns reconstructs a GitRef from the (project_dir,
-// git_remote_url, worktree_branch) triple. Remote takes precedence when
-// both happen to be set (should not occur in practice — schema-level
-// invariant enforced by callers).
+// git_remote_url, worktree_branch) triple. Both fields may be set; the
+// host-side resolution in workDirFor decides which to use.
 func gitRefFromColumns(projectDir, remoteURL, worktreeBranch string) agent.GitRef {
-	switch {
-	case remoteURL != "":
-		return agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}, WorktreeBranch: worktreeBranch}
-	case projectDir != "":
-		return agent.GitRef{Local: &agent.LocalRef{Path: projectDir}, WorktreeBranch: worktreeBranch}
-	default:
-		return agent.GitRef{WorktreeBranch: worktreeBranch}
+	return agent.GitRef{
+		LocalPath:      projectDir,
+		RemoteURL:      remoteURL,
+		WorktreeBranch: worktreeBranch,
 	}
 }
 
@@ -414,7 +404,7 @@ func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, 
 	if hostname == "" {
 		hostname = "local"
 	}
-	if ref.Local == nil && ref.Remote == nil {
+	if ref.LocalPath == "" && ref.RemoteURL == "" {
 		return fmt.Errorf("upsert primary agents: git ref is required")
 	}
 	projectDir, remoteURL := gitRefToColumns(ref)

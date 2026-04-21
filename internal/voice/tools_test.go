@@ -200,7 +200,7 @@ func TestCreateSessionTool_AcceptsKnownDir(t *testing.T) {
 		knownDirs: []string{dir},
 		createdSession: &agent.SessionInfo{
 			ID:     "01ABCDEF01ABCDEF01ABCDEF01",
-			GitRef: agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+			GitRef: agent.GitRef{LocalPath: dir},
 		},
 	}
 	tool := createSessionTool(tp)
@@ -229,7 +229,7 @@ func TestListSessionsTool_IncludesProjectDisplayName(t *testing.T) {
 				ID:      "01ABCDEF01ABCDEF01ABCDEF01",
 				Status:  agent.StatusBusy,
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: "/home/user/projects/clank"}},
+				GitRef:  agent.GitRef{LocalPath: "/home/user/projects/clank"},
 				Prompt:  "fix the bug",
 			},
 		},

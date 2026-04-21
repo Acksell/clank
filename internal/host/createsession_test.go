@@ -37,7 +37,7 @@ func TestCreateSession_LocalRef_Success(t *testing.T) {
 	dir := initGitRepo(t, "git@github.com:acksell/clank.git")
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-local", req); err != nil {
@@ -55,7 +55,7 @@ func TestCreateSession_LocalRef_RejectsNonGit(t *testing.T) {
 	dir := t.TempDir() // not a git repo
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-bad", req)
@@ -75,7 +75,7 @@ func TestCreateSession_LocalRef_RejectsRelativePath(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: "relative/path"}},
+		GitRef:  agent.GitRef{LocalPath: "relative/path"},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-rel", req); err == nil {
@@ -97,11 +97,80 @@ func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
 	}
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: sub}},
+		GitRef:  agent.GitRef{LocalPath: sub},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-sub", req); err == nil {
 		t.Fatal("expected error for non-root dir")
+	}
+}
+
+// TestCreateSession_BothRefs_PrefersLocalPath is the regression test for
+// Bug 3: clients (TUI, clankcli) running on the same host as the daemon
+// send BOTH LocalPath and RemoteURL. Before the fix, the host ignored
+// LocalPath and always cloned RemoteURL into ~/.clank/clones/, so the
+// agent ran against a fresh clone instead of the user's working tree.
+//
+// The contract: when LocalPath is set, exists, and is a repo root, the
+// host MUST use it directly and MUST NOT touch ClonesDir.
+func TestCreateSession_BothRefs_PrefersLocalPath(t *testing.T) {
+	t.Parallel()
+	svc, clonesDir := newTestServiceWithClonesDir(t)
+
+	const remoteURL = "git@github.com:acksell/clank.git"
+	dir := initGitRepo(t, remoteURL)
+
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{LocalPath: dir, RemoteURL: remoteURL},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-bug3", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	entries, err := os.ReadDir(clonesDir)
+	if err != nil {
+		t.Fatalf("read clonesDir: %v", err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected no clones (LocalPath should win), got %v", names)
+	}
+}
+
+// TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing covers the
+// remote-host scenario: a TUI on machine A targeting a daemon on machine
+// B sends both fields, but A's LocalPath does not exist on B. The host
+// must silently fall through to cloning RemoteURL.
+func TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing(t *testing.T) {
+	t.Parallel()
+	svc, clonesDir := newTestServiceWithClonesDir(t)
+
+	source := initGitRepo(t, "git@github.com:acksell/clank.git")
+	sourceURL := "file://" + source
+
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef: agent.GitRef{
+			LocalPath: "/nonexistent/path/on/this/host",
+			RemoteURL: sourceURL,
+		},
+		Prompt: "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-fallback", req); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	entries, err := os.ReadDir(clonesDir)
+	if err != nil {
+		t.Fatalf("read clonesDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 clone (LocalPath missing → fall back), got %d", len(entries))
 	}
 }
 
@@ -118,7 +187,7 @@ func TestCreateSession_RemoteRef_ClonesIntoClonesDir(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: sourceURL}},
+		GitRef:  agent.GitRef{RemoteURL: sourceURL},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone", req); err != nil {
@@ -151,7 +220,7 @@ func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Remote: &agent.RemoteRef{URL: sourceURL}},
+		GitRef:  agent.GitRef{RemoteURL: sourceURL},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone-1", req); err != nil {

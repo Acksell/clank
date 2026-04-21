@@ -47,10 +47,10 @@ func parseCatalogQuery(r *http.Request) (agent.BackendType, host.Hostname, agent
 	hostname := host.Hostname(q.Get("hostname"))
 	var ref agent.GitRef
 	if p := q.Get("git_local_path"); p != "" {
-		ref.Local = &agent.LocalRef{Path: p}
+		ref.LocalPath = p
 	}
 	if u := q.Get("git_remote_url"); u != "" {
-		ref.Remote = &agent.RemoteRef{URL: u}
+		ref.RemoteURL = u
 	}
 	ref.WorktreeBranch = q.Get("worktree_branch")
 	if bt == "" {

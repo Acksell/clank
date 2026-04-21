@@ -137,7 +137,7 @@ func TestHTTPRoundTrip_CreateSessionAndEvents(t *testing.T) {
 
 	be, _, err := c.Sessions().Create(ctx, "sid-1", agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
 	})
 	if err != nil {
@@ -218,7 +218,7 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 
 	ctx := context.Background()
 	be, _, err := c.Sessions().Create(ctx, "sid-2", agent.StartRequest{
-		Backend: agent.BackendOpenCode, GitRef: agent.GitRef{Local: &agent.LocalRef{Path: dir}}, Prompt: "hi",
+		Backend: agent.BackendOpenCode, GitRef: agent.GitRef{LocalPath: dir}, Prompt: "hi",
 	})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -281,7 +281,7 @@ func TestHTTPRoundTrip_StartPopulatesExternalID(t *testing.T) {
 
 	be, _, err := c.Sessions().Create(ctx, "sid-late", agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: dir}},
+		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
 	})
 	if err != nil {

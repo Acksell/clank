@@ -112,14 +112,15 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		}
 
 		id := ulid.Make().String()
-		// Derive a remote-kind GitRef so lazy backend activation
-		// (activateBackend) can reach the host plane without paths.
+		// Derive a GitRef so lazy backend activation (activateBackend)
+		// can reach the host plane. Snap directory is the host's local
+		// path; remote URL is best-effort for cross-host identity.
 		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
-		var gitRef agent.GitRef
-		if remoteURL != "" {
-			gitRef = agent.GitRef{Remote: &agent.RemoteRef{URL: remoteURL}}
+		gitRef := agent.GitRef{
+			LocalPath:      snap.Directory,
+			RemoteURL:      remoteURL,
+			WorktreeBranch: wtBranch,
 		}
-		gitRef.WorktreeBranch = wtBranch
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
@@ -431,7 +432,6 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
 
-	s.log.Printf("DBG hub.runBackend sid=%s agent=%q calling Start", id, req.Agent)
 	if err := ms.backend.Start(s.ctx, req); err != nil {
 		s.log.Printf("session %s: backend start error: %v", id, err)
 		s.updateSessionStatus(id, agent.StatusError)

@@ -25,7 +25,7 @@ import (
 // Keeping this as a package-level fixture avoids re-deriving it in every
 // test and documents the intent: catalog identity = (backend, host, ref),
 // branch deliberately omitted.
-var testRef = agent.GitRef{Remote: &agent.RemoteRef{URL: "https://example.com/test.git"}}
+var testRef = agent.GitRef{RemoteURL: "https://example.com/test.git"}
 
 func TestDaemonListAgents(t *testing.T) {
 	t.Parallel()

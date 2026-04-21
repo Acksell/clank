@@ -314,59 +314,65 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 }
 
 // workDirFor resolves a GitRef to an absolute working directory on this
-// host. Local refs use the path directly (after asserting RepoRoot);
-// remote refs are cloned into <clonesDir>/<CloneDirName(remote)>/ on
-// first use. When ref.WorktreeBranch is non-empty, the result is the
-// worktree path for that branch; otherwise it is the repo root.
+// host.
+//
+// Resolution precedence (matches the GitRef godoc):
+//  1. If ref.LocalPath is set AND it exists on this host AND it is the
+//     repo root → use it directly. No clone.
+//  2. Else if ref.RemoteURL is set → clone into
+//     <clonesDir>/<CloneDirName(RemoteURL)>/ and use that.
+//  3. Else → error.
+//
+// When ref.WorktreeBranch is non-empty, the result is the worktree path
+// for that branch under the resolved base; otherwise it is the repo
+// root.
+//
+// Step 1 failing (path missing or not a repo root) is *not* an error
+// when RemoteURL is set — it falls through to step 2. This is the
+// "laptop TUI sent a path that doesn't exist on this remote host" case;
+// the host clones from the remote and proceeds. Step 1 failing with
+// no RemoteURL set IS an error.
 func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
 	var base string
-	switch {
-	case ref.Local != nil:
-		if !filepath.IsAbs(ref.Local.Path) {
-			return "", fmt.Errorf("local ref path must be absolute, got %q", ref.Local.Path)
+
+	if ref.LocalPath != "" {
+		usable, reason, hardErr := s.tryLocalPath(ref.LocalPath)
+		if hardErr != nil {
+			return "", hardErr
 		}
-		root, err := git.RepoRoot(ref.Local.Path)
-		if err != nil {
-			return "", fmt.Errorf("local ref path %q is not a git repository: %w", ref.Local.Path, err)
+		if usable {
+			base = ref.LocalPath
+		} else if ref.RemoteURL == "" {
+			// Surface the actual reason rather than a generic "not
+			// usable" — the caller has no remote fallback, so they
+			// need to know why their path was rejected.
+			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, reason)
 		}
-		// Require the path to BE the repo root, not a subdir inside one.
-		// Accepting a subdir would silently change the worktree base from
-		// what the caller passed. Resolve symlinks on both sides because
-		// macOS reports /var/folders as /private/var/folders for the root.
-		givenAbs, err := filepath.EvalSymlinks(ref.Local.Path)
-		if err != nil {
-			return "", fmt.Errorf("resolve symlinks for %q: %w", ref.Local.Path, err)
+	}
+
+	if base == "" {
+		if ref.RemoteURL == "" {
+			return "", fmt.Errorf("git ref must set at least one of local_path or remote_url")
 		}
-		rootAbs, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			return "", fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)
-		}
-		if filepath.Clean(rootAbs) != filepath.Clean(givenAbs) {
-			return "", fmt.Errorf("local ref path %q is not the repo root (root is %q)", ref.Local.Path, root)
-		}
-		base = ref.Local.Path
-	case ref.Remote != nil:
 		if s.clonesDir == "" {
 			return "", fmt.Errorf("cannot resolve remote ref: host has no clones_dir configured")
 		}
-		name, err := agent.CloneDirName(*ref.Remote)
+		name, err := agent.CloneDirName(ref.RemoteURL)
 		if err != nil {
-			return "", fmt.Errorf("clone dir name for %q: %w", ref.Remote.URL, err)
+			return "", fmt.Errorf("clone dir name for %q: %w", ref.RemoteURL, err)
 		}
 		base = filepath.Join(s.clonesDir, name)
 		if _, err := os.Stat(base); os.IsNotExist(err) {
 			if err := os.MkdirAll(s.clonesDir, 0o755); err != nil {
 				return "", fmt.Errorf("create clones dir %q: %w", s.clonesDir, err)
 			}
-			s.log.Printf("cloning %s into %s", ref.Remote.URL, base)
-			if err := git.Clone(ref.Remote.URL, base); err != nil {
-				return "", fmt.Errorf("clone %q: %w", ref.Remote.URL, err)
+			s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
+			if err := git.Clone(ref.RemoteURL, base); err != nil {
+				return "", fmt.Errorf("clone %q: %w", ref.RemoteURL, err)
 			}
 		} else if err != nil {
 			return "", fmt.Errorf("stat clone dir %q: %w", base, err)
 		}
-	default:
-		return "", fmt.Errorf("git ref must set exactly one of local or remote")
 	}
 
 	if ref.WorktreeBranch != "" {
@@ -377,6 +383,48 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		return wt.WorktreeDir, nil
 	}
 	return base, nil
+}
+
+// tryLocalPath inspects path and reports whether it can be used as a
+// local repo root on this host.
+//
+// Return shape: (usable, reason, hardErr).
+//
+//   - usable=true,  reason=nil,  hardErr=nil:  use path directly.
+//   - usable=false, reason!=nil, hardErr=nil:  soft fail — path is
+//     missing or not a git repo on this host. Caller may fall back to
+//     cloning RemoteURL. The reason is surfaced if no fallback exists.
+//   - usable=false, reason=nil,  hardErr!=nil: caller bug — relative
+//     path, symlink failure, or a path that IS inside a git repo but
+//     isn't the root. Never fall back.
+func (s *Service) tryLocalPath(path string) (bool, error, error) {
+	if !filepath.IsAbs(path) {
+		return false, nil, fmt.Errorf("local_path must be absolute, got %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, fmt.Errorf("path does not exist on this host"), nil
+		}
+		return false, nil, fmt.Errorf("stat local_path %q: %w", path, err)
+	}
+	root, err := git.RepoRoot(path)
+	if err != nil {
+		return false, fmt.Errorf("not a git repo"), nil
+	}
+	// Resolve symlinks on both sides because macOS reports /var/folders
+	// as /private/var/folders for the root.
+	givenAbs, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, nil, fmt.Errorf("resolve symlinks for %q: %w", path, err)
+	}
+	rootAbs, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false, nil, fmt.Errorf("resolve symlinks for repo root %q: %w", root, err)
+	}
+	if filepath.Clean(rootAbs) != filepath.Clean(givenAbs) {
+		return false, nil, fmt.Errorf("local_path %q is not the repo root (root is %q)", path, root)
+	}
+	return true, nil, nil
 }
 
 // Session returns the SessionBackend registered under id, or nil and

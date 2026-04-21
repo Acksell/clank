@@ -144,9 +144,15 @@ type InboxModel struct {
 // (hostname, canonical GitRef) the Hub expects on StartRequest. It is the
 // shell→API bridge: shells out to git for the repo root + origin URL.
 //
-// On any failure (cwd not in a git repo, no origin remote, invalid ref)
-// it returns zero values; callers surface the underlying problem via the
-// subsequent sidebar branch-load error rather than blocking startup.
+// Sends BOTH LocalPath (the repo root, used by co-located hosts to skip
+// cloning) AND RemoteURL when available (cross-host stable identity,
+// fallback if a remote host doesn't have LocalPath). See agent.GitRef
+// godoc for resolution precedence on the host.
+//
+// On any failure (cwd not in a git repo) it returns zero values;
+// callers surface the underlying problem via the subsequent sidebar
+// branch-load error rather than blocking startup. Repos with no origin
+// are still usable on the local host.
 //
 // Hostname is currently always HostLocal; remote hosts will be plumbed
 // through when they exist.
@@ -155,11 +161,10 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 	if err != nil {
 		return "", agent.GitRef{}
 	}
-	url, err := git.RemoteURL(root, "origin")
-	if err != nil {
-		return "", agent.GitRef{}
+	ref := agent.GitRef{LocalPath: root}
+	if url, err := git.RemoteURL(root, "origin"); err == nil {
+		ref.RemoteURL = url
 	}
-	ref := agent.GitRef{Remote: &agent.RemoteRef{URL: url}}
 	if err := ref.Validate(); err != nil {
 		return "", agent.GitRef{}
 	}
@@ -633,7 +638,7 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	// Filter by repo identity (canonical GitRef). Sessions without a
 	// GitRef (e.g. adopted backends with no origin remote) are dropped
 	// from the project view since they can't be attributed to this repo.
-	if m.projectFilter && (m.gitRef.Local != nil || m.gitRef.Remote != nil) {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -770,7 +775,7 @@ func (m *InboxModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project) on top of
 	// the daemon's text search results.
-	if m.projectFilter && (m.gitRef.Local != nil || m.gitRef.Remote != nil) {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {

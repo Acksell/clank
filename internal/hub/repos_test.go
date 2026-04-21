@@ -81,7 +81,7 @@ func TestHubWorktreesEndToEnd(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ref := agent.GitRef{Local: &agent.LocalRef{Path: dir}}
+	ref := agent.GitRef{LocalPath: dir}
 
 	// ListBranches runs against real git.
 	branches, err := client.Host(host.HostLocal).ListBranches(ctx, ref)
@@ -119,7 +119,7 @@ func TestHubWorktreesUnknownHost(t *testing.T) {
 	client, _, cleanup := startHubOnSocket(t, s)
 	defer cleanup()
 
-	ref := agent.GitRef{Local: &agent.LocalRef{Path: "/does/not/matter"}}
+	ref := agent.GitRef{LocalPath: "/does/not/matter"}
 	if _, err := client.Host("ghost").ListBranches(context.Background(), ref); err == nil {
 		t.Fatal("expected error for unknown host")
 	}

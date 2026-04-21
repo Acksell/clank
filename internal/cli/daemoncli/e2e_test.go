@@ -124,7 +124,7 @@ func TestE2E_HubHostOpenCode_StartsSession(t *testing.T) {
 	defer ccancel()
 	info, err := hc.Sessions().Create(createCtx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{Local: &agent.LocalRef{Path: repo}},
+		GitRef:  agent.GitRef{LocalPath: repo},
 		Prompt:  "noop",
 	})
 	if err != nil {
@@ -133,7 +133,7 @@ func TestE2E_HubHostOpenCode_StartsSession(t *testing.T) {
 	if info.ID == "" {
 		t.Fatal("created session has empty ID")
 	}
-	if info.GitRef.Local == nil || info.GitRef.Local.Path != repo {
+	if info.GitRef.LocalPath == "" || info.GitRef.LocalPath != repo {
 		t.Errorf("GitRef = %+v, want Local.Path=%q", info.GitRef, repo)
 	}
 
