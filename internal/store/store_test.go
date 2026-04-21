@@ -922,7 +922,10 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 	if got1.GitRef.RemoteURL == "" || got1.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
 		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got1.GitRef.RemoteURL)
 	}
-	got2 := byID["ses-old-2"]
+	got2, ok := byID["ses-old-2"]
+	if !ok {
+		t.Fatal("missing ses-old-2 after migration")
+	}
 	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" {
 		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
 	}

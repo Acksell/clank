@@ -14,7 +14,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
@@ -623,6 +622,3 @@ func (s *Service) VoiceStatus() (active bool, status agent.VoiceStatus) {
 	}
 	return true, sess.Status()
 }
-
-// ensure sort is referenced even if a future trim removes the sole user.
-var _ = sort.Strings

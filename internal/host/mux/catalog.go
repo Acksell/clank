@@ -27,9 +27,10 @@ func (m *Mux) handleListBackends(w http.ResponseWriter, r *http.Request) {
 }
 
 // HOST
-// handleListAgents serves GET /agents?backend=&git_ref=. The git_ref is
-// the URL-encoded canonical form (see agent.GitRef.Canonical). The host
-// resolves it to a workdir internally — no paths cross the wire (§7.3).
+// handleListAgents serves GET /agents?backend=&git_local_path=|git_remote_url=&worktree_branch=.
+// The host resolves the GitRef to a workdir internally — no paths cross
+// the wire beyond the caller-supplied LocalPath (§7.3). See refFromQuery
+// for the wire shape rationale.
 func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	bt := agent.BackendType(r.URL.Query().Get("backend"))
 	ref, err := refFromQuery(r)

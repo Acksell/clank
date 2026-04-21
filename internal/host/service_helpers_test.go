@@ -35,9 +35,15 @@ func (b *noopBackend) SendMessage(_ context.Context, _ agent.SendMessageOpts) er
 }
 func (b *noopBackend) Abort(_ context.Context) error { return nil }
 func (b *noopBackend) Stop() error                   { return nil }
-func (b *noopBackend) Events() <-chan agent.Event    { return nil }
-func (b *noopBackend) Status() agent.SessionStatus   { return agent.StatusIdle }
-func (b *noopBackend) SessionID() string             { return "stub" }
+func (b *noopBackend) Events() <-chan agent.Event {
+	// Return a closed channel so callers that range over events
+	// terminate immediately instead of blocking forever on nil.
+	ch := make(chan agent.Event)
+	close(ch)
+	return ch
+}
+func (b *noopBackend) Status() agent.SessionStatus { return agent.StatusIdle }
+func (b *noopBackend) SessionID() string           { return "stub" }
 func (b *noopBackend) Messages(_ context.Context) ([]agent.MessageData, error) {
 	return nil, nil
 }

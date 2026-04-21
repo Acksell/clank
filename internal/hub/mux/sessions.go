@@ -32,8 +32,8 @@ func (m *Mux) handleSearchSessions(w http.ResponseWriter, r *http.Request) {
 	untilRaw := r.URL.Query().Get("until")
 	visibility := agent.SessionVisibility(r.URL.Query().Get("visibility"))
 
-	if q == "" && sinceRaw == "" && untilRaw == "" {
-		writeBadRequest(w, "at least one of q, since, or until is required")
+	if q == "" && sinceRaw == "" && untilRaw == "" && visibility == "" {
+		writeBadRequest(w, "at least one of q, since, until, or visibility is required")
 		return
 	}
 

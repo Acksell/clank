@@ -118,8 +118,13 @@ func (m *mockBackend) Abort(ctx context.Context) error {
 
 func (m *mockBackend) Stop() error {
 	m.mu.Lock()
+	already := m.stopped
 	m.stopped = true
 	m.mu.Unlock()
+	if already {
+		// idempotent: avoid panic from closing the channel twice
+		return nil
+	}
 	close(m.events)
 	return nil
 }

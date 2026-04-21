@@ -1,6 +1,7 @@
 package hubmux
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/acksell/clank/internal/agent"
@@ -60,7 +61,7 @@ func parseCatalogQuery(r *http.Request) (agent.BackendType, host.Hostname, agent
 		return "", "", agent.GitRef{}, errBadCatalogQuery("hostname is required")
 	}
 	if err := ref.Validate(); err != nil {
-		return "", "", agent.GitRef{}, err
+		return "", "", agent.GitRef{}, fmt.Errorf("invalid git_ref: %w", err)
 	}
 	return bt, hostname, ref, nil
 }
