@@ -38,7 +38,7 @@ func TestService_RegisterAndLookupHost(t *testing.T) {
 
 	hc, hcStop := newHTTPHostClient(t)
 	defer hcStop()
-	if err := s.RegisterHost("local", hc); err != nil {
+	if _, err := s.RegisterHost("local", hc); err != nil {
 		t.Fatalf("RegisterHost: %v", err)
 	}
 
@@ -64,10 +64,10 @@ func TestService_RegisterHost_Validation(t *testing.T) {
 
 	hc, hcStop := newHTTPHostClient(t)
 	defer hcStop()
-	if err := s.RegisterHost("", hc); err == nil {
+	if _, err := s.RegisterHost("", hc); err == nil {
 		t.Error("RegisterHost with empty id should error")
 	}
-	if err := s.RegisterHost("local", nil); err == nil {
+	if _, err := s.RegisterHost("local", nil); err == nil {
 		t.Error("RegisterHost with nil client should error")
 	}
 }
@@ -80,7 +80,7 @@ func TestService_UnregisterHost(t *testing.T) {
 
 	hc, hcStop := newHTTPHostClient(t)
 	defer hcStop()
-	_ = s.RegisterHost("local", hc)
+	_, _ = s.RegisterHost("local", hc)
 
 	got := s.UnregisterHost("local")
 	if got != hc {
@@ -114,8 +114,8 @@ func TestService_closeHosts_ClosesEveryRegisteredHost(t *testing.T) {
 	hc2, hc2Stop := newHTTPHostClient(t)
 	defer hc2Stop()
 
-	_ = s.RegisterHost("local", hc1)
-	_ = s.RegisterHost("remote-1", hc2)
+	_, _ = s.RegisterHost("local", hc1)
+	_, _ = s.RegisterHost("remote-1", hc2)
 
 	// Use the snapshot to count what was registered, then call the
 	// closeHosts shutdown helper indirectly by stopping the service.

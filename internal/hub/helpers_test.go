@@ -1,6 +1,7 @@
 package hub_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -57,6 +58,14 @@ func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) s
 		t.Fatalf("CloneDirName: %v", err)
 	}
 	dir := filepath.Join(f.clonesDir, name)
+	// Idempotent: if a prior call already seeded the repo (e.g. two
+	// tests in the same package using the same testRemoteURL hit the
+	// shared host fixture), reuse the existing repo rather than
+	// re-running git init, which would clobber config and confuse
+	// concurrent readers.
+	if _, statErr := os.Stat(filepath.Join(dir, ".git")); statErr == nil {
+		return dir
+	}
 	// initGitRepoAt seeds a fresh repo with an `origin` remote so the
 	// hub's discover path (git.RemoteURL on snap.Directory) recovers
 	// the same Remote URL we keyed off of.

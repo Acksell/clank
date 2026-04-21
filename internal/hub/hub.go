@@ -36,19 +36,23 @@ import (
 // server and register the resulting HTTP client; production registers
 // the supervisor's HTTP client over a Unix socket.
 //
-// Re-registering the same Hostname replaces the previous entry without
-// closing it (the caller is responsible).
-func (s *Service) RegisterHost(id host.Hostname, c *hostclient.HTTP) error {
+// Re-registering the same Hostname replaces the previous entry and
+// returns the prior client so the caller can decide whether to Close
+// it. Returns nil for the prior client when the registration was new.
+// The Service does not Close clients itself — the supervisor that
+// constructed them owns their lifetime.
+func (s *Service) RegisterHost(id host.Hostname, c *hostclient.HTTP) (*hostclient.HTTP, error) {
 	if id == "" {
-		return fmt.Errorf("host id is required")
+		return nil, fmt.Errorf("host id is required")
 	}
 	if c == nil {
-		return fmt.Errorf("host client is required")
+		return nil, fmt.Errorf("host client is required")
 	}
 	s.hostsMu.Lock()
+	prev := s.hosts[id]
 	s.hosts[id] = c
 	s.hostsMu.Unlock()
-	return nil
+	return prev, nil
 }
 
 // UnregisterHost removes a host from the catalog. Returns the client so the

@@ -289,7 +289,7 @@ func (s *Service) SetLogOutput(w io.Writer) {
 // Equivalent to RegisterHost("local", c); kept as a convenience for the
 // existing call sites that predate the host catalog.
 func (s *Service) SetHostClient(c *hostclient.HTTP) {
-	_ = s.RegisterHost("local", c)
+	_, _ = s.RegisterHost("local", c)
 }
 
 // Stop requests the daemon to shut down. Safe to call from any
