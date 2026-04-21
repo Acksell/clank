@@ -174,20 +174,38 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 
 	server := &http.Server{Handler: handler}
 
-	// Start HTTP server in background.
+	// Start HTTP server in background. Surface a real Serve error
+	// (anything other than the normal "we asked it to close") via a
+	// channel so Run can return it instead of silently shutting down.
+	serveErrCh := make(chan error, 1)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		err := server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
 			s.log.Printf("http serve error: %v", err)
+			serveErrCh <- err
+			// Trigger shutdown so Run unblocks promptly on a
+			// listener-level failure rather than waiting for an
+			// external cancellation.
+			s.cancel()
+			return
 		}
+		serveErrCh <- nil
 	}()
 
-	// Wait for shutdown (Stop() or external ctx cancellation).
+	// Wait for shutdown (Stop(), external ctx cancellation, or a
+	// fatal Serve error above).
 	<-s.ctx.Done()
 	s.log.Printf("context cancelled, shutting down")
 
-	return s.shutdown(server)
+	shutdownErr := s.shutdown(server)
+	// Prefer the underlying Serve error when present — it's the
+	// proximate cause that callers want to react to.
+	if serveErr := <-serveErrCh; serveErr != nil {
+		return serveErr
+	}
+	return shutdownErr
 }
 
 // shutdown gracefully tears down internal subsystems and the HTTP
@@ -195,6 +213,18 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 // the caller's responsibility — Run never created them.
 func (s *Service) shutdown(server *http.Server) error {
 	s.cancel()
+
+	// Drain HTTP first: stop accepting new connections and let
+	// in-flight handlers complete before we tear down the dependencies
+	// (store, host clients, subscribers) they may still be touching.
+	// Otherwise active requests can hit closed channels or a closed
+	// store and return confusing errors to clients that should have
+	// either succeeded or seen a clean shutdown.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		s.log.Printf("http shutdown error: %v", err)
+	}
 
 	// Stop the voice session if active.
 	s.mu.Lock()
@@ -239,13 +269,6 @@ func (s *Service) shutdown(server *http.Server) error {
 		delete(s.subscribers, id)
 	}
 	s.subMu.Unlock()
-
-	// Shutdown HTTP server.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		s.log.Printf("http shutdown error: %v", err)
-	}
 
 	s.wg.Wait()
 	s.log.Printf("hub stopped")
