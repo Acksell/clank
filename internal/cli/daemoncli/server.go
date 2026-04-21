@@ -12,6 +12,7 @@ import (
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
+	"github.com/acksell/clank/internal/socketutil"
 )
 
 // runHubServer is the production driver for hub.Service: it owns the
@@ -40,7 +41,11 @@ func runHubServer(s *hub.Service) error {
 	// Clear any stale socket left behind by a previous crash. IsRunning
 	// already removes stale sockets when it sees a dead PID, but we
 	// still need to handle the case where the PID file was hand-removed.
-	os.Remove(sockPath)
+	// RemoveStale refuses to delete non-socket files so a misconfigured
+	// path cannot clobber user data.
+	if err := socketutil.RemoveStale(sockPath); err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -48,20 +53,22 @@ func runHubServer(s *hub.Service) error {
 	}
 	if err := os.Chmod(sockPath, 0o600); err != nil {
 		listener.Close()
-		os.Remove(sockPath)
+		_ = socketutil.RemoveStale(sockPath)
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
 		listener.Close()
-		os.Remove(sockPath)
+		_ = socketutil.RemoveStale(sockPath)
 		return fmt.Errorf("write PID file: %w", err)
 	}
 
-	// Best-effort cleanup of on-disk artifacts; both Removes are no-ops
+	// Best-effort cleanup of on-disk artifacts; both removes are no-ops
 	// if shutdown already raced and removed them.
 	defer func() {
-		os.Remove(sockPath)
+		if err := socketutil.RemoveStale(sockPath); err != nil {
+			log.Printf("socket cleanup: %v", err)
+		}
 		os.Remove(pidPath)
 	}()
 

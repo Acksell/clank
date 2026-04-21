@@ -112,7 +112,15 @@ func IsRunning() (bool, int, error) {
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		return false, 0, nil // corrupt PID file, treat as not running
+		// Corrupt PID file: clean it up along with any stale socket so
+		// the next startup can rebind. Without this, a future Listen
+		// will fail with "address already in use" even though IsRunning
+		// just concluded nothing is alive.
+		os.Remove(pidPath)
+		if sockPath, _ := SocketPath(); sockPath != "" {
+			os.Remove(sockPath)
+		}
+		return false, 0, nil
 	}
 	proc, err := os.FindProcess(pid)
 	if err != nil {

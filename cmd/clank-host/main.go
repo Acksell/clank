@@ -28,6 +28,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
+	"github.com/acksell/clank/internal/socketutil"
 )
 
 func main() {
@@ -47,12 +48,23 @@ func main() {
 func run(socket string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
-	// Remove stale socket file from a prior crashed run. Best-effort.
-	_ = os.Remove(socket)
+	// Remove stale socket file from a prior crashed run. Refuses to
+	// touch non-socket files so a bad --socket value cannot clobber
+	// user data.
+	if err := socketutil.RemoveStale(socket); err != nil {
+		return err
+	}
 
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", socket, err)
+	}
+	// Restrict the socket to the owner. Without an explicit chmod the
+	// socket inherits the process umask and any local user could reach
+	// the host control plane.
+	if err := os.Chmod(socket, 0o600); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("chmod %s: %w", socket, err)
 	}
 
 	// Build host with both backend managers. Phase 1: hard-coded set
@@ -102,7 +114,9 @@ func run(socket string) error {
 	}
 	svc.Shutdown()
 	cancel()
-	_ = os.Remove(socket)
+	if err := socketutil.RemoveStale(socket); err != nil {
+		lg.Printf("socket cleanup: %v", err)
+	}
 	lg.Println("stopped")
 	return nil
 }
