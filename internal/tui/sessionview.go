@@ -2147,9 +2147,10 @@ func (m *SessionViewModel) View() tea.View {
 	sb.WriteString("\n\n")
 
 	// Error banner.
+	var errBanner string
 	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
-		sb.WriteString(errMsg)
+		errBanner = renderError(m.err, m.width)
+		sb.WriteString(errBanner)
 		sb.WriteString("\n\n")
 	}
 
@@ -2166,7 +2167,10 @@ func (m *SessionViewModel) View() tea.View {
 	// Cache for mouse selection: count how many screen rows precede the content area.
 	m.cachedHeaderRows = 2 // header line + blank line
 	if m.err != nil {
-		m.cachedHeaderRows += 2 // error line + blank line
+		// Account for the actual rendered height — long errors wrap to
+		// multiple lines, otherwise mouse-selection coordinates would
+		// drift after the error appears.
+		m.cachedHeaderRows += lipgloss.Height(errBanner) + 1 // wrapped error + trailing blank line
 	}
 	m.cachedContent = contentLines
 

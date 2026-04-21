@@ -331,8 +331,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 
 	// Error banner.
 	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(dangerColor).Render(fmt.Sprintf("Error: %v", m.err))
-		sb.WriteString(errMsg)
+		sb.WriteString(renderError(m.err, m.width))
 		sb.WriteString("\n\n")
 	}
 
