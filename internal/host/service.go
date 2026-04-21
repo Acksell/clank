@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
 )
@@ -50,6 +52,12 @@ type Service struct {
 	// `<clonesDir>/<CloneDirName(remote)>/`. Defaults to ~/.clank/clones
 	// at construction time; tests override via Options.ClonesDir.
 	clonesDir string
+
+	// cloneSF deduplicates concurrent first-use clones of the same
+	// remote URL. Two CreateSession calls for the same remote that race
+	// past the os.Stat-not-exist check would otherwise both invoke
+	// `git clone` into the same target dir; the loser fails noisily.
+	cloneSF singleflight.Group
 }
 
 // Options configures a Service at construction time.
@@ -283,9 +291,10 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err != nil {
 		return nil, "", err
 	}
-	// Re-check closed under the lock before publishing. mgr.CreateBackend
-	// can take seconds (process spawn, HTTP probe) and Shutdown may have
-	// run in the interim.
+	// Re-check closed AND duplicate sessionID under the lock before
+	// publishing. mgr.CreateBackend can take seconds (process spawn,
+	// HTTP probe) and Shutdown — or another CreateSession racing on
+	// the same sessionID — may have run in the interim.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -293,6 +302,13 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 			s.log.Printf("warning: stop backend created during shutdown: %v", stopErr)
 		}
 		return nil, "", fmt.Errorf("host service is shut down")
+	}
+	if _, exists := s.sessions[sessionID]; exists {
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend for duplicate session %s: %v", sessionID, stopErr)
+		}
+		return nil, "", fmt.Errorf("session %s already registered", sessionID)
 	}
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
@@ -363,12 +379,26 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		}
 		base = filepath.Join(s.clonesDir, name)
 		if _, err := os.Stat(base); os.IsNotExist(err) {
-			if err := os.MkdirAll(s.clonesDir, 0o755); err != nil {
-				return "", fmt.Errorf("create clones dir %q: %w", s.clonesDir, err)
-			}
-			s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
-			if err := git.Clone(ref.RemoteURL, base); err != nil {
-				return "", fmt.Errorf("clone %q: %w", ref.RemoteURL, err)
+			// Singleflight on the clone target so concurrent
+			// CreateSession calls for the same remote don't both
+			// invoke `git clone` into the same dir.
+			_, cloneErr, _ := s.cloneSF.Do(base, func() (any, error) {
+				// Re-check under the singleflight: a peer may have
+				// finished cloning while we were queued.
+				if _, statErr := os.Stat(base); statErr == nil {
+					return nil, nil
+				}
+				if mkErr := os.MkdirAll(s.clonesDir, 0o755); mkErr != nil {
+					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
+				}
+				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
+				if cloneErr := git.Clone(ref.RemoteURL, base); cloneErr != nil {
+					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
+				}
+				return nil, nil
+			})
+			if cloneErr != nil {
+				return "", cloneErr
 			}
 		} else if err != nil {
 			return "", fmt.Errorf("stat clone dir %q: %w", base, err)
@@ -600,7 +630,7 @@ func (s *Service) removeWorktree(_ context.Context, projectDir, branch string, f
 		return err
 	}
 	if wt == nil {
-		return fmt.Errorf("no worktree found for branch %q", branch)
+		return fmt.Errorf("%w: no worktree found for branch %q", ErrNotFound, branch)
 	}
 	if err := git.RemoveWorktree(projectDir, wt.Path, force); err != nil {
 		return err
