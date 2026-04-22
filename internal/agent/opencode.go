@@ -17,6 +17,7 @@ import (
 
 	opencode "github.com/sst/opencode-sdk-go"
 	"github.com/sst/opencode-sdk-go/option"
+	"github.com/sst/opencode-sdk-go/shared"
 )
 
 // ServerResolver returns the current server URL for a project directory.
@@ -763,7 +764,7 @@ func (b *OpenCodeBackend) handleSDKEvent(event opencode.EventListResponse) {
 			return
 		}
 		b.setStatus(StatusError)
-		b.emitError(string(e.Properties.Error.Name))
+		b.emitError(formatSessionError(e.Properties.Error))
 
 	case opencode.EventListResponseEventMessageUpdated:
 		msg := e.Properties.Info
@@ -1038,6 +1039,84 @@ func (b *OpenCodeBackend) emitError(msg string) {
 		Timestamp: time.Now(),
 		Data:      ErrorData{Message: msg},
 	})
+}
+
+// formatSessionError turns an opencode session.error event payload into
+// a human-readable, single-line message that includes both the variant
+// name and the variant-specific data fields. The SDK union exposes the
+// underlying typed payload via AsUnion(); each variant carries strictly
+// more information than the bare class name we used to surface.
+//
+// We deliberately include enough context that a user (or a maintainer
+// reading TUI output) can act on it without server logs:
+//
+//   - ProviderAuthError → name + provider + message ("which key is bad")
+//   - APIError          → name + status + message + body excerpt
+//   - UnknownError      → name + message (opencode catch-all; message is
+//     usually the provider/library exception text)
+//   - MessageAbortedError → name + message (typically "abort requested")
+//   - MessageOutputLengthError → name (Data is opaque interface{} in this
+//     SDK version; nothing useful to extract)
+//
+// Default branch handles SDK additions we don't yet model: we emit the
+// class name plus a JSON dump of Data so unknown variants stay
+// debuggable instead of going silent.
+func formatSessionError(e opencode.EventListResponseEventSessionErrorPropertiesError) string {
+	name := string(e.Name)
+	switch v := e.AsUnion().(type) {
+	case shared.ProviderAuthError:
+		return formatErr(name, v.Data.ProviderID, v.Data.Message)
+	case shared.UnknownError:
+		return formatErr(name, "", v.Data.Message)
+	case shared.MessageAbortedError:
+		return formatErr(name, "", v.Data.Message)
+	case opencode.EventListResponseEventSessionErrorPropertiesErrorAPIError:
+		// StatusCode is float64 in the SDK; cast to int for display.
+		// Body excerpt is bounded so a multi-KiB upstream error page
+		// doesn't wreck the TUI line.
+		status := int(v.Data.StatusCode)
+		body := truncate(v.Data.ResponseBody, 256)
+		if status > 0 && body != "" {
+			return fmt.Sprintf("%s: HTTP %d: %s: %s", name, status, v.Data.Message, body)
+		}
+		if status > 0 {
+			return fmt.Sprintf("%s: HTTP %d: %s", name, status, v.Data.Message)
+		}
+		return formatErr(name, "", v.Data.Message)
+	case opencode.EventListResponseEventSessionErrorPropertiesErrorMessageOutputLengthError:
+		return name
+	default:
+		// Unknown variant — surface raw JSON so we don't lose info.
+		// JSON.RawJSON() returns the full event-error payload as
+		// received off the wire.
+		if raw := e.JSON.RawJSON(); raw != "" {
+			return fmt.Sprintf("%s: %s", name, raw)
+		}
+		return name
+	}
+}
+
+// formatErr is a small helper to keep the variant arms tidy. Producer
+// must pass an empty providerID when the variant has no such field.
+func formatErr(name, providerID, message string) string {
+	switch {
+	case providerID != "" && message != "":
+		return fmt.Sprintf("%s (%s): %s", name, providerID, message)
+	case message != "":
+		return fmt.Sprintf("%s: %s", name, message)
+	default:
+		return name
+	}
+}
+
+// truncate returns s clipped to max bytes with an ellipsis suffix when
+// truncated. Operates on bytes, not runes, because the only caller is
+// log/error formatting where exact display width doesn't matter.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // refreshServerURL calls the resolver to get the current server URL. If the

@@ -751,6 +751,116 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 			},
 		},
 		{
+			// Regression: bug #4 — we used to surface only the SDK
+			// error class name (e.g. "UnknownError"), throwing away
+			// the actual failure cause. Now we include the message
+			// from the typed union variant. This case mimics a real
+			// opencode UnknownError carrying provider-side detail.
+			name: "SessionErrorUnknownErrorIncludesMessage",
+			sseEvents: []sseEvent{
+				{
+					eventType: "session.error",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"sessionID": sid,
+							"error": map[string]interface{}{
+								"name": "UnknownError",
+								"data": map[string]interface{}{"message": "fetch failed: ECONNRESET"},
+							},
+						}
+					},
+				},
+			},
+			totalEvents: 3,
+			check: func(t *testing.T, events []agent.Event) {
+				var msg string
+				for _, evt := range events {
+					if evt.Type == agent.EventError {
+						msg = evt.Data.(agent.ErrorData).Message
+					}
+				}
+				want := "UnknownError: fetch failed: ECONNRESET"
+				if msg != want {
+					t.Errorf("error message = %q, want %q", msg, want)
+				}
+			},
+		},
+		{
+			// Regression: ProviderAuthError must include the provider
+			// id so the user knows *which* key is broken. This is the
+			// most common failure mode when running clank-host inside
+			// a sandbox without LLM creds (Phase G).
+			name: "SessionErrorProviderAuthIncludesProvider",
+			sseEvents: []sseEvent{
+				{
+					eventType: "session.error",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"sessionID": sid,
+							"error": map[string]interface{}{
+								"name": "ProviderAuthError",
+								"data": map[string]interface{}{
+									"providerID": "anthropic",
+									"message":    "401 Unauthorized: invalid x-api-key",
+								},
+							},
+						}
+					},
+				},
+			},
+			totalEvents: 3,
+			check: func(t *testing.T, events []agent.Event) {
+				var msg string
+				for _, evt := range events {
+					if evt.Type == agent.EventError {
+						msg = evt.Data.(agent.ErrorData).Message
+					}
+				}
+				want := "ProviderAuthError (anthropic): 401 Unauthorized: invalid x-api-key"
+				if msg != want {
+					t.Errorf("error message = %q, want %q", msg, want)
+				}
+			},
+		},
+		{
+			// Regression: APIError carries an HTTP status + body. We
+			// surface both because "HTTP 429 with body 'rate limit'"
+			// is far more actionable than "APIError".
+			name: "SessionErrorAPIErrorIncludesStatusAndBody",
+			sseEvents: []sseEvent{
+				{
+					eventType: "session.error",
+					properties: func(sid string) interface{} {
+						return map[string]interface{}{
+							"sessionID": sid,
+							"error": map[string]interface{}{
+								"name": "APIError",
+								"data": map[string]interface{}{
+									"isRetryable":  true,
+									"message":      "Too Many Requests",
+									"statusCode":   429,
+									"responseBody": `{"error":"rate_limit_exceeded"}`,
+								},
+							},
+						}
+					},
+				},
+			},
+			totalEvents: 3,
+			check: func(t *testing.T, events []agent.Event) {
+				var msg string
+				for _, evt := range events {
+					if evt.Type == agent.EventError {
+						msg = evt.Data.(agent.ErrorData).Message
+					}
+				}
+				want := `APIError: HTTP 429: Too Many Requests: {"error":"rate_limit_exceeded"}`
+				if msg != want {
+					t.Errorf("error message = %q, want %q", msg, want)
+				}
+			},
+		},
+		{
 			name: "MessagePartDelta",
 			sseEvents: []sseEvent{
 				{

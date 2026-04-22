@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/acksell/clank/internal/host"
 )
@@ -40,7 +41,59 @@ func New(svc *host.Service, lg *log.Logger) *Mux {
 func (m *Mux) Handler() http.Handler {
 	mx := http.NewServeMux()
 	m.register(mx)
-	return mx
+	return m.logRequests(mx)
+}
+
+// logRequests wraps every request with a one-line access log
+// (method, path, status, duration). This is the single source of
+// truth for "did clank-host actually see this request?" — without it,
+// failures upstream (e.g. a Daytona preview-proxy 4xx that never
+// reaches us) and failures inside our handlers look identical from
+// the Hub side.
+func (m *Mux) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		m.log.Printf("hostmux: %s %s -> %d (%s)", r.Method, r.URL.Path, sw.status, time.Since(start))
+	})
+}
+
+// statusRecorder captures the status code the handler wrote. It is a
+// minimal http.ResponseWriter shim — we don't need Hijacker/Flusher
+// passthrough for the access log itself, so this stays small. SSE
+// handlers call WriteHeader(200) explicitly before flushing, which is
+// captured fine. If a handler embeds a http.Flusher cast (e.g. SSE),
+// it does so on the inner writer via type assertion on w; we'd need
+// to forward Flusher only if the assertion site moved here. It hasn't.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status = code
+		s.wroteHeader = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if !s.wroteHeader {
+		s.wroteHeader = true
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Flush forwards to the underlying ResponseWriter when it supports
+// http.Flusher. Required for the SSE handler (handleSessionEvents),
+// which type-asserts http.Flusher on the writer it receives.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (m *Mux) register(mx *http.ServeMux) {

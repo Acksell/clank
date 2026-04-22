@@ -6,11 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 
 	"github.com/acksell/clank/internal/host"
 )
+
+// errorBodyExcerptMax bounds how many bytes of an error response body
+// we keep for logging + error-message enrichment. Daytona proxy error
+// pages can be tens of KiB of HTML; clank-host's own errResp bodies
+// are <1 KiB. 2 KiB comfortably covers both without flooding logs.
+const errorBodyExcerptMax = 2048
 
 // HTTP is a Client that talks to a Host over HTTP. The transport is
 // chosen at construction time: a Unix socket for the local clankd ↔
@@ -79,7 +86,16 @@ func (c *HTTP) do(ctx context.Context, method, path string, body interface{}, ou
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return errorFromResp(resp)
+		// Read the entire body up to a bound so we can both log it
+		// and surface an excerpt in the returned error. Without this
+		// the caller sees only "host: 400 Bad Request" with no clue
+		// whether the 400 came from clank-host (JSON errResp) or
+		// from an upstream proxy (HTML / different JSON shape).
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyExcerptMax))
+		log.Printf("hostclient: %s %s%s -> %d (Content-Type=%q): %s",
+			method, c.baseURL, path, resp.StatusCode,
+			resp.Header.Get("Content-Type"), bodyExcerpt(body))
+		return errorFromResp(resp, body)
 	}
 	if out != nil && resp.StatusCode != http.StatusNoContent {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -91,15 +107,22 @@ func (c *HTTP) do(ctx context.Context, method, path string, body interface{}, ou
 
 // errorFromResp reads an errResp body and translates the code field
 // back into the matching host sentinel error so callers can use
-// errors.Is.
-func errorFromResp(resp *http.Response) error {
+// errors.Is. body is the already-read response body excerpt (callers
+// in `do` read it once for both logging and parsing).
+func errorFromResp(resp *http.Response, body []byte) error {
 	var e struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&e)
+	_ = json.Unmarshal(body, &e)
 	if e.Error == "" {
+		// Body wasn't clank-host's errResp shape (likely an upstream
+		// proxy 4xx like Daytona's). Surface a body excerpt so the
+		// failure is actionable instead of just "host: 400 Bad Request".
 		e.Error = resp.Status
+		if excerpt := bodyExcerpt(body); excerpt != "" {
+			e.Error = fmt.Sprintf("%s: %s", resp.Status, excerpt)
+		}
 	}
 	switch e.Code {
 	case "not_found":
@@ -121,6 +144,26 @@ func errorFromResp(resp *http.Response) error {
 	default:
 		return fmt.Errorf("host: %s", e.Error)
 	}
+}
+
+// bodyExcerpt returns a single-line, whitespace-collapsed view of the
+// response body suitable for embedding in a log line or error message.
+// Empty input yields "". Newlines and tabs become spaces so multi-line
+// HTML error pages don't wreck log readability.
+func bodyExcerpt(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	out := make([]byte, 0, len(body))
+	for _, b := range body {
+		switch b {
+		case '\n', '\r', '\t':
+			out = append(out, ' ')
+		default:
+			out = append(out, b)
+		}
+	}
+	return string(bytes.TrimSpace(out))
 }
 
 // --- Top-level surface ---
