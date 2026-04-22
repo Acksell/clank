@@ -200,6 +200,32 @@ func TestSidebar_ActivateOnDisconnectedKindNoOp(t *testing.T) {
 	}
 }
 
+// TestSidebar_HostsLoadedPreservesCursorIdentity is a regression test
+// for Bug #2: provisioning daytona changed the host row order, but
+// the cursor tracked position (index 0) instead of identity ("local"),
+// so it silently jumped to whichever host now occupied index 0.
+//
+// We simulate by placing the cursor on "local" (index 0), then
+// dispatching a hostsLoadedMsg with a reordered list where local is
+// no longer first. The cursor should follow local, not stay at 0.
+func TestSidebar_HostsLoadedPreservesCursorIdentity(t *testing.T) {
+	s := newTestSidebar(t)
+	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil)
+	s.cursor = 0 // on local
+
+	// Reload with a list where local has been pushed to index 1
+	// (mimics what would happen if Hosts() didn't pin local first).
+	_ = s.Update(hostsLoadedMsg{hosts: []host.Hostname{"daytona", host.HostLocal}, err: nil})
+
+	row, ok := s.hosts.rowAt(s.cursor)
+	if !ok {
+		t.Fatalf("cursor=%d out of range after reload (count=%d)", s.cursor, s.hosts.count())
+	}
+	if row.name != host.HostLocal {
+		t.Errorf("cursor moved to %q after reload; want still on %q", row.name, host.HostLocal)
+	}
+}
+
 // TestSidebar_NewBranchKeyOnlyInWorktreesSection: pressing 'n' while
 // the cursor is on a host row must not enter create-branch mode —
 // otherwise the user would type a branch name into nowhere.

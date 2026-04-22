@@ -140,3 +140,40 @@ func TestService_closeHosts_ClosesEveryRegisteredHost(t *testing.T) {
 		t.Errorf("hosts remaining after Unregister-all = %d, want 0", got)
 	}
 }
+
+// TestService_HostsLocalPinnedFirst is a regression test for Bug #2:
+// the sidebar cursor jumped from local to daytona after the user
+// pressed [c] to provision daytona. Root cause was Hosts() lex-sorting
+// ('d' < 'l'), pushing local to index 1 — and the sidebar's cursor
+// tracks position, not identity. The fix pins local first so the
+// position-based cursor stays put for the common case.
+func TestService_HostsLocalPinnedFirst(t *testing.T) {
+	t.Parallel()
+
+	s := hub.New()
+	defer s.Stop()
+
+	hc1, hc1Stop := newHTTPHostClient(t)
+	defer hc1Stop()
+	hc2, hc2Stop := newHTTPHostClient(t)
+	defer hc2Stop()
+	hc3, hc3Stop := newHTTPHostClient(t)
+	defer hc3Stop()
+
+	// Register in lex-bad order (daytona < local) plus a third name
+	// that lex-sorts after local, to confirm "local first, rest sorted".
+	_, _ = s.RegisterHost("daytona", hc1)
+	_, _ = s.RegisterHost("zeta", hc2)
+	_, _ = s.RegisterHost("local", hc3)
+
+	got := s.Hosts()
+	want := []host.Hostname{"local", "daytona", "zeta"}
+	if len(got) != len(want) {
+		t.Fatalf("Hosts() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Hosts()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}

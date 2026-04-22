@@ -15,9 +15,6 @@ type listHostsResponse struct {
 
 func (m *Mux) handleListHosts(w http.ResponseWriter, r *http.Request) {
 	hosts := m.svc.Hosts()
-	if m.log != nil {
-		m.log.Printf("hub.mux: GET /hosts -> %v (%d total)", hosts, len(hosts))
-	}
 	m.writeJSON(w, http.StatusOK, listHostsResponse{Hosts: hosts})
 }
 

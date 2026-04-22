@@ -21,7 +21,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -149,7 +148,6 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef ag
 
 // Init fetches both the host list and branches concurrently.
 func (m *SidebarModel) Init() tea.Cmd {
-	log.Printf("sidebar: Init (client=%p, hostname=%q, gitRef.local=%q gitRef.remote=%q)", m.client, m.hostname, m.gitRef.LocalPath, m.gitRef.RemoteURL)
 	cmds := []tea.Cmd{m.hosts.loadHosts()}
 	if m.hostname != "" && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
 		cmds = append(cmds, m.loadBranches())
@@ -276,10 +274,24 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 		return m.loadBranches()
 
 	case hostsLoadedMsg:
-		log.Printf("sidebar: hostsLoadedMsg received (hosts=%v err=%v)", msg.hosts, msg.err)
+		// Capture the cursor's host identity before applyLoaded
+		// reshuffles rows. Without this, provisioning daytona
+		// (which makes the hub return [local, daytona]) would leave
+		// the cursor at index 0 — but row 0 might no longer be the
+		// row the user was looking at. We pin local first in
+		// hub.Service.Hosts, but other reloads can still reorder.
+		var prevHost host.Hostname
+		if sec, idx := m.cursorSection(); sec == sectionHosts {
+			if row, ok := m.hosts.rowAt(idx); ok {
+				prevHost = row.name
+			}
+		}
 		m.hosts.applyLoaded(msg.hosts, msg.err)
-		// Hosts may have appeared/disappeared — keep cursor in bounds
-		// but otherwise leave it where the user put it.
+		if prevHost != "" {
+			if i := m.hosts.indexOf(prevHost); i >= 0 {
+				m.cursor = i
+			}
+		}
 		m.clampCursor()
 		return nil
 
@@ -350,7 +362,6 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
-		log.Printf("sidebar: refresh ('r') pressed; reloading branches+hosts")
 		return tea.Batch(m.loadBranches(), m.hosts.loadHosts())
 	}
 

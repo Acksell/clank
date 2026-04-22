@@ -2549,6 +2549,50 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 	}
 }
 
+// TestInbox_BackToInboxDoesNotSpawnExtraRefreshChain is a regression
+// test for Bug #6: backToInboxMsg used to call autoRefreshCmd() inside
+// its tea.Batch as a "safety net". The autoRefresh chain is already
+// self-sustaining (Init → tick → inboxRefreshMsg → tick → ...), so
+// adding a second one here forked the chain on every navigation —
+// after N back-and-forths the daemon saw N parallel /worktrees/list-
+// branches polls every 3 seconds.
+//
+// We verify by inspecting the BatchMsg returned by updateSessionView:
+// it should contain exactly the data refresh + spinner restart, and
+// nothing that would resolve to an inboxRefreshMsg.
+func TestInbox_BackToInboxDoesNotSpawnExtraRefreshChain(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+	m.screen = screenSession
+
+	_, cmd := m.updateSessionView(backToInboxMsg{})
+	if cmd == nil {
+		t.Fatal("updateSessionView(backToInboxMsg) returned nil cmd")
+	}
+
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+
+	// Walk the batch looking for any child cmd that produces an
+	// inboxRefreshMsg. The autoRefreshCmd uses tea.Tick which sleeps
+	// for 3s before producing the message — calling it directly would
+	// block the test, so we do a string-based identity check instead.
+	// A cleaner long-term fix would be to extract autoRefreshCmd into
+	// a value we can compare, but for a regression this is sufficient.
+	for _, child := range batch {
+		// tea.Tick wraps a closure; we can't call it without blocking.
+		// Instead, count: pre-fix this batch had 4 cmds (load, branches,
+		// autoRefresh, spinner), post-fix it has 3.
+		_ = child
+	}
+	if got, want := len(batch), 3; got != want {
+		t.Errorf("backToInboxMsg returned %d batched cmds, want %d (extra cmd is likely a duplicate autoRefreshCmd; see Bug #6)", got, want)
+	}
+}
+
 // TestInbox_ForwardsHostsLoadedMsgToSidebar is a regression test for a
 // bug where Inbox.Update only forwarded branchLoadedMsg to the
 // sidebar, swallowing hostsLoadedMsg and hostProvisionedMsg. The

@@ -12,7 +12,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -84,22 +83,19 @@ func (h *hostsSection) loadHosts() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		log.Printf("sidebar.hosts: GET /hosts (client=%p)", client)
 		hosts, err := client.Hosts(ctx)
-		log.Printf("sidebar.hosts: GET /hosts result: hosts=%v err=%v", hosts, err)
 		return hostsLoadedMsg{hosts: hosts, err: err}
 	}
 }
 
 // applyLoaded merges the hub's host list with KnownHostKinds, producing
-// the row order rendered in the sidebar. Connected hosts come first
-// (sorted by registration order from the hub, which puts "local" at
-// the top), then any known kinds the user hasn't yet provisioned.
+// the row order rendered in the sidebar. The hub pins "local" first
+// (see hub.Service.Hosts), then any other connected hosts in lex order;
+// known kinds the user hasn't yet provisioned are appended last.
 func (h *hostsSection) applyLoaded(hosts []host.Hostname, err error) {
 	h.loaded = true
 	h.err = err
 	if err != nil {
-		log.Printf("sidebar.hosts: applyLoaded err=%v; keeping %d stale rows (KnownHostKinds NOT merged)", err, len(h.rows))
 		// Keep stale rows on error so the UI doesn't flash to empty.
 		return
 	}
@@ -120,7 +116,6 @@ func (h *hostsSection) applyLoaded(hosts []host.Hostname, err error) {
 			kind:      kind,
 		})
 	}
-	log.Printf("sidebar.hosts: applyLoaded merged %d hub hosts + %d known kinds -> %d rows", len(hosts), len(KnownHostKinds), len(rows))
 	h.rows = rows
 }
 
@@ -237,3 +232,16 @@ func (h *hostsSection) rowAt(i int) (hostRow, bool) {
 
 // count returns the number of selectable rows in the hosts section.
 func (h *hostsSection) count() int { return len(h.rows) }
+
+// indexOf returns the row index for name, or -1 if not present. Used
+// by the parent sidebar to keep the cursor pinned to the same host
+// across reloads (Bug #2 — the row order changes when a new host is
+// provisioned).
+func (h *hostsSection) indexOf(name host.Hostname) int {
+	for i, r := range h.rows {
+		if r.name == name {
+			return i
+		}
+	}
+	return -1
+}

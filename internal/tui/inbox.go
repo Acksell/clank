@@ -515,9 +515,12 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
-		// Refresh data, restart spinner, and ensure the auto-refresh
-		// timer is running (safety net in case it was lost).
-		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches(), m.autoRefreshCmd(), m.spinner.Tick)
+		// Refresh data and restart the spinner. Do NOT start a new
+		// autoRefreshCmd here — the chain started in Init() is
+		// self-sustaining via the inboxRefreshMsg handler. Spawning
+		// another tick on every back-to-inbox produces N parallel
+		// refresh chains after N navigations (Bug #6).
+		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches(), m.spinner.Tick)
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)

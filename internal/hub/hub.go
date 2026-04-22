@@ -94,9 +94,10 @@ func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 	return c, nil
 }
 
-// Hosts returns a snapshot of all registered host IDs, sorted
-// lexicographically so callers (UI, logs, tests) get a deterministic
-// order without having to sort themselves.
+// Hosts returns a snapshot of all registered host IDs. "local" is
+// pinned first (it's the implicit default and the TUI sidebar's
+// stable cursor anchor — see Bug #2); the remaining hosts are
+// lex-sorted so callers (UI, logs, tests) get a deterministic order.
 func (s *Service) Hosts() []host.Hostname {
 	s.hostsMu.RLock()
 	defer s.hostsMu.RUnlock()
@@ -104,7 +105,15 @@ func (s *Service) Hosts() []host.Hostname {
 	for id := range s.hosts {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	sort.Slice(ids, func(i, j int) bool {
+		if ids[i] == host.HostLocal {
+			return true
+		}
+		if ids[j] == host.HostLocal {
+			return false
+		}
+		return ids[i] < ids[j]
+	})
 	return ids
 }
 
