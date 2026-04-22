@@ -88,3 +88,43 @@ func (h *HostClient) MergeBranch(ctx context.Context, ref agent.GitRef, branch, 
 	}
 	return out, nil
 }
+
+// listHostsResponse mirrors hubmux.listHostsResponse. Defined locally
+// to avoid a hub→hubmux import cycle.
+type listHostsResponse struct {
+	Hosts []host.Hostname `json:"hosts"`
+}
+
+// Hosts returns every host registered in the hub catalog. Includes
+// "local" plus any launcher-provisioned hosts (e.g. "daytona").
+func (c *Client) Hosts(ctx context.Context) ([]host.Hostname, error) {
+	var out listHostsResponse
+	if err := c.get(ctx, "/hosts", &out); err != nil {
+		return nil, err
+	}
+	return out.Hosts, nil
+}
+
+// provisionHostRequest mirrors hubmux.provisionHostRequest.
+type provisionHostRequest struct {
+	Kind string `json:"kind"`
+}
+
+// ProvisionHostResponse is the wire shape of POST /hosts. Status is
+// always "ready" for now (synchronous launch); the field is reserved
+// for a future async path.
+type ProvisionHostResponse struct {
+	HostID host.Hostname `json:"host_id"`
+	Status string        `json:"status"`
+}
+
+// ProvisionHost asks the hub to spin up a new host of the given kind
+// (e.g. "daytona") and register it. Idempotent on the hub side: a
+// second call with the same kind returns the existing host.
+func (c *Client) ProvisionHost(ctx context.Context, kind string) (ProvisionHostResponse, error) {
+	var out ProvisionHostResponse
+	if err := c.post(ctx, "/hosts", provisionHostRequest{Kind: kind}, &out); err != nil {
+		return ProvisionHostResponse{}, err
+	}
+	return out, nil
+}

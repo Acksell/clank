@@ -36,6 +36,7 @@ func Command() *cobra.Command {
 		codeCmd(),
 		inboxCmd(),
 		voiceCmd(),
+		connectCmd(),
 	)
 
 	return root

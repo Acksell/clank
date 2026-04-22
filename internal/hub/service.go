@@ -43,6 +43,18 @@ type Service struct {
 	hostsMu sync.RWMutex
 	hosts   map[host.Hostname]*hostclient.HTTP
 
+	// launchers maps a "kind" string (e.g. "daytona") to a
+	// HostLauncher; ProvisionHost dispatches by name. See
+	// hosts_provision.go.
+	launchersMu sync.RWMutex
+	launchers   map[string]HostLauncher
+
+	// remoteHandles tracks the lifetime handle returned by each
+	// HostLauncher.Launch so shutdown() can Stop them. Keyed by the
+	// hostname under which the host is registered in the catalog.
+	remoteHandlesMu sync.Mutex
+	remoteHandles   map[host.Hostname]RemoteHostHandle
+
 	mu       sync.RWMutex
 	sessions map[string]*managedSession // keyed by hub session ID
 	// subscribers receive all events broadcast by the hub.
@@ -276,6 +288,12 @@ func (s *Service) shutdown(server *http.Server) error {
 	// lifetime (process or test fixture) is owned by the caller; we
 	// only release our HTTP transport handles here.
 	s.closeHosts()
+
+	// Tear down launcher-provisioned hosts (e.g. Daytona sandboxes).
+	// Done after closeHosts so the HTTP transports are quiesced before
+	// we delete the underlying compute — no in-flight requests against
+	// a sandbox we're about to delete.
+	s.stopRemoteHandles()
 
 	// Close the persistence store.
 	if s.Store != nil {

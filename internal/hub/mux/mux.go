@@ -79,6 +79,11 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// body — branch names contain "/" so they cannot ride in the path,
 	// and there is no host-side repo registry to bind path params to
 	// post-§7.
+	// Hosts catalog + provisioning. List is read-only; provision
+	// brings up a launcher-backed remote (e.g. Daytona).
+	mx.HandleFunc("GET /hosts", m.handleListHosts)
+	mx.HandleFunc("POST /hosts", m.handleProvisionHost)
+
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/list-branches", m.handleListBranchesOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/resolve", m.handleResolveWorktreeOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/remove", m.handleRemoveWorktreeOnHost)

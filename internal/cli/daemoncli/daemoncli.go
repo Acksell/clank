@@ -117,6 +117,14 @@ func RunStart(foreground bool) error {
 
 		d.SetHostClient(hh.client)
 
+		// Register provider-specific host launchers. Daytona is the
+		// only one for now; absent DAYTONA_API_KEY this is a no-op
+		// and POST /hosts {kind:"daytona"} will surface a clean
+		// "no launcher registered" error.
+		if err := registerDaytonaLauncher(d); err != nil {
+			return fmt.Errorf("register host launchers: %w", err)
+		}
+
 		return runHubServer(d)
 	}
 
