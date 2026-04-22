@@ -12,6 +12,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -83,7 +84,9 @@ func (h *hostsSection) loadHosts() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		log.Printf("sidebar.hosts: GET /hosts (client=%p)", client)
 		hosts, err := client.Hosts(ctx)
+		log.Printf("sidebar.hosts: GET /hosts result: hosts=%v err=%v", hosts, err)
 		return hostsLoadedMsg{hosts: hosts, err: err}
 	}
 }
@@ -96,6 +99,7 @@ func (h *hostsSection) applyLoaded(hosts []host.Hostname, err error) {
 	h.loaded = true
 	h.err = err
 	if err != nil {
+		log.Printf("sidebar.hosts: applyLoaded err=%v; keeping %d stale rows (KnownHostKinds NOT merged)", err, len(h.rows))
 		// Keep stale rows on error so the UI doesn't flash to empty.
 		return
 	}
@@ -116,6 +120,7 @@ func (h *hostsSection) applyLoaded(hosts []host.Hostname, err error) {
 			kind:      kind,
 		})
 	}
+	log.Printf("sidebar.hosts: applyLoaded merged %d hub hosts + %d known kinds -> %d rows", len(hosts), len(KnownHostKinds), len(rows))
 	h.rows = rows
 }
 

@@ -429,7 +429,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case branchLoadedMsg, branchWorktreeCreatedMsg:
+	case branchLoadedMsg, branchWorktreeCreatedMsg, hostsLoadedMsg, hostProvisionedMsg:
 		cmd := m.sidebar.Update(msg)
 		return m, cmd
 

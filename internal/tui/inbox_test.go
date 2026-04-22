@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 )
 
 func TestBuildGroups_SortsByUpdatedAtDescending(t *testing.T) {
@@ -2545,5 +2546,32 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 	}
 	if len(m.flatRows) != wantRows {
 		t.Errorf("flatRows count = %d, want %d", len(m.flatRows), wantRows)
+	}
+}
+
+// TestInbox_ForwardsHostsLoadedMsgToSidebar is a regression test for a
+// bug where Inbox.Update only forwarded branchLoadedMsg to the
+// sidebar, swallowing hostsLoadedMsg and hostProvisionedMsg. The
+// symptom was an empty Hosts section (header rendered but zero rows),
+// because the sidebar's hostsSection.applyLoaded was never called.
+//
+// The fix: include hostsLoadedMsg + hostProvisionedMsg in the same
+// case arm. This test verifies the message is forwarded by inspecting
+// the sidebar's hosts section after dispatch.
+func TestInbox_ForwardsHostsLoadedMsgToSidebar(t *testing.T) {
+	t.Parallel()
+
+	m := NewInboxModel(nil)
+
+	// Sanity: zero rows before dispatch.
+	if got := m.sidebar.hosts.count(); got != 0 {
+		t.Fatalf("pre-dispatch row count = %d, want 0", got)
+	}
+
+	_, _ = m.Update(hostsLoadedMsg{hosts: []host.Hostname{host.HostLocal}, err: nil})
+
+	// Post-dispatch: 1 connected host (local) + KnownHostKinds (daytona) = 2.
+	if got := m.sidebar.hosts.count(); got != 2 {
+		t.Fatalf("post-dispatch row count = %d, want 2; hostsLoadedMsg was likely swallowed by inbox.Update", got)
 	}
 }

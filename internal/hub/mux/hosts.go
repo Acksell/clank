@@ -14,7 +14,11 @@ type listHostsResponse struct {
 }
 
 func (m *Mux) handleListHosts(w http.ResponseWriter, r *http.Request) {
-	m.writeJSON(w, http.StatusOK, listHostsResponse{Hosts: m.svc.Hosts()})
+	hosts := m.svc.Hosts()
+	if m.log != nil {
+		m.log.Printf("hub.mux: GET /hosts -> %v (%d total)", hosts, len(hosts))
+	}
+	m.writeJSON(w, http.StatusOK, listHostsResponse{Hosts: hosts})
 }
 
 // provisionHostRequest carries the kind discriminator. Future fields
