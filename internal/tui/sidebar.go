@@ -1,9 +1,22 @@
 package tui
 
 // SidebarModel is the navigation sidebar of the inbox layout.
-// It shows local git branches for the current project, with visual
-// indicators for worktrees, the default branch, and the current branch.
-// Users can navigate with up/down and press 'n' to create a new branch.
+//
+// It contains two sections, both selectable with one cursor:
+//
+//   - Hosts (top): every registered host plus any KnownHostKinds the
+//     user can provision. See sidebar_hosts.go.
+//   - Worktrees (below the separator): "All" plus every git branch in
+//     the active host's repo. Branch ops route through (hostname,
+//     gitRef) — branches are addressed logically, not by on-disk path.
+//
+// Cursor model: linear `cursor int` over both sections. Section
+// boundaries are computed at use-time (cursorSection / setCursor) so
+// adding rows in either section doesn't require renumbering. Order:
+//   [hosts...] [All] [branches...]
+//
+// Per AGENTS.md "per-method files" rule, host-row rendering lives in
+// sidebar_hosts.go; this file is the section orchestrator.
 
 import (
 	"context"
@@ -23,6 +36,17 @@ import (
 
 // sidebarWidth is the fixed width of the sidebar (including border).
 const sidebarWidth = 30
+
+// sidebarSection identifies which section the cursor is in. Used by
+// key dispatch (e.g. [c] only meaningful in hosts; [n] only in
+// worktrees) and by selection accessors that should return zero-value
+// when the cursor isn't in their section.
+type sidebarSection int
+
+const (
+	sectionHosts sidebarSection = iota
+	sectionWorktrees
+)
 
 // branchLoadedMsg carries the result of loading branches from the daemon.
 type branchLoadedMsg struct {
@@ -56,29 +80,38 @@ func (s branchSessionStatus) IsArchived() bool {
 	return s.Total > 0 && s.Archived == s.Total
 }
 
-// SidebarModel displays local git branches in a navigation sidebar and allows selection.
+// SidebarModel displays hosts + worktrees and allows selection.
 type SidebarModel struct {
 	client *hubclient.Client
-	// projectDir is the cwd the inbox was launched from. Kept for display
-	// and for non-branch concerns (project filter); branch operations now
-	// route through hostname/gitRef instead.
+	// projectDir is the cwd the inbox was launched from. Kept for
+	// display and for non-branch concerns (project filter); branch
+	// operations route through (hostname, gitRef).
 	projectDir string
 	hostname   host.Hostname
 	gitRef     agent.GitRef
 
+	// activeHost is shared with the parent inbox; the sidebar mutates
+	// it when the user selects a host row. Nil means "no active host
+	// concept" (callers expected to provide one — kept as pointer to
+	// avoid copying the persisted state).
+	activeHost *ActiveHost
+
+	hosts hostsSection
+
 	branches []host.BranchInfo
-	cursor   int
-	scroll   int
+
+	// cursor is the linear index across [hosts...][All][branches...].
+	// scroll is the first row of the rendered window.
+	cursor int
+	scroll int
 
 	// Session status per branch (set by the inbox when sessions are loaded).
 	sessionStatus map[string]branchSessionStatus // branch name -> session status summary
 
-	// New branch input mode.
+	// New branch input mode (worktrees section).
 	creating bool
 	input    textinput.Model
 
-	// "All branches" is the virtual first entry (index -1 means all).
-	// cursor==0 means "All branches", cursor>=1 means branches[cursor-1].
 	focused bool
 	width   int
 	height  int
@@ -86,9 +119,10 @@ type SidebarModel struct {
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
-// projectDir is retained for display purposes only; branch/worktree ops
-// are addressed by (hostname, gitRef).
-func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string) SidebarModel {
+// activeHost is required — the sidebar's host-row selection mutates
+// it. projectDir is retained for display purposes only; branch/worktree
+// ops are addressed by (hostname, gitRef).
+func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string, activeHost *ActiveHost) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -104,64 +138,93 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef ag
 		hostname:   hostname,
 		gitRef:     gitRef,
 		projectDir: projectDir,
+		activeHost: activeHost,
+		hosts:      newHostsSection(client),
 		input:      ti,
-		cursor:     0, // "All branches" selected by default
+		// Default cursor lands on "All" in worktrees so the user's
+		// existing flow (browse worktrees) is unchanged.
 	}
 }
 
-// Init fetches branches from the daemon.
+// Init fetches both the host list and branches concurrently.
 func (m *SidebarModel) Init() tea.Cmd {
-	return m.loadBranches()
+	cmds := []tea.Cmd{m.hosts.loadHosts()}
+	if m.hostname != "" && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+		cmds = append(cmds, m.loadBranches())
+	}
+	// Position cursor on "All" by default (first row of worktrees).
+	m.cursor = m.hosts.count()
+	return tea.Batch(cmds...)
 }
 
-// SelectedBranch returns the currently selected branch name.
-// Empty string means "all branches" (no filter).
+// --- Cursor / section helpers ---
+
+// totalRows is the number of selectable rows across both sections.
+// Layout: [N hosts][1 "All"][len(branches) branches].
+func (m *SidebarModel) totalRows() int {
+	return m.hosts.count() + 1 + len(m.branches)
+}
+
+// cursorSection returns which section the cursor is in and the
+// section-local index. For sectionWorktrees, idx==0 means the "All"
+// row; idx>=1 means branches[idx-1].
+func (m *SidebarModel) cursorSection() (sidebarSection, int) {
+	n := m.hosts.count()
+	if m.cursor < n {
+		return sectionHosts, m.cursor
+	}
+	return sectionWorktrees, m.cursor - n
+}
+
+// branchIndex returns the branches[] index for the current cursor, or
+// -1 if the cursor is on "All" or in the hosts section.
+func (m *SidebarModel) branchIndex() int {
+	sec, idx := m.cursorSection()
+	if sec != sectionWorktrees || idx == 0 {
+		return -1
+	}
+	bidx := idx - 1
+	if bidx >= len(m.branches) {
+		return -1
+	}
+	return bidx
+}
+
+// SelectedBranch returns the currently selected branch name. Empty
+// string means "All" or a host row is selected.
 func (m *SidebarModel) SelectedBranch() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
+	bidx := m.branchIndex()
+	if bidx < 0 {
 		return ""
 	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
-		return ""
-	}
-	return m.branches[idx].Name
+	return m.branches[bidx].Name
 }
 
-// SelectedWorktreeDir returns the worktree directory path for the currently
-// selected entry. Empty string means "all worktrees" (no filter).
+// SelectedWorktreeDir returns the worktree directory for the cursor,
+// or "" when not on a branch row.
 func (m *SidebarModel) SelectedWorktreeDir() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
+	bidx := m.branchIndex()
+	if bidx < 0 {
 		return ""
 	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
-		return ""
-	}
-	return m.branches[idx].WorktreeDir
+	return m.branches[bidx].WorktreeDir
 }
 
-// SelectedBranchInfo returns the full BranchInfo for the currently selected
-// entry, or nil if "All" is selected.
+// SelectedBranchInfo returns the BranchInfo for the cursor, or nil
+// when not on a branch row.
 func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
-	if m.cursor == 0 || len(m.branches) == 0 {
+	bidx := m.branchIndex()
+	if bidx < 0 {
 		return nil
 	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
-		return nil
-	}
-	return &m.branches[idx]
+	return &m.branches[bidx]
 }
 
 // SetFocused sets whether the sidebar has keyboard focus.
-func (m *SidebarModel) SetFocused(focused bool) {
-	m.focused = focused
-}
+func (m *SidebarModel) SetFocused(focused bool) { m.focused = focused }
 
 // Focused returns whether the sidebar has keyboard focus.
-func (m *SidebarModel) Focused() bool {
-	return m.focused
-}
+func (m *SidebarModel) Focused() bool { return m.focused }
 
 // SetSize sets the sidebar dimensions.
 func (m *SidebarModel) SetSize(width, height int) {
@@ -174,9 +237,8 @@ func (m *SidebarModel) SetSessionStatus(status map[string]branchSessionStatus) {
 	m.sessionStatus = status
 }
 
-// WorktreeDirToBranch returns a map from worktree directory path to branch name
-// for all branches that have an active worktree. The inbox uses this to count
-// sessions by matching SessionInfo.ProjectDir against worktree paths.
+// WorktreeDirToBranch returns a map from worktree directory path to
+// branch name for all branches that have an active worktree.
 func (m *SidebarModel) WorktreeDirToBranch() map[string]string {
 	result := make(map[string]string, len(m.branches))
 	for _, b := range m.branches {
@@ -186,6 +248,8 @@ func (m *SidebarModel) WorktreeDirToBranch() map[string]string {
 	}
 	return result
 }
+
+// --- Update / message handling ---
 
 // Update handles messages for the sidebar.
 func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
@@ -197,6 +261,7 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 			m.branches = msg.branches
 			m.err = nil
 		}
+		m.clampCursor()
 		return nil
 
 	case branchWorktreeCreatedMsg:
@@ -206,8 +271,27 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 		}
 		m.creating = false
 		m.input.SetValue("")
-		// Reload branches to show the new worktree.
 		return m.loadBranches()
+
+	case hostsLoadedMsg:
+		m.hosts.applyLoaded(msg.hosts, msg.err)
+		// Hosts may have appeared/disappeared — keep cursor in bounds
+		// but otherwise leave it where the user put it.
+		m.clampCursor()
+		return nil
+
+	case hostProvisionedMsg:
+		m.hosts.provisioning = ""
+		if msg.err != nil {
+			m.err = fmt.Errorf("connect %s: %w", msg.kind, msg.err)
+			return nil
+		}
+		m.err = nil
+		// Re-fetch the host list to flip the row from disconnected
+		// to connected. Don't auto-select — the user explicitly chose
+		// to connect; whether they want to switch their active host
+		// is a separate decision (and a separate keypress).
+		return m.hosts.loadHosts()
 	}
 
 	if m.creating {
@@ -225,7 +309,10 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 	msg = normalizeKeyCase(msg)
 
-	maxIdx := len(m.branches) // 0 = "All", 1..len = branches
+	maxIdx := m.totalRows() - 1
+	if maxIdx < 0 {
+		maxIdx = 0
+	}
 
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
@@ -245,11 +332,22 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.cursor = maxIdx
 		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		m.creating = true
-		m.input.SetValue("")
-		return m.input.Focus()
+		// New branch only makes sense in the worktrees section.
+		if sec, _ := m.cursorSection(); sec == sectionWorktrees {
+			m.creating = true
+			m.input.SetValue("")
+			return m.input.Focus()
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("c"))):
+		// Connect (provision) the highlighted disconnected host.
+		if sec, idx := m.cursorSection(); sec == sectionHosts {
+			row, ok := m.hosts.rowAt(idx)
+			if ok && !row.connected {
+				return m.hosts.provision(row)
+			}
+		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
-		return m.loadBranches()
+		return tea.Batch(m.loadBranches(), m.hosts.loadHosts())
 	}
 
 	return nil
@@ -281,6 +379,54 @@ func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+// activateSelectedHost moves the active-host pointer to the host row
+// at the cursor. No-op when the cursor isn't in the hosts section or
+// the row is a not-yet-provisioned kind. Returns the save error from
+// uistate; the in-memory active host is updated regardless.
+//
+// Called by the inbox on Enter (parent owns the Enter semantics so
+// it can also switch focus to the session pane).
+func (m *SidebarModel) activateSelectedHost() error {
+	if m.activeHost == nil {
+		return nil
+	}
+	sec, idx := m.cursorSection()
+	if sec != sectionHosts {
+		return nil
+	}
+	row, ok := m.hosts.rowAt(idx)
+	if !ok || !row.connected {
+		return nil
+	}
+	return m.activeHost.Set(row.name)
+}
+
+// cursorOnHost returns true when the cursor is currently on a host row.
+// Used by inbox to route Enter between "activate host" vs "select branch
+// and switch panes".
+func (m *SidebarModel) cursorOnHost() bool {
+	sec, _ := m.cursorSection()
+	return sec == sectionHosts
+}
+
+// clampCursor keeps cursor in [0, totalRows-1] after rows change
+// (branches loaded, hosts list refreshed). Preserves user position
+// when possible.
+func (m *SidebarModel) clampCursor() {
+	max := m.totalRows() - 1
+	if max < 0 {
+		max = 0
+	}
+	if m.cursor > max {
+		m.cursor = max
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// --- Rendering ---
+
 // View renders the sidebar.
 func (m *SidebarModel) View() string {
 	w := m.width
@@ -288,38 +434,50 @@ func (m *SidebarModel) View() string {
 		w = sidebarWidth
 	}
 
-	// Content width is sidebar width minus border (2) minus padding (2).
-	contentWidth := w - 4
+	contentWidth := w - 4 // border (2) + padding (2)
 	if contentWidth < 10 {
 		contentWidth = 10
 	}
 
 	var lines []string
 
-	// Header.
-	header := lipgloss.NewStyle().
-		Foreground(primaryColor).
-		Bold(true).
-		Render("Worktrees")
-	lines = append(lines, header)
+	// Hosts section.
+	lines = append(lines, m.hosts.renderHeader())
 	lines = append(lines, "")
 
-	// "All" entry (no filter).
-	allLabel := "  All"
-	if m.cursor == 0 && m.focused {
-		allLabel = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
-			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("All")
-	} else if m.cursor == 0 {
-		allLabel = lipgloss.NewStyle().Foreground(textColor).Render("  All")
-	} else {
-		allLabel = lipgloss.NewStyle().Foreground(dimColor).Render("  All")
+	activeName := host.Hostname("")
+	if m.activeHost != nil {
+		activeName = m.activeHost.Name()
 	}
-	lines = append(lines, allLabel)
+	for i, row := range m.hosts.rows {
+		selected := m.focused && m.cursor == i
+		active := row.connected && row.name == activeName
+		lines = append(lines, m.hosts.renderRow(row, active, selected, contentWidth))
+	}
+	if errLine := m.hosts.renderError(contentWidth); errLine != "" {
+		lines = append(lines, errLine)
+	}
+
+	// Section separator.
+	lines = append(lines, "")
+	lines = append(lines, lipgloss.NewStyle().Foreground(mutedColor).
+		Render(strings.Repeat("─", contentWidth)))
+
+	// Worktrees section.
+	lines = append(lines, lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		Render("Worktrees"))
+	lines = append(lines, "")
+
+	// "All" entry — first row of the worktrees section.
+	allCursor := m.hosts.count() // linear cursor position for "All"
+	lines = append(lines, m.renderAllRow(allCursor))
 
 	// Branch entries.
 	for i, b := range m.branches {
-		idx := i + 1 // cursor index (0 = All)
-		lines = append(lines, m.renderBranch(b, idx, contentWidth))
+		linearIdx := allCursor + 1 + i
+		lines = append(lines, m.renderBranch(b, linearIdx, contentWidth))
 	}
 
 	// New branch input.
@@ -329,7 +487,7 @@ func (m *SidebarModel) View() string {
 		lines = append(lines, "  "+m.input.View())
 	}
 
-	// Error.
+	// Generic error (branch load).
 	if m.err != nil {
 		lines = append(lines, "")
 		errLine := lipgloss.NewStyle().Foreground(dangerColor).
@@ -339,8 +497,6 @@ func (m *SidebarModel) View() string {
 
 	content := strings.Join(lines, "\n")
 
-	// Wrap in a border. Focused: visible rounded border. Unfocused: hidden
-	// border (same spacing, no visible line) to avoid visual clutter.
 	border := lipgloss.HiddenBorder()
 	borderColor := mutedColor
 	if m.focused {
@@ -356,9 +512,24 @@ func (m *SidebarModel) View() string {
 	return style.Render(content)
 }
 
+// renderAllRow renders the "All" entry of the worktrees section.
+// linearIdx is the row's position in the linear cursor numbering so
+// we can detect selection without recomputing.
+func (m *SidebarModel) renderAllRow(linearIdx int) string {
+	if m.cursor == linearIdx && m.focused {
+		return lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
+			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("All")
+	}
+	if m.cursor == linearIdx {
+		return lipgloss.NewStyle().Foreground(textColor).Render("  All")
+	}
+	return lipgloss.NewStyle().Foreground(dimColor).Render("  All")
+}
+
 // renderBranch renders a single worktree entry with diff stats.
-func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string {
-	selected := m.cursor == idx && m.focused
+// linearIdx is the row's position in the linear cursor numbering.
+func (m *SidebarModel) renderBranch(b host.BranchInfo, linearIdx, maxWidth int) string {
+	selected := m.cursor == linearIdx && m.focused
 
 	// Diff stat string: "+123 -45" or empty for the default branch.
 	var diffStr string
@@ -382,16 +553,14 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 		}
 	}
 
-	// Reserve space for suffix items on the right.
 	suffixWidth := 0
 	if diffStr != "" {
-		suffixWidth += len(diffStr) + 1 // space + diff
+		suffixWidth += len(diffStr) + 1
 	}
 	suffixWidth += len(countBadge)
 
-	// Truncate branch name to fit.
 	name := b.Name
-	maxName := maxWidth - 2 - suffixWidth // 2 for prefix
+	maxName := maxWidth - 2 - suffixWidth
 	if maxName < 6 {
 		maxName = 6
 	}
@@ -399,16 +568,15 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 		name = name[:maxName-1] + "…"
 	}
 
-	// Style choices.
 	nameStyle := lipgloss.NewStyle()
-
-	if selected {
+	switch {
+	case selected:
 		nameStyle = nameStyle.Foreground(textColor).Bold(true)
-	} else if status.IsArchived() {
+	case status.IsArchived():
 		nameStyle = nameStyle.Foreground(mutedColor)
-	} else if status.IsDone() {
+	case status.IsDone():
 		nameStyle = nameStyle.Foreground(dimColor)
-	} else {
+	default:
 		nameStyle = nameStyle.Foreground(textColor)
 	}
 
@@ -434,18 +602,20 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 	return line
 }
 
-// listHeight returns the height available for the branch list (excluding border).
+// listHeight returns the height available for the body (excluding border).
 func (m *SidebarModel) listHeight() int {
-	h := m.height - 4 // border top/bottom + some padding
+	h := m.height - 4
 	if h < 5 {
 		h = 5
 	}
 	return h
 }
 
-// ensureVisible scrolls to keep the cursor visible.
+// ensureVisible scrolls to keep the cursor visible. Approximation —
+// the sidebar doesn't currently virtualize rows, so this only
+// matters once we wire scrolling. Keeps scroll in [0, cursor].
 func (m *SidebarModel) ensureVisible() {
-	vh := m.listHeight() - 3 // header + blank line + some margin
+	vh := m.listHeight() - 3
 	if vh < 1 {
 		vh = 1
 	}
@@ -459,6 +629,8 @@ func (m *SidebarModel) ensureVisible() {
 		m.scroll = 0
 	}
 }
+
+// --- Daemon I/O ---
 
 // loadBranches fetches branches from the daemon for this sidebar's repo.
 func (m *SidebarModel) loadBranches() tea.Cmd {

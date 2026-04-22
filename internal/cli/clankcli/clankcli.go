@@ -19,7 +19,29 @@ import (
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/tui"
+	"github.com/acksell/clank/internal/tui/uistate"
 )
+
+// activeHostFromState reads ~/.clank/tui-state.json and returns the
+// persisted active host name, defaulting to HostLocal. CLI commands
+// that create sessions honor this so `clank code` runs on the same
+// host the user last selected in the TUI.
+//
+// Errors are best-effort: a malformed state file falls back to
+// HostLocal rather than blocking the command. The TUI's stricter
+// load (which surfaces malformed-file errors to the user) catches
+// the same condition with better feedback.
+func activeHostFromState() host.Hostname {
+	st, err := uistate.Load()
+	if err != nil {
+		return host.HostLocal
+	}
+	name := host.Hostname(st.ActiveHost())
+	if name == "" {
+		return host.HostLocal
+	}
+	return name
+}
 
 // Command returns the root cobra command for the clank binary with all subcommands.
 func Command() *cobra.Command {
@@ -62,9 +84,10 @@ The daemon is auto-started if not already running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Determine prompt.
 			prompt := strings.Join(args, " ")
+			activeHost := activeHostFromState()
 			if prompt == "" {
 				// No prompt — open composing view standalone.
-				return runComposing(projectDir, worktreeBranch)
+				return runComposing(projectDir, worktreeBranch, activeHost)
 			}
 
 			// Determine project directory. Resolve to an absolute path
@@ -113,14 +136,20 @@ The daemon is auto-started if not already running.`,
 
 			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host
 
+			// Drop LocalPath when targeting a remote host: it's
+			// meaningless wire data the host can't read.
+			gitRef := agent.GitRef{
+				RemoteURL:      remoteURL,
+				WorktreeBranch: worktreeBranch,
+			}
+			if activeHost == host.HostLocal {
+				gitRef.LocalPath = projectDir
+			}
+
 			info, err := client.Sessions().Create(ctx, agent.StartRequest{
 				Backend:  bt,
-				Hostname: string(host.HostLocal),
-				GitRef: agent.GitRef{
-					LocalPath:      projectDir,
-					RemoteURL:      remoteURL,
-					WorktreeBranch: worktreeBranch,
-				},
+				Hostname: string(activeHost),
+				GitRef:   gitRef,
 				Prompt:   prompt,
 				TicketID: ticketID,
 			})
@@ -179,7 +208,9 @@ func runInbox() error {
 
 // runComposing opens the composing view standalone (not inside inbox).
 // The user types their first prompt and the session is created on send.
-func runComposing(projectDir, worktreeBranch string) error {
+// activeHost is the persisted "where the next session runs" choice;
+// the composing view propagates it into the StartRequest.
+func runComposing(projectDir, worktreeBranch string, activeHost host.Hostname) error {
 	client, err := ensureDaemon()
 	if err != nil {
 		return fmt.Errorf("daemon: %w", err)
@@ -198,7 +229,7 @@ func runComposing(projectDir, worktreeBranch string) error {
 	}
 	projectDir = absProjectDir
 
-	model := tui.NewSessionViewComposing(client, projectDir)
+	model := tui.NewSessionViewComposing(client, projectDir, activeHost)
 	model.SetWorktreeBranch(worktreeBranch)
 	model.SetStandalone(true)
 	cleanup := redirectLogToFile()

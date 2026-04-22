@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 )
 
 // initGitRepoForCompose creates a real git repo with an "origin" remote
@@ -38,7 +39,7 @@ func initGitRepoForCompose(t *testing.T) string {
 
 func TestCompose_BackendToggle(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -64,7 +65,7 @@ func TestCompose_BackendToggle(t *testing.T) {
 
 func TestCompose_EnterWithEmptyPromptShowsError(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -83,7 +84,7 @@ func TestCompose_EnterWithEmptyPromptShowsError(t *testing.T) {
 func TestCompose_EnterWithPromptCreatesSession(t *testing.T) {
 	t.Parallel()
 	dir := initGitRepoForCompose(t)
-	m := NewSessionViewComposing(nil, dir)
+	m := NewSessionViewComposing(nil, dir, host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -106,7 +107,7 @@ func TestCompose_EnterWithPromptCreatesSession(t *testing.T) {
 
 func TestCompose_EscStandaloneQuits(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 	m.SetStandalone(true)
@@ -126,7 +127,7 @@ func TestCompose_EscStandaloneQuits(t *testing.T) {
 
 func TestCompose_EscNonStandaloneGoesBack(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 	// standalone is false by default.
@@ -145,7 +146,7 @@ func TestCompose_EscNonStandaloneGoesBack(t *testing.T) {
 
 func TestCompose_ShiftEnterInsertsNewline(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -167,7 +168,7 @@ func TestCompose_ShiftEnterInsertsNewline(t *testing.T) {
 
 func TestCompose_ViewRenders(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -193,7 +194,7 @@ func TestCompose_ViewRenders(t *testing.T) {
 
 func TestCompose_HandleCreateResult(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -235,7 +236,7 @@ func TestCompose_HandleCreateResult(t *testing.T) {
 
 func TestCompose_HandleCreateResultError(t *testing.T) {
 	t.Parallel()
-	m := NewSessionViewComposing(nil, "/tmp/project")
+	m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 	m.width = 80
 	m.height = 40
 
@@ -279,7 +280,7 @@ func TestCompose_WordBackwardOnEmptyInput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := NewSessionViewComposing(nil, "/tmp/project")
+			m := NewSessionViewComposing(nil, "/tmp/project", host.HostLocal)
 			m.width = 80
 			m.height = 40
 

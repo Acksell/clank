@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,6 +112,12 @@ type InboxModel struct {
 	hostname host.Hostname
 	gitRef   agent.GitRef
 
+	// activeHost owns the user's "where the next session runs" choice,
+	// persisted to ~/.clank/tui-state.json. Loaded at startup; never nil
+	// (LoadActiveHost defaults to HostLocal). Sidebar mutates via
+	// pointer.
+	activeHost *ActiveHost
+
 	// Pre-built display data.
 	displayLines []string
 	rowToLine    []int
@@ -196,7 +203,18 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	// The host adds the repo to its registry implicitly on the first
 	// CreateSession that carries Dir / AllowClone (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
-	bp := NewSidebarModel(client, hostname, gitRef, cwd)
+
+	// Active host comes from ~/.clank/tui-state.json. A malformed file
+	// or filesystem error here is logged and we fall back to a fresh
+	// in-memory state — the alternative (failing TUI startup) is worse
+	// UX than silently starting with HostLocal selected.
+	activeHost, err := LoadActiveHost()
+	if err != nil {
+		log.Printf("uistate: load failed (%v); starting with default active host", err)
+		activeHost = &ActiveHost{state: nil, name: host.HostLocal}
+	}
+
+	bp := NewSidebarModel(client, hostname, gitRef, cwd, activeHost)
 	return &InboxModel{
 		client:      client,
 		pane:        paneSessions,
@@ -207,6 +225,7 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		projectName: filepath.Base(cwd),
 		hostname:    hostname,
 		gitRef:      gitRef,
+		activeHost:  activeHost,
 	}
 }
 
@@ -591,7 +610,7 @@ func (m *InboxModel) openComposingSession() tea.Cmd {
 	m.activeConnID = ""
 
 	projectDir, _ := os.Getwd()
-	m.sessionView = NewSessionViewComposing(m.client, projectDir)
+	m.sessionView = NewSessionViewComposing(m.client, projectDir, m.activeHost.Name())
 	m.sessionView.worktreeBranch = m.sidebar.SelectedBranch()
 	m.sessionView.voice = &m.voice
 	m.sessionView.width = m.width
@@ -1332,6 +1351,17 @@ func (m *InboxModel) renderSessionPane() string {
 		Foreground(primaryColor).
 		Bold(true).
 		Render(headerText)
+	if m.activeHost != nil {
+		// Show active host so the user knows where their next session
+		// will run. Mute when local (the default), highlight when
+		// remote so a daytona/etc. selection is visually obvious.
+		name := string(m.activeHost.Name())
+		hostStyle := lipgloss.NewStyle().Foreground(mutedColor)
+		if !m.activeHost.IsLocal() {
+			hostStyle = lipgloss.NewStyle().Foreground(successColor).Bold(true)
+		}
+		header = header + " " + hostStyle.Render("@"+name)
+	}
 	badge := voiceHeaderBadge(m.voice)
 	if badge != "" {
 		header = header + " " + badge
@@ -1531,6 +1561,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// While creating a new branch, let the sidebar handle Enter.
 		if m.sidebar.creating {
 			break
+		}
+		// Enter on a host row activates that host (persists to
+		// uistate). Cursor stays in the sidebar so the user can
+		// inspect the result and tab away when ready.
+		if m.sidebar.cursorOnHost() {
+			if err := m.sidebar.activateSelectedHost(); err != nil {
+				m.err = fmt.Errorf("save active host: %w", err)
+			}
+			return m, nil
 		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()

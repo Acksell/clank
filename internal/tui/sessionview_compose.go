@@ -33,21 +33,33 @@ type sessionCreateResultMsg struct {
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
 //
-// The gitRef is resolved eagerly from projectDir's `origin` remote so the
-// background fetchAgents/fetchModels prefetch can target it. If the
-// project isn't a git repo, gitRef stays empty and the prefetch becomes
-// a no-op (the user will see the failure on launch).
-func NewSessionViewComposing(client *hubclient.Client, projectDir string) *SessionViewModel {
+// hostname is the host the session will run on. For HostLocal the
+// gitRef carries LocalPath (so the host skips cloning); for any
+// remote host LocalPath is dropped — the host wouldn't be able to
+// read the laptop's filesystem anyway, and the host-side
+// auto-clone path takes over via RemoteURL.
+//
+// The gitRef is resolved eagerly from projectDir's `origin` remote
+// so the background fetchAgents/fetchModels prefetch can target it.
+// If the project isn't a git repo, gitRef stays empty and the
+// prefetch becomes a no-op (the user will see the failure on launch).
+func NewSessionViewComposing(client *hubclient.Client, projectDir string, hostname host.Hostname) *SessionViewModel {
 	ta := newPromptTextarea("Describe the task for the agent...", 5)
 	ta.Focus()
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
 	)
-	// Send both LocalPath (so the local host skips cloning) and the
-	// origin URL when available (cross-host stable identity for future
-	// remote-host targeting). See agent.GitRef godoc.
-	ref := agent.GitRef{LocalPath: projectDir}
+	if hostname == "" {
+		hostname = host.HostLocal
+	}
+	// LocalPath is only meaningful when the host can read the laptop's
+	// filesystem. For remote hosts we send only RemoteURL and let the
+	// host's auto-clone path take over.
+	ref := agent.GitRef{}
+	if hostname == host.HostLocal {
+		ref.LocalPath = projectDir
+	}
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
 		ref.RemoteURL = remoteURL
 	}
@@ -57,7 +69,7 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 		inputActive: true,
 		backend:     agent.BackendOpenCode,
 		projectDir:  projectDir,
-		hostname:    host.HostLocal,
+		hostname:    hostname,
 		gitRef:      ref,
 		follow:      true,
 		input:       ta,
@@ -213,12 +225,14 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
-	// Both LocalPath and RemoteURL — local host uses path, future
-	// remote hosts fall through to clone. RemoteURL is best-effort
-	// (repos without origin still work locally).
+	// LocalPath only when host is co-located with the laptop FS.
+	// Remote hosts ignore (and can't read) it; sending it would just
+	// be misleading wire data.
 	gitRef := agent.GitRef{
-		LocalPath:      m.projectDir,
 		WorktreeBranch: m.worktreeBranch,
+	}
+	if m.hostname == host.HostLocal {
+		gitRef.LocalPath = m.projectDir
 	}
 	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
 		gitRef.RemoteURL = remoteURL
@@ -226,7 +240,7 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 
 	req := agent.StartRequest{
 		Backend:  m.backend,
-		Hostname: string(host.HostLocal),
+		Hostname: string(m.hostname),
 		GitRef:   gitRef,
 		Prompt:   prompt,
 	}
