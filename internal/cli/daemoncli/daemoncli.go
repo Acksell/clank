@@ -17,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/gitcred"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
@@ -124,6 +125,18 @@ func RunStart(foreground bool) error {
 		if err := registerDaytonaLauncher(d); err != nil {
 			return fmt.Errorf("register host launchers: %w", err)
 		}
+
+		// Wire credential discovery: env vars → gh CLI → on-disk
+		// settings, wrapped in a process-lifetime cache. Without this
+		// the resolver returns anonymous for every HTTPS endpoint and
+		// remote pushes 401 (the daytona-push bug).
+		d.SetCredentialDiscoverer(hub.NewCachingDiscoverer(gitcred.Stack{
+			Discoverers: []gitcred.Discoverer{
+				gitcred.FromEnv(),
+				gitcred.FromGH(),
+				gitcred.FromSettings(),
+			},
+		}))
 
 		return runHubServer(d)
 	}

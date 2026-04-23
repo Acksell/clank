@@ -43,6 +43,14 @@ type Service struct {
 	hostsMu sync.RWMutex
 	hosts   map[host.Hostname]*hostclient.HTTP
 
+	// credDisc is the optional credential discovery façade consulted
+	// by [ResolveCredential]. Nil = no discovery, only anonymous +
+	// ssh-agent credentials are emitted (the v1 behaviour, kept so
+	// tests don't have to wire a discoverer). Production injects a
+	// [CachingDiscoverer] wrapping [gitcred.Stack] via
+	// [Service.SetCredentialDiscoverer].
+	credDisc *CachingDiscoverer
+
 	// launchers maps a "kind" string (e.g. "daytona") to a
 	// HostLauncher; ProvisionHost dispatches by name. See
 	// hosts_provision.go.

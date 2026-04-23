@@ -79,6 +79,31 @@ func (s *Service) Host(id host.Hostname) (*hostclient.HTTP, bool) {
 	return c, ok
 }
 
+// SetCredentialDiscoverer installs the credential-discovery façade
+// consulted by ResolveCredential. Pass a [CachingDiscoverer] wrapping
+// the production [gitcred.Stack]; pass nil to disable discovery
+// entirely (anonymous-only behaviour, used by tests that don't
+// exercise auth). Safe to call before or after Run.
+func (s *Service) SetCredentialDiscoverer(d *CachingDiscoverer) {
+	s.hostsMu.Lock()
+	s.credDisc = d
+	s.hostsMu.Unlock()
+}
+
+// credentialDiscoverer returns the configured discoverer or nil.
+// Returning the nil-typed *CachingDiscoverer would satisfy the
+// credDiscoverer interface (non-nil interface holding a nil pointer)
+// and explode on first method call, so we explicitly nil-out.
+func (s *Service) credentialDiscoverer() credDiscoverer {
+	s.hostsMu.RLock()
+	d := s.credDisc
+	s.hostsMu.RUnlock()
+	if d == nil {
+		return nil
+	}
+	return d
+}
+
 // hostFor resolves a hostname to a registered host client. Empty hostname
 // defaults to "local" — the default for sessions/requests that omit the
 // field, matching the json-tag default in agent.StartRequest. Returns
@@ -128,7 +153,7 @@ func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTT
 		return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
 	}
 
-	cred, resolvedEp, err := ResolveCredential(host.Hostname(hostname), ref.Endpoint)
+	cred, resolvedEp, err := ResolveCredential(s.ctx, host.Hostname(hostname), ref.Endpoint, s.credentialDiscoverer())
 	if err != nil {
 		return nil, agent.GitRef{}, agent.GitCredential{}, err
 	}

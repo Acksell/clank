@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
@@ -84,7 +85,7 @@ func TestResolveCredential(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cred, gotEp, err := ResolveCredential(tc.target, tc.ep)
+			cred, gotEp, err := ResolveCredential(context.Background(), tc.target, tc.ep, nil)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got cred=%+v ep=%+v", cred, gotEp)
