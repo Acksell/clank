@@ -123,7 +123,7 @@ a normal call and an SSE subscription.
   injection across multiple calls + multiple endpoints, clone
   semantics, no-mutation, baseURL concat.
 
-### Phase C — `internal/host/daytona/` launcher
+### Phase C — `internal/host/daytona/` launcher  ✅ DONE
 
 ```
 internal/host/daytona/
@@ -161,12 +161,42 @@ Failure surface (each logs the real cause, no fallbacks): create
 failure, upload failure, host not ready in 5s, preview-link
 unavailable.
 
+**Implementation notes:**
+- Files match the planned layout: `doc.go`, `options.go`, `binary.go`,
+  `sandbox.go`, `serve.go`, `handle.go`, `launcher.go`, plus
+  `options_test.go` (unit) and `launcher_test.go` (env-guarded smoke).
+- **Default arch corrected to amd64** (not arm64 as originally
+  planned). First live smoke test against Daytona returned 502 from
+  the preview proxy with arm64; switching to amd64 worked first try.
+  Daytona's stock snapshots are linux/amd64. `LaunchOptions.Arch`
+  exposes the override; cache key includes arch so both can coexist.
+- **Empty `Snapshot` works.** `SnapshotParams{Snapshot: ""}` lets
+  Daytona pick the default image; no need for an explicit value yet.
+- **`PreviewLink` is a struct** `{URL, Token string}`, not a
+  `(url, token, error)` triple as the original plan assumed. Updated
+  in `launcher.go`.
+- **Diagnostics:** when `/status` readiness fails, the launcher
+  best-effort fetches the clank-host process logs via
+  `Process.GetSessionCommandLogs` and appends them to the returned
+  error. Caught the arch mismatch instantly on the second test run.
+- **Cleanup on partial failure:** `Launch` uses a closure (`cleanup`)
+  with a fresh 15s context to delete the sandbox if any post-creation
+  step fails, avoiding leaked Daytona spend even when the parent
+  context is already cancelled by timeout.
+- **Readiness probe:** `waitForStatus` exponential backoff 200ms →
+  1.5s cap. Live test was ready after one extra poll (~7s total
+  Launch wall time).
+- Live smoke test (`TestLaunch_Smoke`) passes end-to-end:
+  create → upload binary → start clank-host → preview URL roundtrip
+  → `/status` 200 → `Stop()` deletes sandbox. Skipped without
+  `DAYTONA_API_KEY`.
+
 Long-term (Phase F+ snapshot path): `binary.go` becomes a one-time bake
 script producing a Daytona snapshot containing `clank-host` + `claude`
 + `opencode` + an entrypoint that auto-runs `clank-host`. `Launch` then
 becomes `Create({Snapshot: "clank-host:vN"})` + `GetPreviewLink`.
 
-### Phase D — Hub `POST /hosts` registration endpoint
+### Phase D — Hub `POST /hosts` registration endpoint ✅ DONE
 
 Need a way to add to the host catalog after startup.
 
@@ -183,7 +213,24 @@ Need a way to add to the host catalog after startup.
 - Single config knob: `DAYTONA_API_KEY` env, read at provisioning
   time. No fallback to other env names.
 
-### Phase E — CLI: `clank connect daytona`
+**Implementation notes:**
+- `internal/hub/hosts_provision.go`: `HostLauncher` + `RemoteHostHandle`
+  interfaces, `Service.RegisterHostLauncher`, `Service.ProvisionHost`,
+  `Service.stopRemoteHandles` (concurrent shutdown, 30s/host cap).
+- `internal/hub/mux/hosts.go`: `GET /hosts` and `POST /hosts {kind}` →
+  `{host_id, status:"ready"}`.
+- `internal/hub/client/host.go`: `Client.Hosts(ctx)` and
+  `Client.ProvisionHost(ctx, kind)`.
+- `internal/hub/hosts_provision_test.go`: 5 tests using a real
+  httptest-backed launcher (no mocks per AGENTS.md). All passing.
+- `internal/cli/daemoncli/daytona_launcher.go`: thin adapter wrapping
+  `daytona.Launch` to `hub.HostLauncher`. Registered from `RunStart`
+  iff `DAYTONA_API_KEY` is set in env (no-op otherwise — surfaces a
+  clear "no launcher registered" error to the user instead of silent
+  defaults). Adapter lives in daemoncli (not daytona) so the daytona
+  package stays independent of hub.
+
+### Phase E — CLI: `clank connect daytona` ✅ DONE
 
 Smallest possible MVP trigger. This is what proves "server reachable".
 
@@ -203,7 +250,17 @@ The `connect` verb is the user-facing surface; future hosts (e.g. a
 self-hosted SSH host) get registered the same way:
 `clank connect <kind>`.
 
-### Phase F — TUI sidebar host section + selection
+**Implementation notes:**
+- `internal/cli/clankcli/connect.go`: `clank connect <kind>` subcommand;
+  90s timeout (Daytona end-to-end is ~7-10s; gives headroom for cold
+  binary upload). Synchronous, no retry — errors from the hub
+  (missing API key, sandbox failure) propagate verbatim.
+- Output is shorter than originally planned: `host_id` + `status`
+  only. `sandbox_id` is intentionally omitted from the wire response
+  to keep the hub→host-kind coupling minimal; users who want the
+  Daytona ID can read the daemon log.
+
+### Phase F — TUI sidebar host section + selection ✅ DONE
 
 Sidebar gets a new top section:
 
@@ -251,6 +308,43 @@ persists to `~/.clank/tui-state.json`. New tiny package
 Synchronous JSON read on TUI startup; debounced write on change. Treat
 unknown keys as forward-compatible (preserve on round-trip).
 
+#### Implementation notes (as built)
+
+- `internal/tui/uistate/` (F.1): load/save `~/.clank/tui-state.json`,
+  forward-compatible via raw-message preservation; 7 unit tests.
+- `internal/tui/active_host.go` (F.2): `ActiveHost` wraps uistate, with
+  `LoadActiveHost`, `Name`, `IsLocal`, `Set`. `Set` tolerates a nil
+  state pointer (used for tests + uistate-load failure fallback).
+  `KnownHostKinds = []string{"daytona"}` is hardcoded here — when we
+  add a third launcher, append to this slice.
+- `internal/tui/sidebar_hosts.go` (F.3): `hostsSection` owns the host
+  rows. `applyLoaded` merges `/hosts` results with `KnownHostKinds`
+  (so daytona shows as a `[disconnected]` row when not yet
+  provisioned). `provision` calls `POST /hosts` with a 90s timeout.
+- `internal/tui/sidebar.go` (F.4): `sidebarSection` enum
+  (`sectionHosts`, `sectionWorktrees`); a single linear `cursor`
+  spans both sections. Helpers `totalRows`, `cursorSection`,
+  `branchIndex`, `cursorOnHost`, `activateSelectedHost`. Keys: `j`/`k`
+  traverse the whole list; `c` provisions on a disconnected host row;
+  `n` is gated to the worktrees section; `r` refreshes both.
+- `internal/tui/inbox.go` (F.5): `NewInboxModel` calls
+  `LoadActiveHost` (best-effort fallback to a detached `ActiveHost`
+  on error). Header shows `@<hostname>` badge — muted for local,
+  success-bold for remote. Sidebar Enter routed: host row →
+  `activateSelectedHost`; branch row → existing pane-switch.
+- `internal/tui/sessionview_compose.go` (F.6): `NewSessionViewComposing`
+  takes a `host.Hostname`; `launchSession` drops `LocalPath` from the
+  GitRef when the active host is not local, leaving the daytona host
+  to auto-clone via `ClonesDir`.
+- `internal/cli/clankcli/clankcli.go` (F.7): `activeHostFromState()`
+  reads uistate (defaults to local on any error). Both `codeCmd` and
+  `runComposing` honor it for `req.Hostname` and the LocalPath gate.
+- Tests: `active_host_test.go` (7 tests), `sidebar_test.go` (7 tests
+  covering merge of KnownHostKinds, no-duplicate-on-already-connected,
+  cursor traversal across sections, branch-index offset accounting,
+  cursorOnHost predicate, activate on connected vs disconnected rows,
+  `n` only in worktrees section). `go test ./...` clean.
+
 ### Phase G — LLM keys + agent binaries (deferred, sketch)
 
 Not in this milestone. Three options ranked when we get there:
@@ -288,7 +382,9 @@ That's fine for the MVP bar (server reachable).
 1. **TCP guard:** loopback default; `--allow-public` opt-in. Daytona
    launcher passes `--allow-public` (sandbox boundary is the security
    perimeter).
-2. **Sandbox arch:** arm64 by default. Cross-compile target matches.
+2. **Sandbox arch:** amd64 by default (Daytona's stock snapshots are
+   linux/amd64; first live test confirmed arm64 returned 502 from the
+   preview proxy). `LaunchOptions.Arch` overrides for ARM snapshots.
 3. **TUI state persistence:** `~/.clank/tui-state.json`, JSON, owned by
    `internal/tui/uistate/`. Used for active host now; will house other
    UI prefs (sidebar collapse, etc.) over time.

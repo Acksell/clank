@@ -8,6 +8,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,15 +83,33 @@ func RemoteURLs(dir string) (map[string]string, error) {
 	return urls, nil
 }
 
-// Clone runs `git clone <url> <destDir>`. destDir must not exist (git
-// creates it). Used by the host when a caller asks for implicit cloning
-// via StartRequest.AllowClone.
-func Clone(url, destDir string) error {
+// Clone runs `git clone <url> <destDir>` under ctx. destDir must not
+// exist (git creates it). Used by the host when a caller asks for
+// implicit cloning via StartRequest.AllowClone.
+//
+// The command runs with prompting disabled so an unconfigured remote
+// (no SSH key, no cached HTTPS credential, unknown host key) fails
+// fast instead of hanging forever waiting on a TTY that doesn't exist:
+//
+//   - GIT_TERMINAL_PROMPT=0 stops git itself from prompting for HTTPS
+//     credentials.
+//   - GIT_SSH_COMMAND adds BatchMode=yes (no password prompt),
+//     ConnectTimeout=10 (TCP-level cap), and StrictHostKeyChecking=
+//     accept-new (auto-trust on first contact, refuse on mismatch).
+//
+// On context cancellation the underlying process is killed; partial
+// state inside destDir is the caller's problem to clean up — see the
+// host service's workDirFor for the singleflight + cleanup wrapper.
+func Clone(ctx context.Context, url, destDir string) error {
 	parent := filepath.Dir(destDir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create clone parent %s: %w", parent, err)
 	}
-	cmd := exec.Command("git", "clone", url, destDir)
+	cmd := exec.CommandContext(ctx, "git", "clone", url, destDir)
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new",
+	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

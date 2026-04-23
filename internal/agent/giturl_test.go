@@ -75,6 +75,79 @@ func TestCloneDirNameStable(t *testing.T) {
 	}
 }
 
+// HTTPSRemoteURL must rewrite SSH/scp-form URLs from the public-provider
+// allowlist so remote sandboxes (no SSH keys) can clone over HTTPS, and
+// must leave already-https or unknown-host URLs alone (returning ok=false
+// so the caller surfaces a clear error rather than mangling internal/
+// self-hosted endpoints).
+func TestHTTPSRemoteURL_GitHubScpToHTTPS(t *testing.T) {
+	t.Parallel()
+	got, ok, err := HTTPSRemoteURL("git@github.com:acksell/clank.git")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected rewrite, got ok=false")
+	}
+	want := "https://github.com/acksell/clank.git"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestHTTPSRemoteURL_HTTPSPassesThrough(t *testing.T) {
+	t.Parallel()
+	in := "https://github.com/acksell/clank.git"
+	got, ok, err := HTTPSRemoteURL(in)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false for already-https URL")
+	}
+	if got != in {
+		t.Fatalf("expected unchanged, got %q", got)
+	}
+}
+
+func TestHTTPSRemoteURL_UnknownProviderUnchanged(t *testing.T) {
+	t.Parallel()
+	in := "git@git.internal.example.com:team/repo.git"
+	got, ok, err := HTTPSRemoteURL(in)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false for non-allowlisted host")
+	}
+	if got != in {
+		t.Fatalf("expected unchanged, got %q", got)
+	}
+}
+
+func TestHTTPSRemoteURL_GitLabAndBitbucket(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"git@gitlab.com:group/sub/repo.git":  "https://gitlab.com/group/sub/repo.git",
+		"git@bitbucket.org:team/project.git": "https://bitbucket.org/team/project.git",
+		"ssh://git@github.com/acksell/clank": "https://github.com/acksell/clank.git",
+	}
+	for in, want := range cases {
+		got, ok, err := HTTPSRemoteURL(in)
+		if err != nil {
+			t.Errorf("%q: err: %v", in, err)
+			continue
+		}
+		if !ok {
+			t.Errorf("%q: expected rewrite, got ok=false", in)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q: got %q want %q", in, got, want)
+		}
+	}
+}
+
 func TestCloneDirNameFormat(t *testing.T) {
 	t.Parallel()
 	name, err := CloneDirName("https://github.com/acksell/clank.git")

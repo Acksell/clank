@@ -238,3 +238,37 @@ func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
 		t.Fatalf("expected reuse (1 dir), got %d", len(entries))
 	}
 }
+
+// TestCreateSession_RemoteRef_RemovesPartialCloneOnFailure is a
+// regression test for the bug where a failed clone (e.g. SSH hang
+// killed by ctx) left behind a partial directory containing
+// `.git/HEAD` pointing to git's pre-fetch placeholder ref
+// `refs/heads/.invalid`. The next CreateSession would see the dir
+// existed and silently fall through to using the broken checkout,
+// dropping the agent into an empty repo with a corrupt HEAD.
+//
+// After the fix, the host removes `base` on clone failure so the
+// next attempt starts from scratch. We simulate failure by pointing
+// at a nonexistent file:// source.
+func TestCreateSession_RemoteRef_RemovesPartialCloneOnFailure(t *testing.T) {
+	t.Parallel()
+	svc, clonesDir := newTestServiceWithClonesDir(t)
+
+	bogusURL := "file:///definitely/does/not/exist/repo.git"
+	req := agent.StartRequest{
+		Backend: agent.BackendOpenCode,
+		GitRef:  agent.GitRef{RemoteURL: bogusURL},
+		Prompt:  "hi",
+	}
+	if _, _, err := svc.CreateSession(context.Background(), "sid-fail-1", req); err == nil {
+		t.Fatalf("expected error from bogus clone URL, got nil")
+	}
+
+	entries, err := os.ReadDir(clonesDir)
+	if err != nil {
+		t.Fatalf("read clonesDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected partial clone dir removed, got %d entries: %v", len(entries), entries)
+	}
+}

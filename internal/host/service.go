@@ -393,9 +393,20 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
 				}
 				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
-				if cloneErr := git.Clone(ref.RemoteURL, base); cloneErr != nil {
+				start := time.Now()
+				if cloneErr := git.Clone(ctx, ref.RemoteURL, base); cloneErr != nil {
+					// Clean up the partial directory git left
+					// behind (e.g. a `.git/` with HEAD pointing to
+					// the placeholder `.invalid` ref when ssh hung
+					// before the first fetch). Without this the
+					// next workDirFor call would see `base` exists
+					// and silently use the broken checkout.
+					if rmErr := os.RemoveAll(base); rmErr != nil {
+						s.log.Printf("cleanup partial clone %s: %v (original error: %v)", base, rmErr, cloneErr)
+					}
 					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
 				}
+				s.log.Printf("cloned %s into %s in %s", ref.RemoteURL, base, time.Since(start))
 				return nil, nil
 			})
 			if cloneErr != nil {

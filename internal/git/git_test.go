@@ -1,12 +1,14 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // initTestRepo creates a git repository in a temporary directory with an
@@ -820,5 +822,53 @@ func TestDeleteBranch_ForceUnmerged(t *testing.T) {
 	}
 	if exists {
 		t.Error("expected branch to be force-deleted")
+	}
+}
+
+// TestClone_LocalFileURL exercises the happy path against a local
+// source repo. file:// URLs bypass network/SSH entirely so the test
+// is hermetic and doesn't depend on env credentials.
+func TestClone_LocalFileURL(t *testing.T) {
+	t.Parallel()
+	src := initTestRepo(t)
+	dst := filepath.Join(t.TempDir(), "checkout")
+	if err := Clone(context.Background(), "file://"+src, dst); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git")); err != nil {
+		t.Fatalf("clone target missing .git: %v", err)
+	}
+}
+
+// TestClone_BadURLFailsFast verifies that an unreachable URL returns an
+// error rather than hanging on a credential or host-key prompt. Without
+// GIT_TERMINAL_PROMPT=0 + BatchMode=yes this would block on a TTY and
+// timeout the test.
+func TestClone_BadURLFailsFast(t *testing.T) {
+	t.Parallel()
+	dst := filepath.Join(t.TempDir(), "checkout")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := Clone(ctx, "file:///nonexistent/path/that/does/not/exist.git", dst)
+	if err == nil {
+		t.Fatalf("expected error for nonexistent source, got nil")
+	}
+}
+
+// TestClone_ContextCancelStops verifies the underlying git process is
+// killed when ctx is cancelled. Uses a bogus https URL to a port that
+// won't connect; ctx cancellation must beat git's own timeout.
+func TestClone_ContextCancelStops(t *testing.T) {
+	t.Parallel()
+	dst := filepath.Join(t.TempDir(), "checkout")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := Clone(ctx, "https://127.0.0.1:1/repo.git", dst)
+	if err == nil {
+		t.Fatalf("expected error from cancelled clone")
+	}
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("clone hung past ctx cancel: took %s", elapsed)
 	}
 }

@@ -126,3 +126,41 @@ func CloneDirName(remoteURL string) (string, error) {
 	sum := sha256.Sum256([]byte(host + "\x00" + path))
 	return name + "-" + hex.EncodeToString(sum[:6]), nil
 }
+
+// httpsRewriteHosts is the allowlist of providers we know offer HTTPS
+// access to the same repo as their SSH endpoint, with the standard
+// "/owner/repo.git" path layout. Self-hosted Git servers, custom SSH
+// ports, and Gerrit-style URLs do not generally satisfy this and are
+// left untouched (HTTPSRemoteURL returns the input unchanged).
+var httpsRewriteHosts = map[string]bool{
+	"github.com":    true,
+	"gitlab.com":    true,
+	"bitbucket.org": true,
+}
+
+// HTTPSRemoteURL converts an scp-form ("git@host:owner/repo.git") or
+// ssh:// URL to its https equivalent for providers we recognise. URLs
+// that are already https/http or that target an unrecognised host are
+// returned unchanged with ok=false so callers can decide whether to
+// proceed (e.g. local host: use the original; remote host with no SSH
+// keys: surface a clear error rather than handing git a URL that will
+// hang).
+//
+// Used by the hub when forwarding a CreateSession to a non-local host:
+// the remote sandbox has no SSH credentials, so SSH URLs hang on
+// host-key prompts. HTTPS works for public repos without auth; private
+// repos need a token (separate phase, not handled here).
+func HTTPSRemoteURL(remoteURL string) (rewritten string, ok bool, err error) {
+	host, path, err := parseGitURL(remoteURL)
+	if err != nil {
+		return "", false, err
+	}
+	// Already an HTTP(S) URL — nothing to do.
+	if strings.HasPrefix(remoteURL, "https://") || strings.HasPrefix(remoteURL, "http://") {
+		return remoteURL, false, nil
+	}
+	if !httpsRewriteHosts[strings.ToLower(host)] {
+		return remoteURL, false, nil
+	}
+	return "https://" + host + "/" + path + ".git", true, nil
+}

@@ -343,6 +343,18 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	if err != nil {
 		return nil, err
 	}
+	// Remote sandboxes (Daytona, etc.) start without SSH credentials, so
+	// an scp-form "git@github.com:owner/repo" URL will hang on the
+	// host-key prompt or fail auth. Rewrite to https for known public
+	// providers; private repos need a token (separate phase). Keep the
+	// original URL for the local host since the user already has their
+	// SSH agent set up.
+	if req.Hostname != string(host.HostLocal) && req.GitRef.RemoteURL != "" {
+		if rewritten, ok, rerr := agent.HTTPSRemoteURL(req.GitRef.RemoteURL); rerr == nil && ok {
+			s.log.Printf("createSession: rewrote %s -> %s for remote host %q", req.GitRef.RemoteURL, rewritten, req.Hostname)
+			req.GitRef.RemoteURL = rewritten
+		}
+	}
 	backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)
