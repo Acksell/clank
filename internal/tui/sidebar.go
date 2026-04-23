@@ -149,7 +149,7 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef ag
 // Init fetches both the host list and branches concurrently.
 func (m *SidebarModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.hosts.loadHosts()}
-	if m.hostname != "" && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.hostname != "" && (m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil) {
 		cmds = append(cmds, m.loadBranches())
 	}
 	// Position cursor on "All" by default (first row of worktrees).

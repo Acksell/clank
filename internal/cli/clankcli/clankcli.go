@@ -140,7 +140,6 @@ The daemon is auto-started if not already running.`,
 			// Drop LocalPath when targeting a remote host: it's
 			// meaningless wire data the host can't read.
 			gitRef := agent.GitRef{
-				RemoteURL:      remoteURL,
 				WorktreeBranch: worktreeBranch,
 			}
 			if remoteURL != "" {

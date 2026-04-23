@@ -336,8 +336,8 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 // Resolution precedence (matches the GitRef godoc):
 //  1. If ref.LocalPath is set AND it exists on this host AND it is the
 //     repo root → use it directly. No clone.
-//  2. Else if ref.RemoteURL is set → clone into
-//     <clonesDir>/<CloneDirName(RemoteURL)>/ and use that.
+//  2. Else if ref.Endpoint is set → clone into
+//     <clonesDir>/<CloneDirName(Endpoint)>/ and use that.
 //  3. Else → error.
 //
 // When ref.WorktreeBranch is non-empty, the result is the worktree path
@@ -345,10 +345,10 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 // root.
 //
 // Step 1 failing (path missing or not a repo root) is *not* an error
-// when RemoteURL is set — it falls through to step 2. This is the
+// when Endpoint is set — it falls through to step 2. This is the
 // "laptop TUI sent a path that doesn't exist on this remote host" case;
 // the host clones from the remote and proceeds. Step 1 failing with
-// no RemoteURL set IS an error.
+// no Endpoint set IS an error.
 func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.GitCredential) (string, error) {
 	var base string
 
@@ -359,7 +359,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 		}
 		if res.Usable {
 			base = ref.LocalPath
-		} else if ref.RemoteURL == "" {
+		} else if ref.Endpoint == nil {
 			// Surface the actual reason rather than a generic "not
 			// usable" — the caller has no remote fallback, so they
 			// need to know why their path was rejected.
@@ -368,19 +368,11 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 	}
 
 	if base == "" {
-		if ref.RemoteURL == "" {
-			return "", fmt.Errorf("git ref must set at least one of local_path or remote_url")
+		if ref.Endpoint == nil {
+			return "", fmt.Errorf("git ref must set at least one of local_path or endpoint")
 		}
 		if s.clonesDir == "" {
 			return "", fmt.Errorf("cannot resolve remote ref: host has no clones_dir configured")
-		}
-		// Hub is responsible for parsing the remote URL into Endpoint
-		// before forwarding (see internal/hub/hub.go:hostForRef). Host
-		// refuses to parse — keeps go-git out of host's deps and
-		// guarantees one canonical interpretation per (hub, host)
-		// pair.
-		if ref.Endpoint == nil {
-			return "", fmt.Errorf("git ref has remote_url %q but no parsed endpoint; hub must populate ref.Endpoint", ref.RemoteURL)
 		}
 		// Defense-in-depth: ssh-agent only makes sense on the local
 		// host (the laptop's running ssh-agent). A remote host hit
@@ -389,9 +381,9 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 		if cred.Kind == agent.GitCredSSHAgent && s.id != HostLocal {
 			return "", fmt.Errorf("ssh_agent credential not valid on remote host %q", s.id)
 		}
-		name, err := agent.CloneDirName(ref.RemoteURL)
+		name, err := agent.CloneDirName(ref.Endpoint)
 		if err != nil {
-			return "", fmt.Errorf("clone dir name for %q: %w", ref.RemoteURL, err)
+			return "", fmt.Errorf("clone dir name for %q: %w", ref.Endpoint.String(), err)
 		}
 		base = filepath.Join(s.clonesDir, name)
 		if _, err := os.Stat(base); os.IsNotExist(err) {
@@ -407,7 +399,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 				if mkErr := os.MkdirAll(s.clonesDir, 0o755); mkErr != nil {
 					return nil, fmt.Errorf("create clones dir %q: %w", s.clonesDir, mkErr)
 				}
-				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
+				s.log.Printf("cloning %s into %s", ref.Endpoint.String(), base)
 				start := time.Now()
 				if cloneErr := git.Clone(ctx, ref.Endpoint, cred, base); cloneErr != nil {
 					// Clean up the partial directory git left
@@ -419,9 +411,9 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 					if rmErr := os.RemoveAll(base); rmErr != nil {
 						s.log.Printf("cleanup partial clone %s: %v (original error: %v)", base, rmErr, cloneErr)
 					}
-					return nil, fmt.Errorf("clone %q: %w", ref.RemoteURL, cloneErr)
+					return nil, fmt.Errorf("clone %q: %w", ref.Endpoint.String(), cloneErr)
 				}
-				s.log.Printf("cloned %s into %s in %s", ref.RemoteURL, base, time.Since(start))
+				s.log.Printf("cloned %s into %s in %s", ref.Endpoint.String(), base, time.Since(start))
 				return nil, nil
 			})
 			if cloneErr != nil {
@@ -452,7 +444,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 //
 //   - Usable=true:                use the path directly.
 //   - SoftFail!=nil:              path is missing or not a git repo on
-//     this host. Caller may fall back to cloning RemoteURL; the reason
+//     this host. Caller may fall back to cloning Endpoint; the reason
 //     is surfaced if no fallback exists.
 //   - HardErr!=nil:               caller bug — relative path, symlink
 //     failure, or a path that IS inside a git repo but isn't its root.

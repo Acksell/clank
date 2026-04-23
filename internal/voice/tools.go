@@ -13,6 +13,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/mindmouth/tools"
 )
@@ -329,15 +330,20 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 
 			// Derive the canonical repo identity from the validated path.
 			// The voice tool still takes a path (matches user mental model);
-			// the wire identity is path-free per Phase 3D-2.
+			// the wire identity is path-free per Phase 3D-2. Origin URL is
+			// parsed at this ingress (the host has no parser of its own).
 			remote, err := git.RemoteURL(args.ProjectDir, "origin")
 			if err != nil {
 				return "", fmt.Errorf("derive repo remote for %s: %w", args.ProjectDir, err)
 			}
+			ep, err := gitendpoint.Parse(remote)
+			if err != nil {
+				return "", fmt.Errorf("parse remote URL %q: %w", remote, err)
+			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
 				Backend:  agent.BackendType(args.Backend),
 				Hostname: string(host.HostLocal),
-				GitRef:   agent.GitRef{RemoteURL: remote},
+				GitRef:   agent.GitRef{Endpoint: ep},
 				Prompt:   args.Prompt,
 			})
 			if err != nil {

@@ -7,15 +7,41 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/hub"
 )
 
 // testRemoteURL is the canonical remote URL used by hub tests. The hub
 // fixture pre-places a real git repo at the host's deterministic clone
-// path (`<ClonesDir>/<CloneDirName(testRemoteURL)>/`) so any test that
-// constructs `agent.GitRef{RemoteURL: testRemoteURL}`
-// resolves on the host without needing a real network clone.
+// path (`<ClonesDir>/<CloneDirName(testRemoteEndpoint)>/`) so any test
+// that constructs a ref via mustRef(testRemoteURL) resolves on the
+// host without needing a real network clone.
 const testRemoteURL = "git@github.com:acksell/clank.git"
+
+// testRemoteEndpoint is testRemoteURL pre-parsed for tests that just
+// need an *agent.GitEndpoint (e.g. when mustRef would be overkill).
+// Computed once at package init; panic on parse failure is correct
+// since the constant is known good.
+var testRemoteEndpoint = mustParseEndpoint(testRemoteURL)
+
+func mustParseEndpoint(u string) *agent.GitEndpoint {
+	ep, err := gitendpoint.Parse(u)
+	if err != nil {
+		panic("mustParseEndpoint(" + u + "): " + err.Error())
+	}
+	return ep
+}
+
+// mustRef builds a GitRef whose Endpoint is the parsed form of u.
+// Hard-fails the test on parse error.
+func mustRef(t *testing.T, u string) agent.GitRef {
+	t.Helper()
+	ep, err := gitendpoint.Parse(u)
+	if err != nil {
+		t.Fatalf("parse %q: %v", u, err)
+	}
+	return agent.GitRef{Endpoint: ep}
+}
 
 // registerTestRepo seeds a real git repo at the deterministic clone
 // path for testRemoteURL on the hub's local host fixture, returning
@@ -24,7 +50,7 @@ const testRemoteURL = "git@github.com:acksell/clank.git"
 // and its ClonesDir is known.
 func registerTestRepo(t *testing.T, s *hub.Service) string {
 	t.Helper()
-	return registerTestRepoAtWithRef(t, s, agent.GitRef{RemoteURL: testRemoteURL})
+	return registerTestRepoAtWithRef(t, s, agent.GitRef{Endpoint: testRemoteEndpoint})
 }
 
 // registerTestRepoAt is a back-compat alias for two-phase persistence
@@ -45,15 +71,15 @@ func registerTestRepoAt(t *testing.T, s *hub.Service, _ string) {
 // supplied directly).
 func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) string {
 	t.Helper()
-	if ref.RemoteURL == "" {
-		t.Fatalf("registerTestRepoAtWithRef: expected Remote ref, got %+v", ref)
+	if ref.Endpoint == nil {
+		t.Fatalf("registerTestRepoAtWithRef: expected Endpoint-bearing ref, got %+v", ref)
 	}
 	v, ok := hostFixturesByHub.Load(s)
 	if !ok {
 		t.Fatal("registerTestRepoAtWithRef: no host fixture for this hub.Service; ensure the test goes through testDaemon / ensureHostFixture")
 	}
 	f := v.(*hostTestFixture)
-	name, err := agent.CloneDirName(ref.RemoteURL)
+	name, err := agent.CloneDirName(ref.Endpoint)
 	if err != nil {
 		t.Fatalf("CloneDirName: %v", err)
 	}
@@ -69,7 +95,7 @@ func registerTestRepoAtWithRef(t *testing.T, s *hub.Service, ref agent.GitRef) s
 	// initGitRepoAt seeds a fresh repo with an `origin` remote so the
 	// hub's discover path (git.RemoteURL on snap.Directory) recovers
 	// the same Remote URL we keyed off of.
-	initGitRepoAt(t, dir, ref.RemoteURL)
+	initGitRepoAt(t, dir, ref.Endpoint.String())
 	return dir
 }
 

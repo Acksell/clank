@@ -38,7 +38,7 @@ func TestDaemonStatus(t *testing.T) {
 	// Create a session.
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	// Create two sessions.
 	_, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "task a",
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestDaemonGracefulShutdownStopsBackends(t *testing.T) {
 	}
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendClaudeCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "task b",
 	})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestDaemonEventStream(t *testing.T) {
 	// Create a session — should generate events.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestDaemonMultipleEventSubscribers(t *testing.T) {
 	// Create a session.
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "test",
 	})
 	if err != nil {
@@ -229,7 +229,7 @@ func TestEventRoundTrip_StatusChange(t *testing.T) {
 
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {
@@ -404,7 +404,7 @@ func TestEventRoundTrip_InjectedEvents(t *testing.T) {
 
 			_, err = client.Sessions().Create(ctx, agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+				GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 				Prompt:  "hello",
 			})
 			if err != nil {
@@ -449,7 +449,7 @@ func TestEventRoundTrip_StreamingTextDeltas(t *testing.T) {
 
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {
@@ -515,7 +515,7 @@ func TestEventRoundTrip_SessionID(t *testing.T) {
 
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {
@@ -564,7 +564,7 @@ func TestEventRoundTrip_TitleChange(t *testing.T) {
 
 	_, err = client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {

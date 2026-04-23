@@ -115,18 +115,15 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		id := ulid.Make().String()
 		// Derive a GitRef so lazy backend activation (activateBackend)
 		// can reach the host plane. Snap directory is the host's local
-		// path; remote URL is best-effort for cross-host identity.
-		remoteURL, _ := git.RemoteURL(snap.Directory, "origin")
+		// path; the parsed endpoint is best-effort for cross-host identity.
 		gitRef := agent.GitRef{
 			LocalPath:      snap.Directory,
-			RemoteURL:      remoteURL,
 			WorktreeBranch: wtBranch,
 		}
-		if remoteURL != "" {
-			// Discovery: parse the URL once at ingress so the ref carries
-			// both views. Discovery silently drops unparseable origins
-			// rather than failing the entire scan; the LocalPath alone
-			// keeps the session usable on the originating host.
+		if remoteURL, err := git.RemoteURL(snap.Directory, "origin"); err == nil && remoteURL != "" {
+			// Discovery silently drops unparseable origins rather than
+			// failing the entire scan; the LocalPath alone keeps the
+			// session usable on the originating host.
 			if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
 				gitRef.Endpoint = ep
 			}

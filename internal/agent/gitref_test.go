@@ -2,6 +2,12 @@ package agent
 
 import "testing"
 
+// epHTTPS is a small helper for the test cases below.
+func epHTTPS(t *testing.T, host, path string) *GitEndpoint {
+	t.Helper()
+	return &GitEndpoint{Protocol: GitProtoHTTPS, Host: host, Path: path}
+}
+
 func TestRepoDisplayName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -9,16 +15,14 @@ func TestRepoDisplayName(t *testing.T) {
 		ref  GitRef
 		want string
 	}{
-		{"https remote", GitRef{RemoteURL: "https://github.com/acksell/clank.git"}, "clank"},
-		{"scp remote", GitRef{RemoteURL: "git@github.com:acksell/clank.git"}, "clank"},
-		{"file URL", GitRef{RemoteURL: "file:///srv/git/foo.git"}, "foo"},
+		{"endpoint https", GitRef{Endpoint: epHTTPS(t, "github.com", "acksell/clank")}, "clank"},
+		{"endpoint ssh", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank"}}, "clank"},
+		{"endpoint file", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoFile, Path: "srv/git/foo"}}, "foo"},
 		{"local abs", GitRef{LocalPath: "/Users/x/code/clank"}, "clank"},
 		{"local trailing slash", GitRef{LocalPath: "/Users/x/code/clank/"}, "clank"},
-		{"both prefers remote", GitRef{LocalPath: "/Users/x/code/wrong", RemoteURL: "https://github.com/acksell/clank.git"}, "clank"},
+		{"both prefers endpoint", GitRef{LocalPath: "/Users/x/code/wrong", Endpoint: epHTTPS(t, "github.com", "acksell/clank")}, "clank"},
 		{"empty ref", GitRef{}, ""},
 		{"local relative", GitRef{LocalPath: "rel/path"}, ""},
-		{"remote bad falls to local", GitRef{LocalPath: "/Users/x/code/clank", RemoteURL: "::::"}, "clank"},
-		{"remote bad no local", GitRef{RemoteURL: "::::"}, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -39,14 +43,13 @@ func TestGitRefValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"empty", GitRef{}, true},
-		{"both set ok", GitRef{LocalPath: "/x", RemoteURL: "https://github.com/acksell/clank.git"}, false},
+		{"both set ok", GitRef{LocalPath: "/x", Endpoint: epHTTPS(t, "github.com", "acksell/clank")}, false},
 		{"local ok", GitRef{LocalPath: "/tmp/repo"}, false},
 		{"local relative", GitRef{LocalPath: "rel"}, true},
-		{"remote https", GitRef{RemoteURL: "https://github.com/acksell/clank.git"}, false},
-		{"remote scp", GitRef{RemoteURL: "git@github.com:acksell/clank.git"}, false},
-		{"remote bad", GitRef{RemoteURL: "not a url"}, true},
-		{"both but local relative", GitRef{LocalPath: "rel", RemoteURL: "https://github.com/x/y.git"}, true},
-		{"both but remote bad", GitRef{LocalPath: "/x", RemoteURL: "not a url"}, true},
+		{"endpoint ok", GitRef{Endpoint: epHTTPS(t, "github.com", "acksell/clank")}, false},
+		{"endpoint missing host", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoHTTPS, Path: "acksell/clank"}}, true},
+		{"endpoint trailing .git", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank.git"}}, true},
+		{"both but local relative", GitRef{LocalPath: "rel", Endpoint: epHTTPS(t, "github.com", "x/y")}, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -65,11 +68,11 @@ func TestGitRefValidate(t *testing.T) {
 
 func TestRepoKey(t *testing.T) {
 	t.Parallel()
-	// Prefers RemoteURL when both set: stable across machines.
-	a := GitRef{LocalPath: "/Users/alice/code/clank", RemoteURL: "https://github.com/acksell/clank.git", WorktreeBranch: "main"}
-	b := GitRef{LocalPath: "/home/bob/src/clank", RemoteURL: "https://github.com/acksell/clank.git", WorktreeBranch: "main"}
+	// Endpoint-keyed refs match across machines regardless of LocalPath.
+	a := GitRef{LocalPath: "/Users/alice/code/clank", Endpoint: epHTTPS(t, "github.com", "acksell/clank"), WorktreeBranch: "main"}
+	b := GitRef{LocalPath: "/home/bob/src/clank", Endpoint: epHTTPS(t, "github.com", "acksell/clank"), WorktreeBranch: "main"}
 	if RepoKey(a) != RepoKey(b) {
-		t.Fatalf("expected matching keys for same RemoteURL+branch, got %q vs %q", RepoKey(a), RepoKey(b))
+		t.Fatalf("expected matching keys for same Endpoint+branch, got %q vs %q", RepoKey(a), RepoKey(b))
 	}
 	// Local-only refs key by LocalPath.
 	c := GitRef{LocalPath: "/x", WorktreeBranch: "feat"}
@@ -97,26 +100,6 @@ func TestRepoKeyEndpointProtocolIndependent(t *testing.T) {
 	}
 	if RepoKey(sshRef) != RepoKey(httpsRef) {
 		t.Fatalf("ssh and https endpoint keys differ: %q vs %q", RepoKey(sshRef), RepoKey(httpsRef))
-	}
-}
-
-// TestRepoKeyEndpointPreferredOverRemoteURL: when both are set,
-// Endpoint wins, since it carries the canonical (host, path) identity
-// independent of any string oddities in the legacy RemoteURL.
-func TestRepoKeyEndpointPreferredOverRemoteURL(t *testing.T) {
-	t.Parallel()
-	a := GitRef{
-		Endpoint:       &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
-		RemoteURL:      "https://github.com/acksell/clank.git",
-		WorktreeBranch: "main",
-	}
-	b := GitRef{
-		Endpoint:       &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
-		RemoteURL:      "git@github.com:acksell/clank.git",
-		WorktreeBranch: "main",
-	}
-	if RepoKey(a) != RepoKey(b) {
-		t.Fatalf("keys should match when Endpoint is equal: %q vs %q", RepoKey(a), RepoKey(b))
 	}
 }
 

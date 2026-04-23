@@ -23,7 +23,7 @@ import (
 	"sort"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/gitendpoint"
+
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
@@ -103,54 +103,38 @@ func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 // reflects any rewrite (e.g. ssh→https for remote hosts on the
 // public-HTTPS allowlist).
 //
-// The returned GitRef's RemoteURL is also updated to match the
-// (possibly rewritten) endpoint so downstream code that hasn't been
-// migrated to read Endpoint yet still sees a consistent URL. Once
-// every reader is on Endpoint (Phase 7), RemoteURL goes away.
+// hostForRef returns the host client, a possibly-mutated GitRef whose
+// Endpoint reflects any credential-driven protocol switch, and the
+// credential to use. Callers must treat the returned ref as the wire
+// payload — never re-resolve from the input ref.
 //
-// If ref.Endpoint is nil the function tries to parse ref.RemoteURL.
-// Refs that have neither set, or whose RemoteURL fails to parse, are
-// rejected loudly — no silent fallback to the raw string.
+// Refs with no Endpoint set MUST also have LocalPath set; otherwise the
+// function rejects loudly. URL parsing happens at ingress (TUI,
+// clankcli, voice, discovery), never here.
 func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTTP, agent.GitRef, agent.GitCredential, error) {
 	c, err := s.hostFor(hostname)
 	if err != nil {
 		return nil, agent.GitRef{}, agent.GitCredential{}, err
 	}
 
-	ep := ref.Endpoint
-	if ep == nil {
-		if ref.RemoteURL == "" {
-			// Local-only ref (LocalPath set, no remote): no credential
-			// is required because the host operates in-place. Return
-			// an Anonymous credential as the canonical "no auth" value
-			// so downstream code can still type-switch on Kind.
-			if ref.LocalPath == "" {
-				return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: ref has no endpoint, remote_url, or local_path")
-			}
-			return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
+	if ref.Endpoint == nil {
+		// Local-only ref (LocalPath set, no remote): no credential is
+		// required because the host operates in-place. Return an
+		// Anonymous credential as the canonical "no auth" value so
+		// downstream code can still type-switch on Kind.
+		if ref.LocalPath == "" {
+			return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: ref has no endpoint or local_path")
 		}
-		parsed, perr := gitendpoint.Parse(ref.RemoteURL)
-		if perr != nil {
-			return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: parse remote_url: %w", perr)
-		}
-		ep = parsed
+		return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
 	}
 
-	cred, resolvedEp, err := ResolveCredential(host.Hostname(hostname), ep)
+	cred, resolvedEp, err := ResolveCredential(host.Hostname(hostname), ref.Endpoint)
 	if err != nil {
 		return nil, agent.GitRef{}, agent.GitCredential{}, err
 	}
 
 	out := ref
 	out.Endpoint = resolvedEp
-	// Only rewrite RemoteURL when the resolver actually changed the
-	// endpoint (e.g. ssh→https for remote hosts). For no-op resolutions
-	// preserve the original input — a user-supplied scp-form URL should
-	// round-trip as scp, not be canonicalised to ssh:// form behind their
-	// back. RemoteURL goes away in Phase 7 and this special case with it.
-	if resolvedEp != ep {
-		out.RemoteURL = resolvedEp.String()
-	}
 	return c, out, cred, nil
 }
 

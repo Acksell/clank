@@ -187,7 +187,22 @@ HEAD.
 - Audit: `git grep -i 'RemoteURL'` returns zero hits in non-test code.
 - `go test ./...` green.
 - Manual smoke: register Daytona, public-repo session works; private repo errors clearly.
-- **Status:** [ ] not started
+- **Status:** [x] code complete (manual smoke pending). The
+  `agent.GitRef.RemoteURL` field is gone; `Endpoint` is the sole
+  remote identity. `internal/agent/giturl.go` no longer parses URLs
+  (`CloneDirName` now takes `*GitEndpoint`). The store bridge in
+  `gitRefToColumns` is deleted — Endpoint must be set by the caller.
+  All ingress sites (clankcli, TUI inbox/sessionview\_compose, hub
+  discovery, voice tools, hub mux catalog query) parse the URL
+  themselves; voice received the minimal mechanical edit needed to
+  keep compiling. Wire format on the hub catalog endpoints
+  (`/agents`, `/models`) still uses the `git_remote_url` query param
+  string, parsed at the mux ingress. `internal/agent/giturl_test.go`
+  and `internal/hub/sessions_remote_rewrite_test.go` were deleted as
+  obsolete. Hub test fixtures gained `mustParseEndpoint` /
+  `mustRef`; store tests use `mustParseRemoteRef`. Two store tests
+  that previously asserted a derived `RemoteURL` string now assert
+  on `Endpoint.String()` directly. `go test ./...` green.
 
 ### Phase 10 — Docs
 - Update `docs/daytona_plan.md` Phase G — link to this doc; describe what's left.

@@ -153,7 +153,7 @@ type InboxModel struct {
 // shell→API bridge: shells out to git for the repo root + origin URL.
 //
 // Sends BOTH LocalPath (the repo root, used by co-located hosts to skip
-// cloning) AND RemoteURL when available (cross-host stable identity,
+// cloning) AND Endpoint when available (cross-host stable identity,
 // fallback if a remote host doesn't have LocalPath). See agent.GitRef
 // godoc for resolution precedence on the host.
 //
@@ -171,12 +171,10 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 	}
 	ref := agent.GitRef{LocalPath: root}
 	if url, err := git.RemoteURL(root, "origin"); err == nil {
-		// Parse alongside RemoteURL so the ref carries both views; if the
-		// origin URL can't be parsed we refuse to attach it (TUI policy:
+		// On parse error refuse to attach a half-formed ref (TUI policy:
 		// don't propagate unparseable refs across the wire). LocalPath
 		// alone still works on the local host.
 		if ep, perr := gitendpoint.Parse(url); perr == nil {
-			ref.RemoteURL = url
 			ref.Endpoint = ep
 		}
 	}
@@ -668,7 +666,7 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	// Filter by repo identity (canonical GitRef). Sessions without a
 	// GitRef (e.g. adopted backends with no origin remote) are dropped
 	// from the project view since they can't be attributed to this repo.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil) {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -806,7 +804,7 @@ func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project, branch) on
 	// top of the daemon's text search results so the search view
 	// honours the same sidebar selection as the unfiltered list.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil) {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -1482,7 +1480,7 @@ func (m *InboxModel) sessionPaneWidth() int {
 // happen to share a branch name (e.g. "main") would inflate the count.
 func (m *InboxModel) updateBranchSessionCounts() {
 	statusMap := make(map[string]branchSessionStatus)
-	scoped := m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "")
+	scoped := m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil)
 	repoKey := ""
 	if scoped {
 		repoKey = agent.RepoKey(m.gitRef)

@@ -26,7 +26,7 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	// Create a session.
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend:  agent.BackendOpenCode,
-		GitRef:   agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:   agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:   "fix the bug",
 		TicketID: "TICKET-42",
 	})
@@ -106,18 +106,16 @@ func TestPersistence_RoundTrip(t *testing.T) {
 		t.Error("LastReadAt should not be zero")
 	}
 
-	// Verify backend-owned fields survived.
-	// RemoteURL is derived from Endpoint.String() which canonicalises scp form
-	// to ssh:// URL form, so compare via RepoKey using a parsed reference ref
-	// (so both sides have Endpoint populated and key on the E-form).
+	// Compare via RepoKey using a parsed reference ref (both sides
+	// must have Endpoint populated to key on the E-form).
 	wantEP, err := gitendpoint.Parse(testRemoteURL)
 	if err != nil {
 		t.Fatalf("parse testRemoteURL: %v", err)
 	}
-	wantKey := agent.RepoKey(agent.GitRef{Endpoint: wantEP, RemoteURL: wantEP.String()})
+	wantKey := agent.RepoKey(agent.GitRef{Endpoint: wantEP})
 	gotKey := agent.RepoKey(after.GitRef)
 	if gotKey != wantKey {
-		t.Errorf("GitRef.RepoKey = %q, want %q (RemoteURL=%q)", gotKey, wantKey, after.GitRef.RemoteURL)
+		t.Errorf("GitRef.RepoKey = %q, want %q (Endpoint=%v)", gotKey, wantKey, after.GitRef.Endpoint)
 	}
 	if after.TicketID != "TICKET-42" {
 		t.Errorf("TicketID = %q, want %q", after.TicketID, "TICKET-42")
@@ -135,7 +133,7 @@ func TestPersistence_DeleteSurvivesRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {
@@ -189,7 +187,7 @@ func TestPersistence_StaleBusyStatusNormalizedOnRestart(t *testing.T) {
 
 	info, err := client1.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "do something",
 	})
 	if err != nil {
@@ -363,7 +361,7 @@ func TestPersistence_NilStoreDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
 	info, err := client.Sessions().Create(ctx, agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: testRemoteURL},
+		GitRef:  agent.GitRef{Endpoint: testRemoteEndpoint},
 		Prompt:  "hello",
 	})
 	if err != nil {

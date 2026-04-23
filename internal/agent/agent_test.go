@@ -77,8 +77,10 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_remote_ok",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"},
-				Prompt:  "hi",
+				GitRef: agent.GitRef{Endpoint: &agent.GitEndpoint{
+					Protocol: agent.GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank",
+				}},
+				Prompt: "hi",
 			},
 		},
 		{
@@ -101,7 +103,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_invalid_propagates",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{RemoteURL: ""}, // missing URL
+				GitRef:  agent.GitRef{Endpoint: &agent.GitEndpoint{Protocol: "bogus", Path: "x"}}, // bad protocol
 				Prompt:  "hi",
 			},
 			wantErr: true,
@@ -112,7 +114,9 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 				Backend: agent.BackendOpenCode,
 				GitRef: agent.GitRef{
 					LocalPath: "/tmp/repo",
-					RemoteURL: "https://github.com/x/y",
+					Endpoint: &agent.GitEndpoint{
+						Protocol: agent.GitProtoHTTPS, Host: "github.com", Path: "x/y",
+					},
 				},
 				Prompt: "hi",
 			},

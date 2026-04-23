@@ -39,7 +39,7 @@ func (s *Service) markBranchSessionsDone(ref agent.GitRef, branch string) int {
 // sameRepo returns true when a and b name the same repo. Compares
 // canonical identity via agent.RepoKey (with branch stripped) so that
 // equivalent refs which differ only in surface form — e.g. one carrying
-// only a RemoteURL and the other carrying both RemoteURL+LocalPath —
+// only an Endpoint and the other carrying both Endpoint+LocalPath —
 // still match. Branch is ignored — caller checks separately.
 func sameRepo(a, b agent.GitRef) bool {
 	a.WorktreeBranch = ""

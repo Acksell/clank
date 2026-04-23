@@ -65,7 +65,7 @@ func (s *Service) runStartupDiscover(ctx context.Context) {
 		if ms.info.ExternalID == "" {
 			continue
 		}
-		if ms.info.GitRef.LocalPath != "" || ms.info.GitRef.RemoteURL != "" {
+		if ms.info.GitRef.LocalPath != "" || ms.info.GitRef.Endpoint != nil {
 			continue
 		}
 		dir, ok := resolved[snapKey{ms.info.Hostname, ms.info.ExternalID}]

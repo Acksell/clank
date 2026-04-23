@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/gitendpoint"
 
 	// Pure-Go SQLite driver (no CGo).
 	_ "modernc.org/sqlite"
@@ -242,39 +241,24 @@ type gitRefColumns struct {
 // gitRefToColumns projects a GitRef into the column set the schema
 // stores. Either or both of (ProjectDir, Endpoint*) may be populated;
 // both empty means "no ref" (e.g. orphan session awaiting startup
-// discovery).
-//
-// Bridge: if g.Endpoint is nil but g.RemoteURL is set, the URL is
-// parsed via gitendpoint.Parse so the on-disk shape always carries
-// the structured form. This is a transitional convenience — the
-// agent.GitRef.RemoteURL field is being phased out (see
-// docs/git_credentials_refactor.md). Parse failures error loudly:
-// we never silently drop the remote.
+// discovery). Endpoint MUST already be parsed by the caller — the
+// store performs no URL parsing of its own (see Phase 9 of
+// docs/git_credentials_refactor.md).
 func gitRefToColumns(g agent.GitRef) (gitRefColumns, error) {
 	c := gitRefColumns{ProjectDir: g.LocalPath}
-	ep := g.Endpoint
-	if ep == nil && g.RemoteURL != "" {
-		parsed, err := gitendpoint.Parse(g.RemoteURL)
-		if err != nil {
-			return gitRefColumns{}, fmt.Errorf("parse remote_url %q: %w", g.RemoteURL, err)
-		}
-		ep = parsed
-	}
-	if ep != nil {
-		c.EndpointProtocol = string(ep.Protocol)
-		c.EndpointUser = ep.User
-		c.EndpointHost = ep.Host
-		c.EndpointPort = ep.Port
-		c.EndpointPath = ep.Path
+	if g.Endpoint != nil {
+		c.EndpointProtocol = string(g.Endpoint.Protocol)
+		c.EndpointUser = g.Endpoint.User
+		c.EndpointHost = g.Endpoint.Host
+		c.EndpointPort = g.Endpoint.Port
+		c.EndpointPath = g.Endpoint.Path
 	}
 	return c, nil
 }
 
 // gitRefFromColumns reconstructs a GitRef from the stored columns. If
 // the protocol field is empty we treat the row as having no endpoint
-// (local-only or unresolved). The legacy RemoteURL field (kept until
-// Phase 7 of the refactor lands) is derived via Endpoint.String() so
-// existing callers see a consistent value without re-parsing.
+// (local-only or unresolved).
 func gitRefFromColumns(c gitRefColumns, worktreeBranch string) agent.GitRef {
 	ref := agent.GitRef{
 		LocalPath:      c.ProjectDir,
@@ -288,7 +272,6 @@ func gitRefFromColumns(c gitRefColumns, worktreeBranch string) agent.GitRef {
 			Port:     c.EndpointPort,
 			Path:     c.EndpointPath,
 		}
-		ref.RemoteURL = ref.Endpoint.String()
 	}
 	return ref
 }
@@ -491,7 +474,7 @@ func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, 
 	if hostname == "" {
 		hostname = "local"
 	}
-	if ref.LocalPath == "" && ref.Endpoint == nil && ref.RemoteURL == "" {
+	if ref.LocalPath == "" && ref.Endpoint == nil {
 		return fmt.Errorf("upsert primary agents: git ref is required")
 	}
 	c, err := gitRefToColumns(ref)

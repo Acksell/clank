@@ -38,7 +38,7 @@ type sessionCreateResultMsg struct {
 // gitRef carries LocalPath (so the host skips cloning); for any
 // remote host LocalPath is dropped — the host wouldn't be able to
 // read the laptop's filesystem anyway, and the host-side
-// auto-clone path takes over via RemoteURL.
+// auto-clone path takes over via Endpoint.
 //
 // The gitRef is resolved eagerly from projectDir's `origin` remote
 // so the background fetchAgents/fetchModels prefetch can target it.
@@ -55,17 +55,16 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string, hostna
 		hostname = host.HostLocal
 	}
 	// LocalPath is only meaningful when the host can read the laptop's
-	// filesystem. For remote hosts we send only RemoteURL and let the
+	// filesystem. For remote hosts we send only Endpoint and let the
 	// host's auto-clone path take over.
 	ref := agent.GitRef{}
 	if hostname == host.HostLocal {
 		ref.LocalPath = projectDir
 	}
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		// Parse alongside; on parse error refuse to attach a half-formed
-		// ref (TUI policy: don't propagate unparseable refs across the wire).
+		// On parse error refuse to attach a half-formed ref (TUI policy:
+		// don't propagate unparseable refs across the wire).
 		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
-			ref.RemoteURL = remoteURL
 			ref.Endpoint = ep
 		}
 	}
@@ -242,7 +241,6 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
 		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
-			gitRef.RemoteURL = remoteURL
 			gitRef.Endpoint = ep
 		}
 	}

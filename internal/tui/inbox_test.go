@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 )
 
@@ -2508,9 +2509,16 @@ func TestSearchStatePreservedAcrossSessionView(t *testing.T) {
 		width:       120,
 		height:      40,
 	}
+	mustEP := func(u string) *agent.GitEndpoint {
+		ep, err := gitendpoint.Parse(u)
+		if err != nil {
+			t.Fatalf("parse %q: %v", u, err)
+		}
+		return ep
+	}
 	m.buildSearchResults([]agent.SessionInfo{
-		{ID: "s1", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/alpha.git"}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
-		{ID: "s2", GitRef: agent.GitRef{RemoteURL: "git@github.com:acme/beta.git"}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s1", GitRef: agent.GitRef{Endpoint: mustEP("git@github.com:acme/alpha.git")}, Prompt: "fix bug in auth", Status: agent.StatusIdle, UpdatedAt: now},
+		{ID: "s2", GitRef: agent.GitRef{Endpoint: mustEP("git@github.com:acme/beta.git")}, Prompt: "fix bug in cart", Status: agent.StatusIdle, UpdatedAt: now},
 	})
 
 	// Verify precondition: 2 search results visible.

@@ -117,8 +117,8 @@ func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
 
 // TestCreateSession_BothRefs_PrefersLocalPath is the regression test for
 // Bug 3: clients (TUI, clankcli) running on the same host as the daemon
-// send BOTH LocalPath and RemoteURL. Before the fix, the host ignored
-// LocalPath and always cloned RemoteURL into ~/.clank/clones/, so the
+// send BOTH LocalPath and Endpoint. Before the fix, the host ignored
+// LocalPath and always cloned Endpoint into ~/.clank/clones/, so the
 // agent ran against a fresh clone instead of the user's working tree.
 //
 // The contract: when LocalPath is set, exists, and is a repo root, the
@@ -132,8 +132,13 @@ func TestCreateSession_BothRefs_PrefersLocalPath(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{LocalPath: dir, RemoteURL: remoteURL},
-		Prompt:  "hi",
+		GitRef: agent.GitRef{
+			LocalPath: dir,
+			Endpoint: &agent.GitEndpoint{
+				Protocol: agent.GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank",
+			},
+		},
+		Prompt: "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-bug3", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -155,19 +160,17 @@ func TestCreateSession_BothRefs_PrefersLocalPath(t *testing.T) {
 // TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing covers the
 // remote-host scenario: a TUI on machine A targeting a daemon on machine
 // B sends both fields, but A's LocalPath does not exist on B. The host
-// must silently fall through to cloning RemoteURL.
+// must silently fall through to cloning Endpoint.
 func TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing(t *testing.T) {
 	t.Parallel()
 	svc, clonesDir := newTestServiceWithClonesDir(t)
 
 	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef: agent.GitRef{
 			LocalPath: "/nonexistent/path/on/this/host",
-			RemoteURL: sourceURL,
 			Endpoint:  fileEndpoint(source),
 		},
 		Auth:   agent.GitCredential{Kind: agent.GitCredAnonymous},
@@ -195,11 +198,10 @@ func TestCreateSession_RemoteRef_ClonesIntoClonesDir(t *testing.T) {
 	svc, clonesDir := newTestServiceWithClonesDir(t)
 
 	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL, Endpoint: fileEndpoint(source)},
+		GitRef:  agent.GitRef{Endpoint: fileEndpoint(source)},
 		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
@@ -229,11 +231,10 @@ func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
 	svc, clonesDir := newTestServiceWithClonesDir(t)
 
 	source := initGitRepo(t, "git@github.com:acksell/clank.git")
-	sourceURL := "file://" + source
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL, Endpoint: fileEndpoint(source)},
+		GitRef:  agent.GitRef{Endpoint: fileEndpoint(source)},
 		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
@@ -268,11 +269,9 @@ func TestCreateSession_RemoteRef_RemovesPartialCloneOnFailure(t *testing.T) {
 	t.Parallel()
 	svc, clonesDir := newTestServiceWithClonesDir(t)
 
-	bogusURL := "file:///definitely/does/not/exist/repo.git"
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef: agent.GitRef{
-			RemoteURL: bogusURL,
 			Endpoint: &agent.GitEndpoint{
 				Protocol: agent.GitProtoFile,
 				Path:     "definitely/does/not/exist/repo",

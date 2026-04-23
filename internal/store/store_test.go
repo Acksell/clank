@@ -22,16 +22,16 @@ func tempDBPath(t *testing.T) string {
 	return filepath.Join(dir, "test.db")
 }
 
-// mustParseRemoteRef parses a remote URL into a fully-populated GitRef
-// (Endpoint set + RemoteURL canonicalised). Used by tests that need to
-// seed refs that survive a store round-trip without key divergence.
+// mustParseRemoteRef parses a remote URL into a GitRef whose Endpoint
+// is the parsed structured form. Used by tests that need to seed refs
+// that survive a store round-trip without key divergence.
 func mustParseRemoteRef(t *testing.T, url string) agent.GitRef {
 	t.Helper()
 	ep, err := gitendpoint.Parse(url)
 	if err != nil {
 		t.Fatalf("parse %q: %v", url, err)
 	}
-	return agent.GitRef{Endpoint: ep, RemoteURL: ep.String()}
+	return agent.GitRef{Endpoint: ep}
 }
 
 func mustOpen(t *testing.T, path string) *store.Store {
@@ -473,7 +473,7 @@ func TestLoadPrimaryAgentsEmpty(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	ref := mustParseRemoteRef(t, "git@github.com:acksell/clank.git")
 	agents, err := s.LoadPrimaryAgents(agent.BackendOpenCode, "local", ref)
 	if err != nil {
 		t.Fatalf("LoadPrimaryAgents: %v", err)
@@ -487,7 +487,7 @@ func TestUpsertAndLoadPrimaryAgents(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	ref := mustParseRemoteRef(t, "git@github.com:acksell/clank.git")
 	agents := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary", Hidden: false},
 		{Name: "plan", Description: "Plan agent", Mode: "primary", Hidden: false},
@@ -526,7 +526,7 @@ func TestUpsertPrimaryAgentsOverwrites(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	ref := mustParseRemoteRef(t, "git@github.com:acksell/clank.git")
 	initial := []agent.AgentInfo{
 		{Name: "build", Description: "Build agent", Mode: "primary"},
 	}
@@ -558,8 +558,8 @@ func TestLoadPrimaryAgentsIsolatedByBackendHostAndRepo(t *testing.T) {
 	t.Parallel()
 	s := mustOpen(t, tempDBPath(t))
 
-	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
-	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
+	refA := mustParseRemoteRef(t, "git@github.com:acksell/repo-a.git")
+	refB := mustParseRemoteRef(t, "git@github.com:acksell/repo-b.git")
 	agentsA := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
 	agentsB := []agent.AgentInfo{{Name: "plan", Mode: "primary"}}
 
@@ -683,7 +683,7 @@ func TestMigrationV2Idempotent(t *testing.T) {
 		t.Fatalf("first Open: %v", err)
 	}
 	agents := []agent.AgentInfo{{Name: "build", Mode: "primary"}}
-	ref := agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git"}
+	ref := mustParseRemoteRef(t, "git@github.com:acksell/clank.git")
 	if err := s1.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 		t.Fatalf("UpsertPrimaryAgents: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestConcurrentWrites(t *testing.T) {
 			agents := []agent.AgentInfo{
 				{Name: fmt.Sprintf("agent-%d", i), Mode: "primary"},
 			}
-			ref := agent.GitRef{RemoteURL: fmt.Sprintf("git@github.com:acksell/repo-%d.git", i)}
+			ref := mustParseRemoteRef(t, fmt.Sprintf("git@github.com:acksell/repo-%d.git", i))
 			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
 				errs <- fmt.Errorf("UpsertPrimaryAgents(%d): %w", i, err)
 			}
@@ -777,12 +777,14 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	s := mustOpen(t, tempDBPath(t))
 
 	now := time.Now().Truncate(time.Millisecond)
+	seedRef := mustParseRemoteRef(t, "git@github.com:acksell/clank.git")
+	seedRef.WorktreeBranch = "feat/x"
 	info := agent.SessionInfo{
 		ID:        "ses-host-1",
 		Backend:   agent.BackendOpenCode,
 		Status:    agent.StatusIdle,
 		Hostname:  "local",
-		GitRef:    agent.GitRef{RemoteURL: "git@github.com:acksell/clank.git", WorktreeBranch: "feat/x"},
+		GitRef:    seedRef,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -802,13 +804,11 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	if got.Hostname != "local" {
 		t.Errorf("Hostname = %q, want local", got.Hostname)
 	}
-	// After v16, RemoteURL is derived from the parsed Endpoint via
-	// Endpoint.String(), which renders SSH endpoints in canonical
-	// URL form rather than scp shorthand. The seed used scp form;
-	// the round-trip canonicalises it.
+	// Endpoint round-trips through the columns; verify its canonical
+	// URL form matches the seed (scp form is canonicalised on parse).
 	wantURL := "ssh://git@github.com/acksell/clank.git"
-	if got.GitRef.RemoteURL != wantURL {
-		t.Errorf("GitRef.RemoteURL = %q, want %q", got.GitRef.RemoteURL, wantURL)
+	if got.GitRef.Endpoint == nil || got.GitRef.Endpoint.String() != wantURL {
+		t.Errorf("GitRef.Endpoint.String() = %v, want %q", got.GitRef.Endpoint, wantURL)
 	}
 	if got.GitRef.LocalPath != "" {
 		t.Errorf("GitRef.LocalPath = %q, want empty", got.GitRef.LocalPath)
@@ -936,12 +936,11 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("missing ses-old-1 after migration")
 	}
-	// After v16 RemoteURL is derived from the parsed Endpoint via
-	// Endpoint.String(), which renders SSH endpoints in the
-	// unambiguous URL form rather than the scp shorthand.
+	// After v16 the endpoint round-trips via the discrete columns;
+	// SSH endpoints render in canonical URL form rather than scp shorthand.
 	wantURL := "ssh://git@github.com/acksell/clank.git"
-	if got1.GitRef.RemoteURL != wantURL {
-		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want %q", got1.GitRef.RemoteURL, wantURL)
+	if got1.GitRef.Endpoint == nil || got1.GitRef.Endpoint.String() != wantURL {
+		t.Errorf("ses-old-1 GitRef.Endpoint.String() = %v, want %q", got1.GitRef.Endpoint, wantURL)
 	}
 	if got1.GitRef.Endpoint == nil || got1.GitRef.Endpoint.Host != "github.com" || got1.GitRef.Endpoint.Path != "acksell/clank" {
 		t.Errorf("ses-old-1 GitRef.Endpoint = %+v, want host=github.com path=acksell/clank", got1.GitRef.Endpoint)
@@ -950,7 +949,7 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("missing ses-old-2 after migration")
 	}
-	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" || got2.GitRef.Endpoint != nil {
+	if got2.GitRef.LocalPath != "" || got2.GitRef.Endpoint != nil {
 		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
 	}
 

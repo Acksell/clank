@@ -1,85 +1,17 @@
 package agent
 
-// Git URL parsing + clone-dir naming. Lives in the agent package because
-// GitRef construction and host.Service.workDirFor both need it; pulling
-// it into a separate file keeps gitref.go focused on the type itself.
+// Clone-dir naming. CloneDirName is consumed by host.Service.workDirFor
+// to pick a stable subdir under ClonesDir for each remote.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net/url"
 	"strings"
 )
 
-// parseGitURL extracts the host and repo path (without the trailing
-// ".git") from any standard git URL form: https://, ssh://, scp-like
-// (git@host:owner/repo), or file://.
-//
-// For file:// URLs the returned host is "file" when the URL has no
-// authority (file:///path) and "file://<authority>" when it does
-// (file://server/share). Without preserving the authority, two
-// distinct remotes like file://a/x and file://b/x would collapse to
-// the same identity and clone target.
-func parseGitURL(raw string) (host, path string, err error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", "", fmt.Errorf("empty URL")
-	}
-
-	// scp-like form: git@host:owner/repo(.git)
-	if !strings.Contains(raw, "://") {
-		if at := strings.Index(raw, "@"); at >= 0 {
-			rest := raw[at+1:]
-			if colon := strings.Index(rest, ":"); colon >= 0 && !strings.Contains(rest[:colon], "/") {
-				host = rest[:colon]
-				path = strings.TrimSuffix(rest[colon+1:], ".git")
-				path = strings.Trim(path, "/")
-				if host == "" || path == "" {
-					return "", "", fmt.Errorf("scp-like URL missing host or path: %q", raw)
-				}
-				return host, path, nil
-			}
-		}
-		// Fall through: try to parse as URL by prepending a scheme.
-		raw = "https://" + raw
-	}
-
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", "", fmt.Errorf("parse URL: %w", err)
-	}
-	if u.Scheme == "file" {
-		if u.Path == "" {
-			return "", "", fmt.Errorf("file URL %q has no path", raw)
-		}
-		path = strings.TrimSuffix(u.Path, ".git")
-		path = strings.TrimRight(path, "/")
-		if path == "" {
-			return "", "", fmt.Errorf("file URL %q has empty path after trim", raw)
-		}
-		host = "file"
-		if u.Host != "" {
-			// Preserve the authority so file://server/share/repo and
-			// file:///share/repo don't collapse to the same identity.
-			host = "file://" + strings.ToLower(u.Host)
-		}
-		return host, path, nil
-	}
-	if u.Host == "" {
-		return "", "", fmt.Errorf("URL %q has no host", raw)
-	}
-	host = u.Host
-	path = strings.TrimSuffix(u.Path, ".git")
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return "", "", fmt.Errorf("URL %q has no repo path", raw)
-	}
-	return host, path, nil
-}
-
 // CloneDirName returns a single filesystem-safe directory name for the
-// remote URL. Used by host.Service to pick a stable subdir under
+// endpoint. Used by host.Service to pick a stable subdir under
 // ClonesDir for each remote.
 //
 // Format: lowercased "<host>-<path-with-slashes-as-dashes>" with all
@@ -94,12 +26,20 @@ func parseGitURL(raw string) (host, path string, err error) {
 //	git@github.com:acksell/clank.git    → github.com-acksell-clank-<hash>
 //	https://github.com/acksell/clank    → github.com-acksell-clank-<hash>
 //	file:///srv/git/foo.git             → file--srv-git-foo-<hash>
-func CloneDirName(remoteURL string) (string, error) {
-	host, path, err := parseGitURL(remoteURL)
-	if err != nil {
-		return "", err
+func CloneDirName(ep *GitEndpoint) (string, error) {
+	if ep == nil {
+		return "", fmt.Errorf("clone dir name: nil endpoint")
 	}
-	raw := strings.ToLower(host + "-" + strings.ReplaceAll(path, "/", "-"))
+	if err := ep.Validate(); err != nil {
+		return "", fmt.Errorf("clone dir name: %w", err)
+	}
+	host := ep.Host
+	if ep.Protocol == GitProtoFile && host == "" {
+		// file:///abs/path — synthesise a literal so the result is
+		// stable and distinguishable from network protocols.
+		host = "file"
+	}
+	raw := strings.ToLower(host + "-" + strings.ReplaceAll(ep.Path, "/", "-"))
 
 	// Allowlist sanitization: anything outside [a-z0-9._-] becomes "-".
 	var b strings.Builder
@@ -116,51 +56,13 @@ func CloneDirName(remoteURL string) (string, error) {
 	}
 	name := b.String()
 	if name == "" || name == "." || name == ".." {
-		return "", fmt.Errorf("clone dir name for %q resolves to %q", remoteURL, name)
+		return "", fmt.Errorf("clone dir name for %q resolves to %q", ep.String(), name)
 	}
 	if strings.HasPrefix(name, ".") {
-		return "", fmt.Errorf("clone dir name for %q starts with dot: %q", remoteURL, name)
+		return "", fmt.Errorf("clone dir name for %q starts with dot: %q", ep.String(), name)
 	}
 	// Append a short hash of the canonical identity so distinct remotes
 	// that sanitize to the same name don't share a checkout.
-	sum := sha256.Sum256([]byte(host + "\x00" + path))
+	sum := sha256.Sum256([]byte(host + "\x00" + ep.Path))
 	return name + "-" + hex.EncodeToString(sum[:6]), nil
-}
-
-// httpsRewriteHosts is the allowlist of providers we know offer HTTPS
-// access to the same repo as their SSH endpoint, with the standard
-// "/owner/repo.git" path layout. Self-hosted Git servers, custom SSH
-// ports, and Gerrit-style URLs do not generally satisfy this and are
-// left untouched (HTTPSRemoteURL returns the input unchanged).
-var httpsRewriteHosts = map[string]bool{
-	"github.com":    true,
-	"gitlab.com":    true,
-	"bitbucket.org": true,
-}
-
-// HTTPSRemoteURL converts an scp-form ("git@host:owner/repo.git") or
-// ssh:// URL to its https equivalent for providers we recognise. URLs
-// that are already https/http or that target an unrecognised host are
-// returned unchanged with ok=false so callers can decide whether to
-// proceed (e.g. local host: use the original; remote host with no SSH
-// keys: surface a clear error rather than handing git a URL that will
-// hang).
-//
-// Used by the hub when forwarding a CreateSession to a non-local host:
-// the remote sandbox has no SSH credentials, so SSH URLs hang on
-// host-key prompts. HTTPS works for public repos without auth; private
-// repos need a token (separate phase, not handled here).
-func HTTPSRemoteURL(remoteURL string) (rewritten string, ok bool, err error) {
-	host, path, err := parseGitURL(remoteURL)
-	if err != nil {
-		return "", false, err
-	}
-	// Already an HTTP(S) URL — nothing to do.
-	if strings.HasPrefix(remoteURL, "https://") || strings.HasPrefix(remoteURL, "http://") {
-		return remoteURL, false, nil
-	}
-	if !httpsRewriteHosts[strings.ToLower(host)] {
-		return remoteURL, false, nil
-	}
-	return "https://" + host + "/" + path + ".git", true, nil
 }
