@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/hub"
 	"github.com/acksell/clank/internal/store"
 )
@@ -106,8 +107,17 @@ func TestPersistence_RoundTrip(t *testing.T) {
 	}
 
 	// Verify backend-owned fields survived.
-	if after.GitRef.RemoteURL == "" || after.GitRef.RemoteURL != testRemoteURL {
-		t.Errorf("GitRef.RemoteURL = %q, want %q", after.GitRef.RemoteURL, testRemoteURL)
+	// RemoteURL is derived from Endpoint.String() which canonicalises scp form
+	// to ssh:// URL form, so compare via RepoKey using a parsed reference ref
+	// (so both sides have Endpoint populated and key on the E-form).
+	wantEP, err := gitendpoint.Parse(testRemoteURL)
+	if err != nil {
+		t.Fatalf("parse testRemoteURL: %v", err)
+	}
+	wantKey := agent.RepoKey(agent.GitRef{Endpoint: wantEP, RemoteURL: wantEP.String()})
+	gotKey := agent.RepoKey(after.GitRef)
+	if gotKey != wantKey {
+		t.Errorf("GitRef.RepoKey = %q, want %q (RemoteURL=%q)", gotKey, wantKey, after.GitRef.RemoteURL)
 	}
 	if after.TicketID != "TICKET-42" {
 		t.Errorf("TicketID = %q, want %q", after.TicketID, "TICKET-42")

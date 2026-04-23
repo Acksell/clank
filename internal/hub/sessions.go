@@ -9,6 +9,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	"github.com/oklog/ulid/v2"
 )
@@ -120,6 +121,15 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 			LocalPath:      snap.Directory,
 			RemoteURL:      remoteURL,
 			WorktreeBranch: wtBranch,
+		}
+		if remoteURL != "" {
+			// Discovery: parse the URL once at ingress so the ref carries
+			// both views. Discovery silently drops unparseable origins
+			// rather than failing the entire scan; the LocalPath alone
+			// keeps the session usable on the originating host.
+			if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
+				gitRef.Endpoint = ep
+			}
 		}
 		info := agent.SessionInfo{
 			ID:              id,

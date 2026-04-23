@@ -167,18 +167,20 @@ HEAD.
 - Update `internal/git/git_test.go`. Add askpass test using local file:// remote.
 - **Status:** [x] complete
 
-### Phase 7 — TUI / voice / clankcli ingress
-- `internal/tui/inbox.go:172`, `internal/tui/sessionview_compose.go:63,237`, `clankcli/clankcli.go:141`, `voice/tools.go:340` — call `hub.ParseGitEndpoint` instead of stuffing raw string.
-- Refusal on parse error per Q2.
-- Remove the deprecated `RemoteURL string` field from `GitRef`.
-- **Status:** [ ] not started
+### Phase 7 — TUI / clankcli ingress
+- `internal/tui/inbox.go:172`, `internal/tui/sessionview_compose.go:63,237`, `clankcli/clankcli.go:141` — call `gitendpoint.Parse` alongside the raw string and populate `Endpoint`.
+- TUI policy: parse failure → drop both `RemoteURL` and `Endpoint` (don't propagate half-formed refs across the wire). LocalPath alone still works on the local host.
+- clankcli policy: hard-fail (returns parse error to caller) since CLI is non-interactive.
+- Discovery (hub/sessions.go:118) silently drops unparseable origins to avoid breaking the entire scan.
+- **Voice intentionally NOT touched** — voice package has structural issues that need separate planning (per user direction); it will continue passing string-only RemoteURL.
+- `RemoteURL` field NOT removed yet — that is Phase 9.
+- **Status:** [x] complete (merged with Phase 8)
 
 ### Phase 8 — SQLite migration
-- New migration: add `git_endpoint_protocol`, `git_endpoint_host`, `git_endpoint_port`, `git_endpoint_user`, `git_endpoint_path`, `git_remote_url` (derived).
-- Backfill via Go: read `remote_url`, parse, write new cols. Hard-fail on parse error and prompt user.
-- Drop legacy `remote_url` column.
-- Update `internal/store/*.go`.
-- **Status:** [ ] not started
+- New migration `migrate_v16.go`: adds `git_endpoint_protocol`, `git_endpoint_user`, `git_endpoint_host`, `git_endpoint_port`, `git_endpoint_path` to `sessions` table; backfills via `gitendpoint.Parse`; hard-fails (with row-id list) on parse errors; drops legacy `git_remote_url` column. `primary_agents` table dropped+recreated (pure derivation cache, no backfill needed).
+- `gitRefColumns` helper struct in `store.go`. `gitRefToColumns` parses `RemoteURL` if `Endpoint` is nil (transitional bridge — to be deleted in Phase 9 with `RemoteURL` field). `gitRefFromColumns` reconstructs `Endpoint` from columns and derives `RemoteURL = ep.String()` for back-compat.
+- All store queries (`LoadSessions`, `UpsertSession`, `LoadPrimaryAgents`, `UpsertPrimaryAgents`, `KnownAgentTargets`, `FindByExternalID`) use new endpoint columns.
+- **Status:** [x] complete (merged with Phase 7)
 
 ### Phase 9 — Cleanup & verification
 - Delete `internal/hub/sessions_remote_rewrite_test.go` (salvage helpers if needed).
@@ -264,3 +266,27 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   endpoints/credentials directly; new `askpass_test.go` round-trips
   the script with awkward secrets (spaces, single quotes, $/\`/").
   `go test ./...` green.
+- 2026-04-23 — Phase 8 prep (commit `8f44f57`): extracted parser to
+  neutral `internal/gitendpoint` package so `internal/store` (which
+  cannot import `internal/hub`) can use it during migration backfill.
+  `ParseGitEndpoint` → `gitendpoint.Parse`. Sole import of `go-git/v5`
+  stays here; `agent` package remains dep-free.
+- 2026-04-23 — Phases 7+8 merged and complete: SQLite migration v16
+  explodes `git_remote_url` into `git_endpoint_{protocol,user,host,port,path}`
+  on `sessions`; `primary_agents` recreated from scratch (derivation
+  cache, no backfill). Migration hard-fails with row-id list on parse
+  errors. `gitRefColumns` helper + `gitRefToColumns`/`gitRefFromColumns`
+  bridge in `store.go`; all queries (`LoadSessions`, `UpsertSession`,
+  `LoadPrimaryAgents`, `UpsertPrimaryAgents`, `KnownAgentTargets`,
+  `FindByExternalID`) on the new columns. RemoteURL is now derived
+  read-time from `ep.String()` which canonicalises scp form to
+  `ssh://` URL form — tests that compared literal strings switched to
+  `agent.RepoKey` equivalence (with both sides parsed) instead.
+  Production ingress sites (`clankcli`, `tui/inbox.go`,
+  `tui/sessionview_compose.go`, `hub/sessions.go` discovery) populate
+  `Endpoint` alongside `RemoteURL` via `gitendpoint.Parse`. TUI drops
+  unparseable refs; clankcli hard-fails; discovery silently skips.
+  **Voice intentionally untouched** per user direction (structural
+  issues to address separately). The `RemoteURL` field on `GitRef` is
+  retained for one more phase as a transitional bridge — Phase 9
+  removes it. `go test ./...` green across all packages.

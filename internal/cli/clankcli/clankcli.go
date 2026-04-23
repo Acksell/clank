@@ -16,6 +16,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/cli/daemoncli"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/tui"
@@ -141,6 +142,13 @@ The daemon is auto-started if not already running.`,
 			gitRef := agent.GitRef{
 				RemoteURL:      remoteURL,
 				WorktreeBranch: worktreeBranch,
+			}
+			if remoteURL != "" {
+				ep, err := gitendpoint.Parse(remoteURL)
+				if err != nil {
+					return fmt.Errorf("parse remote URL %q: %w", remoteURL, err)
+				}
+				gitRef.Endpoint = ep
 			}
 			if activeHost == host.HostLocal {
 				gitRef.LocalPath = projectDir

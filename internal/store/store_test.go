@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/store"
 
 	_ "modernc.org/sqlite"
@@ -19,6 +20,18 @@ func tempDBPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	return filepath.Join(dir, "test.db")
+}
+
+// mustParseRemoteRef parses a remote URL into a fully-populated GitRef
+// (Endpoint set + RemoteURL canonicalised). Used by tests that need to
+// seed refs that survive a store round-trip without key divergence.
+func mustParseRemoteRef(t *testing.T, url string) agent.GitRef {
+	t.Helper()
+	ep, err := gitendpoint.Parse(url)
+	if err != nil {
+		t.Fatalf("parse %q: %v", url, err)
+	}
+	return agent.GitRef{Endpoint: ep, RemoteURL: ep.String()}
 }
 
 func mustOpen(t *testing.T, path string) *store.Store {
@@ -606,8 +619,10 @@ func TestKnownAgentTargets(t *testing.T) {
 	s := mustOpen(t, tempDBPath(t))
 
 	now := time.Now().Truncate(time.Millisecond)
-	refA := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-a.git"}
-	refB := agent.GitRef{RemoteURL: "git@github.com:acksell/repo-b.git"}
+	// Use the same parser the storage layer uses so the in-memory ref
+	// matches the canonicalised form returned by KnownAgentTargets.
+	refA := mustParseRemoteRef(t, "git@github.com:acksell/repo-a.git")
+	refB := mustParseRemoteRef(t, "git@github.com:acksell/repo-b.git")
 	// Two sessions on local/repo-a (should dedupe), one on local/repo-b,
 	// one on remote-1/repo-a, one with no GitRef (must be skipped).
 	rows := []agent.SessionInfo{
@@ -633,15 +648,12 @@ func TestKnownAgentTargets(t *testing.T) {
 		Ref      string
 	}
 	seen := map[key]bool{}
+	// Compare by agent.RepoKey, which is the identity function the
+	// system actually uses. After v16 the round-tripped RemoteURL is
+	// canonicalised (scp -> ssh:// form) so a literal-string compare
+	// would spuriously fail.
 	refKey := func(r agent.GitRef) string {
-		switch {
-		case r.RemoteURL != "":
-			return "remote:" + r.RemoteURL
-		case r.LocalPath != "":
-			return "local:" + r.LocalPath
-		default:
-			return ""
-		}
+		return agent.RepoKey(r)
 	}
 	for _, t := range got {
 		seen[key{t.Backend, t.Hostname, refKey(t.GitRef)}] = true
@@ -790,8 +802,13 @@ func TestUpsertAndLoadHostScopedIdentity(t *testing.T) {
 	if got.Hostname != "local" {
 		t.Errorf("Hostname = %q, want local", got.Hostname)
 	}
-	if got.GitRef.RemoteURL == "" || got.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
-		t.Errorf("GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got.GitRef.RemoteURL)
+	// After v16, RemoteURL is derived from the parsed Endpoint via
+	// Endpoint.String(), which renders SSH endpoints in canonical
+	// URL form rather than scp shorthand. The seed used scp form;
+	// the round-trip canonicalises it.
+	wantURL := "ssh://git@github.com/acksell/clank.git"
+	if got.GitRef.RemoteURL != wantURL {
+		t.Errorf("GitRef.RemoteURL = %q, want %q", got.GitRef.RemoteURL, wantURL)
 	}
 	if got.GitRef.LocalPath != "" {
 		t.Errorf("GitRef.LocalPath = %q, want empty", got.GitRef.LocalPath)
@@ -919,14 +936,21 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 	if !ok {
 		t.Fatal("missing ses-old-1 after migration")
 	}
-	if got1.GitRef.RemoteURL == "" || got1.GitRef.RemoteURL != "git@github.com:acksell/clank.git" {
-		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want git@github.com:acksell/clank.git", got1.GitRef.RemoteURL)
+	// After v16 RemoteURL is derived from the parsed Endpoint via
+	// Endpoint.String(), which renders SSH endpoints in the
+	// unambiguous URL form rather than the scp shorthand.
+	wantURL := "ssh://git@github.com/acksell/clank.git"
+	if got1.GitRef.RemoteURL != wantURL {
+		t.Errorf("ses-old-1 GitRef.RemoteURL = %q, want %q", got1.GitRef.RemoteURL, wantURL)
+	}
+	if got1.GitRef.Endpoint == nil || got1.GitRef.Endpoint.Host != "github.com" || got1.GitRef.Endpoint.Path != "acksell/clank" {
+		t.Errorf("ses-old-1 GitRef.Endpoint = %+v, want host=github.com path=acksell/clank", got1.GitRef.Endpoint)
 	}
 	got2, ok := byID["ses-old-2"]
 	if !ok {
 		t.Fatal("missing ses-old-2 after migration")
 	}
-	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" {
+	if got2.GitRef.RemoteURL != "" || got2.GitRef.LocalPath != "" || got2.GitRef.Endpoint != nil {
 		t.Errorf("ses-old-2 GitRef = %+v, want zero (empty repo_remote_url stays empty)", got2.GitRef)
 	}
 
@@ -937,7 +961,7 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 		t.Fatalf("reopen raw: %v", err)
 	}
 	defer raw.Close()
-	cols, err := raw.Query(`SELECT name FROM pragma_table_info('sessions') WHERE name IN ('project_dir', 'git_remote_url', 'git_ref_kind', 'git_ref_path', 'git_ref_url') ORDER BY name`)
+	cols, err := raw.Query(`SELECT name FROM pragma_table_info('sessions') WHERE name IN ('project_dir', 'git_remote_url', 'git_ref_kind', 'git_ref_path', 'git_ref_url', 'git_endpoint_protocol', 'git_endpoint_host', 'git_endpoint_path') ORDER BY name`)
 	if err != nil {
 		t.Fatalf("pragma_table_info: %v", err)
 	}
@@ -950,9 +974,9 @@ func TestMigrationV12_SplitsRepoRemoteURLIntoGitRefColumns(t *testing.T) {
 		}
 		names = append(names, n)
 	}
-	// After v15: legacy git_ref_* columns are gone, replaced by the
-	// pointer-shape (project_dir, git_remote_url) pair.
-	wantCols := []string{"git_remote_url", "project_dir"}
+	// After v16: git_remote_url is gone, replaced by the discrete
+	// git_endpoint_* fields. project_dir remains.
+	wantCols := []string{"git_endpoint_host", "git_endpoint_path", "git_endpoint_protocol", "project_dir"}
 	if len(names) != len(wantCols) {
 		t.Fatalf("identity columns = %v, want %v", names, wantCols)
 	}

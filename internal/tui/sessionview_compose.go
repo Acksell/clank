@@ -18,6 +18,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
@@ -61,7 +62,12 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string, hostna
 		ref.LocalPath = projectDir
 	}
 	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		ref.RemoteURL = remoteURL
+		// Parse alongside; on parse error refuse to attach a half-formed
+		// ref (TUI policy: don't propagate unparseable refs across the wire).
+		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
+			ref.RemoteURL = remoteURL
+			ref.Endpoint = ep
+		}
 	}
 	return &SessionViewModel{
 		client:      client,
@@ -235,7 +241,10 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		gitRef.LocalPath = m.projectDir
 	}
 	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
-		gitRef.RemoteURL = remoteURL
+		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
+			gitRef.RemoteURL = remoteURL
+			gitRef.Endpoint = ep
+		}
 	}
 
 	req := agent.StartRequest{

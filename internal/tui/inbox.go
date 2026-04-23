@@ -19,6 +19,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 )
@@ -170,7 +171,14 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 	}
 	ref := agent.GitRef{LocalPath: root}
 	if url, err := git.RemoteURL(root, "origin"); err == nil {
-		ref.RemoteURL = url
+		// Parse alongside RemoteURL so the ref carries both views; if the
+		// origin URL can't be parsed we refuse to attach it (TUI policy:
+		// don't propagate unparseable refs across the wire). LocalPath
+		// alone still works on the local host.
+		if ep, perr := gitendpoint.Parse(url); perr == nil {
+			ref.RemoteURL = url
+			ref.Endpoint = ep
+		}
 	}
 	if err := ref.Validate(); err != nil {
 		return "", agent.GitRef{}
