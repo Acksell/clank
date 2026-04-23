@@ -80,3 +80,50 @@ func TestRepoKey(t *testing.T) {
 		t.Fatal("expected empty key for empty ref")
 	}
 }
+
+// TestRepoKeyEndpointProtocolIndependent: ssh and https endpoints
+// pointing at the same repo must share a key, so dedup tables don't
+// double-count the same project once the credential resolver may
+// rewrite ssh→https for remote-host forwards.
+func TestRepoKeyEndpointProtocolIndependent(t *testing.T) {
+	t.Parallel()
+	sshRef := GitRef{
+		Endpoint:       &GitEndpoint{Protocol: GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank"},
+		WorktreeBranch: "main",
+	}
+	httpsRef := GitRef{
+		Endpoint:       &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
+		WorktreeBranch: "main",
+	}
+	if RepoKey(sshRef) != RepoKey(httpsRef) {
+		t.Fatalf("ssh and https endpoint keys differ: %q vs %q", RepoKey(sshRef), RepoKey(httpsRef))
+	}
+}
+
+// TestRepoKeyEndpointPreferredOverRemoteURL: when both are set,
+// Endpoint wins, since it carries the canonical (host, path) identity
+// independent of any string oddities in the legacy RemoteURL.
+func TestRepoKeyEndpointPreferredOverRemoteURL(t *testing.T) {
+	t.Parallel()
+	a := GitRef{
+		Endpoint:       &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
+		RemoteURL:      "https://github.com/acksell/clank.git",
+		WorktreeBranch: "main",
+	}
+	b := GitRef{
+		Endpoint:       &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
+		RemoteURL:      "git@github.com:acksell/clank.git",
+		WorktreeBranch: "main",
+	}
+	if RepoKey(a) != RepoKey(b) {
+		t.Fatalf("keys should match when Endpoint is equal: %q vs %q", RepoKey(a), RepoKey(b))
+	}
+}
+
+func TestRepoDisplayNameFromEndpoint(t *testing.T) {
+	t.Parallel()
+	ref := GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank"}}
+	if got := RepoDisplayName(ref); got != "clank" {
+		t.Fatalf("RepoDisplayName()=%q want %q", got, "clank")
+	}
+}

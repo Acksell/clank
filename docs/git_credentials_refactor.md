@@ -113,23 +113,27 @@ Each phase = one commit. Each phase must compile and tests must pass on its
 HEAD.
 
 ### Phase 0 — Module deps
-- Add `github.com/go-git/go-git/v5` to `go.mod`.
-- Verify no transitive conflicts.
-- **Status:** [ ] not started
+- ~~Separate phase~~ folded into Phase 2: `go mod tidy` removes deps with no
+  importer, so `go-git/v5` will be added as part of the parser commit.
+- **Status:** [x] merged into Phase 2
 
-### Phase 1 — Agent types
-- New: `internal/agent/gitendpoint.go`, `internal/agent/gitcredential.go`.
-- Edit: `internal/agent/gitref.go` — `RemoteURL string` → `Endpoint *GitEndpoint`.
-- Update `RepoKey` to be protocol-independent (key on `Host + Path + Branch`).
-- Update `RepoDisplayName` to derive from `Endpoint.Path`.
-- Delete: `internal/agent/giturl.go` + `giturl_test.go` (the rewrite helper is obsolete).
-- New tests: `gitendpoint_test.go`, `gitcredential_test.go`. Update `gitref_test.go`.
-- **Risk:** This breaks compilation everywhere `GitRef.RemoteURL` is read.
-  Phases 2–7 fix downstream; intermediate state will not compile cleanly
-  until then. **Strategy:** keep the field temporarily as
-  `RemoteURL string `json:"-"`` (deprecated marker) so the codebase still
-  compiles, then remove in phase 7 once all readers are gone.
-- **Status:** [ ] not started
+### Phase 1 — Agent types (additive)
+- New: `internal/agent/gitendpoint.go` (type only; parser lives in Phase 2 hub).
+- New: `internal/agent/gitcredential.go` (type, kind constants, Validate).
+- Edit: `internal/agent/gitref.go` — add `Endpoint *GitEndpoint` field
+  alongside existing `RemoteURL` (kept for compat through Phase 7).
+  Update `RepoKey` to key on `Endpoint.Host + Path + Branch` when
+  `Endpoint != nil`, else fall back to `RemoteURL`. Update
+  `RepoDisplayName` similarly.
+- New tests: `gitendpoint_test.go`, `gitcredential_test.go`. Extend
+  `gitref_test.go` with a "ssh and https endpoints share RepoKey" test.
+- **Deferred to Phase 9:** delete `internal/agent/giturl.go` +
+  `giturl_test.go`. They host `parseGitURL` / `CloneDirName` /
+  `HTTPSRemoteURL`; the first two are still used by
+  `internal/host/service.go` clone path until Phase 6, and the third
+  by `internal/hub/sessions.go` rewrite block until Phase 4. Removing
+  any of them earlier breaks compile.
+- **Status:** [x] complete
 
 ### Phase 2 — Endpoint parser
 - New: `internal/hub/endpoint.go` — `ParseGitEndpoint(raw string) (*agent.GitEndpoint, error)` via `transport.NewEndpoint`.
@@ -212,3 +216,7 @@ The first fix attempt (commit `51a9773`) is fully superseded.
 (append entries as phases complete)
 
 - 2026-04-23 — Plan document created. Baseline commit `51a9773`.
+- 2026-04-23 — Phase 1 complete: added `GitEndpoint`, `GitCredential`
+  types and `Endpoint *GitEndpoint` field on `GitRef`. `RepoKey` is
+  now protocol-independent when `Endpoint` is populated. Existing
+  `RemoteURL` plumbing untouched; downstream behaviour unchanged.
