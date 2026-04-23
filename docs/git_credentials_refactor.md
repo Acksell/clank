@@ -144,7 +144,7 @@ HEAD.
 - New: `internal/hub/credentials.go` — `resolveCredential(target, ep)` per the policy table above.
 - New: `internal/hub/credentials_test.go`.
 - Edit: `internal/hub/hub.go` — add `hostForRef(hostname, ref) (*hostclient.HTTP, agent.GitRef, agent.GitCredential, error)`.
-- **Status:** [ ] not started
+- **Status:** [x] complete
 
 ### Phase 4 — Hub call-site rewiring
 - `internal/hub/sessions.go` — `createSession` etc. swap to `hostForRef`. Delete inline rewrite block.
@@ -224,3 +224,7 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   `ParseGitEndpoint` (sole importer of `go-git/v5`). Round-trip,
   scp↔https key-equivalence, and host-case/default-port normalisation
   all covered by tests.
+- 2026-04-23 — Phase 3 complete: `ResolveCredential` (policy in
+  `internal/hub/credentials.go`) plus `Service.hostForRef` glue.
+  Still no call sites switched over — that is Phase 4. Existing
+  integration suite stays green.

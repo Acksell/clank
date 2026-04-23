@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
@@ -92,6 +93,57 @@ func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 		return nil, fmt.Errorf("hub: host %q not registered", id)
 	}
 	return c, nil
+}
+
+// hostForRef is hostFor + credential resolution. It is the single
+// supported way for hub call sites to forward a GitRef to a host:
+// it parses (or trusts) the ref's endpoint, asks ResolveCredential
+// for the right credential, and returns a NEW GitRef whose Endpoint
+// reflects any rewrite (e.g. ssh→https for remote hosts on the
+// public-HTTPS allowlist).
+//
+// The returned GitRef's RemoteURL is also updated to match the
+// (possibly rewritten) endpoint so downstream code that hasn't been
+// migrated to read Endpoint yet still sees a consistent URL. Once
+// every reader is on Endpoint (Phase 7), RemoteURL goes away.
+//
+// If ref.Endpoint is nil the function tries to parse ref.RemoteURL.
+// Refs that have neither set, or whose RemoteURL fails to parse, are
+// rejected loudly — no silent fallback to the raw string.
+func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTTP, agent.GitRef, agent.GitCredential, error) {
+	c, err := s.hostFor(hostname)
+	if err != nil {
+		return nil, agent.GitRef{}, agent.GitCredential{}, err
+	}
+
+	ep := ref.Endpoint
+	if ep == nil {
+		if ref.RemoteURL == "" {
+			// Local-only ref (LocalPath set, no remote): no credential
+			// is required because the host operates in-place. Return
+			// an Anonymous credential as the canonical "no auth" value
+			// so downstream code can still type-switch on Kind.
+			if ref.LocalPath == "" {
+				return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: ref has no endpoint, remote_url, or local_path")
+			}
+			return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
+		}
+		parsed, perr := ParseGitEndpoint(ref.RemoteURL)
+		if perr != nil {
+			return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: parse remote_url: %w", perr)
+		}
+		ep = parsed
+	}
+
+	cred, resolvedEp, err := ResolveCredential(host.Hostname(hostname), ep)
+	if err != nil {
+		return nil, agent.GitRef{}, agent.GitCredential{}, err
+	}
+
+	out := ref
+	out.Endpoint = resolvedEp
+	out.RemoteURL = resolvedEp.String()
+	return c, out, cred, nil
 }
 
 // Hosts returns a snapshot of all registered host IDs. "local" is
