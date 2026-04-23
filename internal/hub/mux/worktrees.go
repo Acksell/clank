@@ -19,8 +19,13 @@ func writeRepoErr(w http.ResponseWriter, err error) {
 		errors.Is(err, host.ErrNothingToMerge),
 		errors.Is(err, host.ErrCommitMessageRequired),
 		errors.Is(err, host.ErrTargetDirty),
-		errors.Is(err, host.ErrMergeConflict):
+		errors.Is(err, host.ErrMergeConflict),
+		errors.Is(err, host.ErrCannotPushDefault),
+		errors.Is(err, host.ErrPushRejected),
+		errors.Is(err, host.ErrNothingToPush):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, host.ErrPushAuthRequired):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 	default:
 		writeServiceErr(w, err)
 	}
@@ -139,6 +144,33 @@ func (m *Mux) handleMergeBranchOnHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := m.svc.MergeBranchOnHost(r.Context(), hostname, body.GitRef, body.Branch, body.CommitMessage)
+	if err != nil {
+		writeRepoErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (m *Mux) handlePushBranchOnHost(w http.ResponseWriter, r *http.Request) {
+	hostname, err := parseHostname(r)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	var body worktreeRequest
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	if err := body.GitRef.Validate(); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if body.Branch == "" {
+		writeBadRequest(w, "branch is required")
+		return
+	}
+	res, err := m.svc.PushBranchOnHost(r.Context(), hostname, body.GitRef, body.Branch)
 	if err != nil {
 		writeRepoErr(w, err)
 		return

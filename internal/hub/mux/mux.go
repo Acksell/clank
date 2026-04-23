@@ -88,6 +88,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/resolve", m.handleResolveWorktreeOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/remove", m.handleRemoveWorktreeOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/worktrees/merge", m.handleMergeBranchOnHost)
+	mx.HandleFunc("POST /hosts/{hostname}/worktrees/push", m.handlePushBranchOnHost)
 
 	// Voice. The websocket handler stays on *hub.Service because it owns
 	// the voice singleton state and the long-lived ws connection; mux

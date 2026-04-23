@@ -567,6 +567,21 @@ func (s *Service) MergeBranchOnHost(ctx context.Context, hostname host.Hostname,
 	return res, nil
 }
 
+// PushBranchOnHost pushes branch to origin on the host holding ref.
+// Credentials come from the hub's per-ref resolver (same path merge
+// and clone use) — the TUI never handles tokens directly.
+//
+// Unlike Merge, this does not close hub-side sessions: publishing a
+// branch is non-destructive, and the session likely still has work
+// to do (more commits, refinements) before a later Merge retires it.
+func (s *Service) PushBranchOnHost(ctx context.Context, hostname host.Hostname, ref agent.GitRef, branch string) (host.PushResult, error) {
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
+	if err != nil {
+		return host.PushResult{}, err
+	}
+	return hc.PushBranch(ctx, resolvedRef, cred, branch)
+}
+
 // --- Hosts ---
 
 // ErrHostNotRegisteredErr is the typed error for unknown hostname lookups.

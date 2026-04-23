@@ -89,6 +89,21 @@ func (h *HostClient) MergeBranch(ctx context.Context, ref agent.GitRef, branch, 
 	return out, nil
 }
 
+type pushBranchRequest struct {
+	GitRef agent.GitRef `json:"git_ref"`
+	Branch string       `json:"branch"`
+}
+
+// PushBranch pushes branch to origin on the bound host. Credentials are
+// resolved hub-side from the ref (TUI never carries tokens).
+func (h *HostClient) PushBranch(ctx context.Context, ref agent.GitRef, branch string) (host.PushResult, error) {
+	var out host.PushResult
+	if err := h.c.post(ctx, h.base()+"/worktrees/push", pushBranchRequest{GitRef: ref, Branch: branch}, &out); err != nil {
+		return host.PushResult{}, err
+	}
+	return out, nil
+}
+
 // listHostsResponse mirrors hubmux.listHostsResponse. Defined locally
 // to avoid a hub→hubmux import cycle.
 type listHostsResponse struct {

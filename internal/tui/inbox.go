@@ -454,6 +454,16 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Late-arriving search result after exiting search mode — ignore.
 		return m, nil
 
+	case pushResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.err = nil
+		// Refresh branches so any CommitsAhead/metadata updates land
+		// (e.g. a "now in sync with remote" indicator once we add one).
+		return m, m.sidebar.loadBranches()
+
 	case nativeCLIReturnMsg:
 		// User returned from native CLI — refresh inbox to pick up any
 		// changes made in the external session.
@@ -1554,6 +1564,22 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.showMerge = true
 		}
 		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("p"))):
+		// Don't push while typing a branch name.
+		if m.sidebar.creating {
+			break
+		}
+		bi := m.sidebar.SelectedBranchInfo()
+		// Only non-default branches with local commits can be published.
+		// The default branch is refused at the host layer anyway
+		// (host.ErrCannotPushDefault); gating here avoids a round-trip
+		// for a known-invalid action. CommitsAhead==0 cannot be gated
+		// here because a branch already in-sync with default can still
+		// need a remote push (first-time publish, rebase onto same tip).
+		if bi == nil || bi.IsDefault {
+			return m, nil
+		}
+		return m, pushBranchCmd(m.client, m.hostname, m.gitRef, bi.Name)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
 		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
@@ -2077,6 +2103,7 @@ func (m *InboxModel) overlayHelp(base string) string {
 	helpLine("tab / ← →", "switch panes")
 	helpLine("n", "new branch (in sidebar)")
 	helpLine("m", "merge branch (in sidebar)")
+	helpLine("p", "push branch to remote (in sidebar)")
 	helpLine("r", "refresh branches")
 	sb.WriteString(sep + "\n")
 
