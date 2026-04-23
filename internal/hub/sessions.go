@@ -347,6 +347,14 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// (GitRef, WorktreeBranch) → workDir internally and returns the
 	// resolved server URL (OpenCode only) for per-session shell-out.
 	id := ulid.Make().String()
+
+	// Remote-host default-branch policy: keep work off the repo's
+	// default branch on ephemeral sandboxes so push/PR flows have a
+	// real branch to target. See internal/hub/branchdefault.go.
+	req.GitRef.WorktreeBranch = defaultWorktreeBranch(
+		host.Hostname(req.Hostname), id, req.GitRef.WorktreeBranch,
+	)
+
 	// hostForRef does the credential resolution + ssh→https rewrite for
 	// remote hosts in one place. The returned ref is what we forward
 	// to the host AND what we persist on the session — the rewrite must

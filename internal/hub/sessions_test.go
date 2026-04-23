@@ -41,6 +41,78 @@ func TestDaemonCreateSession(t *testing.T) {
 	}
 }
 
+// TestDaemonCreateSession_RemoteHostDefaultsBranch verifies the Phase A
+// policy: sessions targeting a non-local hostname with an empty
+// WorktreeBranch get "clank/<sessionID>" auto-filled by the hub seam.
+// Local-host sessions retain the empty branch (tested by the baseline
+// TestDaemonCreateSession above).
+func TestDaemonCreateSession_RemoteHostDefaultsBranch(t *testing.T) {
+	s, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	// Re-register the same in-process host client under a non-local
+	// hostname so hostForRef resolves; the host itself is name-agnostic.
+	// This avoids standing up a second full httptest fixture.
+	localClient, ok := s.Host("local")
+	if !ok {
+		t.Fatal("local host not registered")
+	}
+	if _, err := s.RegisterHost("daytona-test", localClient); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	ctx := context.Background()
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
+		Backend:  agent.BackendOpenCode,
+		Hostname: "daytona-test",
+		GitRef:   agent.GitRef{Endpoint: testRemoteEndpoint}, // WorktreeBranch intentionally empty
+		Prompt:   "Fix the bug",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	want := "clank/" + info.ID
+	if info.GitRef.WorktreeBranch != want {
+		t.Errorf("expected WorktreeBranch=%q, got %q", want, info.GitRef.WorktreeBranch)
+	}
+}
+
+// TestDaemonCreateSession_RemoteHostExplicitBranchUnchanged verifies the
+// Phase A policy does NOT override a caller-supplied branch on remote hosts.
+func TestDaemonCreateSession_RemoteHostExplicitBranchUnchanged(t *testing.T) {
+	s, client, cleanup := testDaemon(t)
+	defer cleanup()
+
+	localClient, ok := s.Host("local")
+	if !ok {
+		t.Fatal("local host not registered")
+	}
+	if _, err := s.RegisterHost("daytona-test", localClient); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+
+	ctx := context.Background()
+	// Unique branch name per test invocation: git worktree dirs live
+	// under ~/.clank/worktrees (see git.WorktreeDir) which persists
+	// across test runs; a fixed name would collide with stale state.
+	explicitBranch := "feature/explicit-" + time.Now().Format("150405.000000")
+	info, err := client.Sessions().Create(ctx, agent.StartRequest{
+		Backend:  agent.BackendOpenCode,
+		Hostname: "daytona-test",
+		GitRef: agent.GitRef{
+			Endpoint:       testRemoteEndpoint,
+			WorktreeBranch: explicitBranch,
+		},
+		Prompt: "Fix the bug",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if info.GitRef.WorktreeBranch != explicitBranch {
+		t.Errorf("expected WorktreeBranch=%q, got %q", explicitBranch, info.GitRef.WorktreeBranch)
+	}
+}
+
 func TestDaemonCreateSessionValidation(t *testing.T) {
 	_, client, cleanup := testDaemon(t)
 	defer cleanup()
