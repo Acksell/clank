@@ -23,8 +23,13 @@ type ModelPreference struct {
 }
 
 // Preferences stores user preferences that persist across sessions.
+// All fields should be optional (omitempty) so the file can grow over
+// time without breaking older installs.
 type Preferences struct {
 	Model *ModelPreference `json:"model,omitempty"`
+	// ColorScheme is the TUI color scheme name (e.g. "tokyo-night").
+	// Empty string means "use the default scheme".
+	ColorScheme string `json:"color_scheme,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.

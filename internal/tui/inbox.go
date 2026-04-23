@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	hubclient "github.com/acksell/clank/internal/hub/client"
@@ -26,8 +27,9 @@ import (
 type inboxScreen int
 
 const (
-	screenInbox   inboxScreen = iota
-	screenSession             // Viewing a specific session (or composing a new one)
+	screenInbox    inboxScreen = iota
+	screenSession              // Viewing a specific session (or composing a new one)
+	screenSettings             // Viewing the settings page in the right pane
 )
 
 // inboxPane tracks which pane has keyboard focus in the two-pane layout.
@@ -120,6 +122,15 @@ type InboxModel struct {
 	sessionView  *SessionViewModel
 	activeConnID string // session ID of the detail view
 
+	// Settings page state (shown when screen == screenSettings).
+	settings settingsView
+
+	// Color-scheme picker overlay (modal). Rendered on top of whatever
+	// screen is currently active. Showing is independent of `screen` so
+	// the user can tweak theming from anywhere in the future.
+	showThemePicker bool
+	themePicker     themePickerModel
+
 	// Spinner for busy session indicators.
 	spinner spinner.Model
 
@@ -173,6 +184,13 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
 func NewInboxModel(client *hubclient.Client) *InboxModel {
+	// Apply the user's persisted color scheme (if any) before any styles
+	// are constructed for this session. Unknown names silently fall back
+	// to the default scheme so a corrupt preferences file can't brick the
+	// TUI.
+	prefs, _ := config.LoadPreferences()
+	applySchemeFromPreference(prefs.ColorScheme)
+
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
 		spinner.WithStyle(lipgloss.NewStyle().Foreground(successColor)),
@@ -369,6 +387,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
+	}
+
+	// If we're on the Settings page, delegate there.
+	if m.screen == screenSettings {
+		return m.updateSettings(msg)
 	}
 
 	// If help overlay is open, dismiss on any key press.
@@ -1284,6 +1307,11 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	sessionContent := m.renderSessionPane()
+	// When the Settings screen is active, swap the right pane for the
+	// settings page. The sidebar remains on the left exactly as usual.
+	if m.screen == screenSettings {
+		sessionContent = m.settings.View()
+	}
 	var content string
 
 	if m.showTwoPanes() {
@@ -1306,6 +1334,12 @@ func (m *InboxModel) View() tea.View {
 	// Overlay merge dialog if open.
 	if m.showMerge {
 		content = overlayCenter(content, m.mergeOverlay.View(), m.width, m.height)
+	}
+
+	// Overlay theme picker if open (shown above everything else so it's
+	// unambiguous that the background palette is a live preview).
+	if m.showThemePicker {
+		content = overlayCenter(content, m.themePicker.View(), m.width, m.height)
 	}
 
 	// Overlay help if open.
@@ -1520,6 +1554,13 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.creating {
 			break
 		}
+		// On the "⚙ Settings" row, right arrow opens the settings page
+		// (mirrors Enter, and matches how the user said they expect
+		// left/right to navigate between sidebar and page).
+		if m.sidebar.CursorOnSettings() {
+			m.openSettings()
+			return m, nil
+		}
 		prevBranch := m.sidebar.SelectedBranch()
 		m.pane = paneSessions
 		m.sidebar.SetFocused(false)
@@ -1531,6 +1572,13 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// While creating a new branch, let the sidebar handle Enter.
 		if m.sidebar.creating {
 			break
+		}
+		// Enter on the "⚙ Settings" footer row opens the settings page
+		// in the right pane. The sidebar stays visible and focused so
+		// the user can still navigate back into it.
+		if m.sidebar.CursorOnSettings() {
+			m.openSettings()
+			return m, nil
 		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()
