@@ -152,14 +152,14 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
-	h, err := s.hostFor(ms.info.Hostname)
+	h, ref, _, err := s.hostForRef(ms.info.Hostname, ms.info.GitRef)
 	if err != nil {
 		return err
 	}
 	backend, _, err := h.Sessions().Create(s.ctx, id, agent.StartRequest{
 		Backend:   ms.info.Backend,
 		Hostname:  ms.info.Hostname,
-		GitRef:    ms.info.GitRef,
+		GitRef:    ref,
 		SessionID: ms.info.ExternalID,
 	})
 	if err != nil {
@@ -339,22 +339,16 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// (GitRef, WorktreeBranch) → workDir internally and returns the
 	// resolved server URL (OpenCode only) for per-session shell-out.
 	id := ulid.Make().String()
-	h, err := s.hostFor(req.Hostname)
+	// hostForRef does the credential resolution + ssh→https rewrite for
+	// remote hosts in one place. The returned ref is what we forward
+	// to the host AND what we persist on the session — the rewrite must
+	// be visible to subsequent reads of the session so reactivation,
+	// fork, etc. all see the same URL.
+	h, ref, _, err := s.hostForRef(req.Hostname, req.GitRef)
 	if err != nil {
 		return nil, err
 	}
-	// Remote sandboxes (Daytona, etc.) start without SSH credentials, so
-	// an scp-form "git@github.com:owner/repo" URL will hang on the
-	// host-key prompt or fail auth. Rewrite to https for known public
-	// providers; private repos need a token (separate phase). Keep the
-	// original URL for the local host since the user already has their
-	// SSH agent set up.
-	if req.Hostname != string(host.HostLocal) && req.GitRef.RemoteURL != "" {
-		if rewritten, ok, rerr := agent.HTTPSRemoteURL(req.GitRef.RemoteURL); rerr == nil && ok {
-			s.log.Printf("createSession: rewrote %s -> %s for remote host %q", req.GitRef.RemoteURL, rewritten, req.Hostname)
-			req.GitRef.RemoteURL = rewritten
-		}
-	}
+	req.GitRef = ref
 	backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)

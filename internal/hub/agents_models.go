@@ -58,12 +58,12 @@ func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, hostnam
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		defer cancel()
 
-		hc, ok := s.Host(hostname)
-		if !ok {
-			s.log.Printf("background primary agent refresh: host %q not registered", hostname)
+		hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+		if err != nil {
+			s.log.Printf("background primary agent refresh: %v", err)
 			return
 		}
-		agents, err := hc.Backend(bt).Agents(ctx, ref)
+		agents, err := hc.Backend(bt).Agents(ctx, resolvedRef)
 		if err != nil {
 			s.log.Printf("background primary agent refresh for %s/%s/%s: %v", bt, hostname, agent.RepoKey(ref), err)
 			return

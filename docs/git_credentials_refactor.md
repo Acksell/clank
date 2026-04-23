@@ -150,7 +150,7 @@ HEAD.
 - `internal/hub/sessions.go` — `createSession` etc. swap to `hostForRef`. Delete inline rewrite block.
 - `internal/hub/api.go` — `ListAgents`, `ListModels`, `ListBranchesOnHost`, `ResolveWorktreeOnHost`, `RemoveWorktreeOnHost`, `MergeBranchOnHost`.
 - `internal/hub/agents_models.go` — `refreshPrimaryAgentsInBackground` (the actual failing path from the bug).
-- **Status:** [ ] not started
+- **Status:** [x] complete
 
 ### Phase 5 — Host-client signatures
 - `internal/hostclient/*.go` — every method that takes a `GitRef` adds an `auth GitCredential` parameter; JSON-encodes both into the wire request.
@@ -228,3 +228,10 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   `internal/hub/credentials.go`) plus `Service.hostForRef` glue.
   Still no call sites switched over — that is Phase 4. Existing
   integration suite stays green.
+- 2026-04-23 — Phase 4 complete: every hub→host GitRef-forwarding
+  call site (createSession, activateBackend, reactivation in api.go,
+  ListAgents/Models, all worktree pass-throughs, background primary
+  agent refresh) goes through `hostForRef`. Inline ssh→https rewrite
+  block in `createSession` deleted. Daytona bug now fixed across all
+  paths, not just session create. Credential return value is `_` for
+  one phase — Phase 5 plumbs it through hostclient.

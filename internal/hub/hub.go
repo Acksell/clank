@@ -80,9 +80,9 @@ func (s *Service) Host(id host.Hostname) (*hostclient.HTTP, bool) {
 
 // hostFor resolves a hostname to a registered host client. Empty hostname
 // defaults to "local" — the default for sessions/requests that omit the
-// field, matching the json-tag default in agent.StartRequest. Returns an
-// error if the host is not in the catalog so callers fail fast rather
-// than nil-deref the way the deleted s.hostClient shortcut would have.
+// field, matching the json-tag default in agent.StartRequest. Returns
+// ErrHostNotRegisteredErr if the host is not in the catalog so callers
+// (e.g. hub/mux) can map it to a 404 via errors.As.
 func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 	id := host.Hostname(hostname)
 	if id == "" {
@@ -90,7 +90,7 @@ func (s *Service) hostFor(hostname string) (*hostclient.HTTP, error) {
 	}
 	c, ok := s.Host(id)
 	if !ok {
-		return nil, fmt.Errorf("hub: host %q not registered", id)
+		return nil, ErrHostNotRegistered(id)
 	}
 	return c, nil
 }
@@ -142,7 +142,14 @@ func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTT
 
 	out := ref
 	out.Endpoint = resolvedEp
-	out.RemoteURL = resolvedEp.String()
+	// Only rewrite RemoteURL when the resolver actually changed the
+	// endpoint (e.g. ssh→https for remote hosts). For no-op resolutions
+	// preserve the original input — a user-supplied scp-form URL should
+	// round-trip as scp, not be canonicalised to ssh:// form behind their
+	// back. RemoteURL goes away in Phase 7 and this special case with it.
+	if resolvedEp != ep {
+		out.RemoteURL = resolvedEp.String()
+	}
 	return c, out, cred, nil
 }
 
