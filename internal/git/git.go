@@ -125,7 +125,7 @@ func Clone(ctx context.Context, ep *agent.GitEndpoint, cred agent.GitCredential,
 	}
 
 	url := ep.CloneURL()
-	envExtra, cleanup, err := cloneAuthEnv(cred)
+	envExtra, cleanup, err := gitAuthEnv(cred)
 	if err != nil {
 		return fmt.Errorf("clone: prepare auth env: %w", err)
 	}
@@ -172,11 +172,15 @@ func authMatchesEndpoint(ep *agent.GitEndpoint, cred agent.GitCredential) error 
 	return nil
 }
 
-// cloneAuthEnv produces the credential-specific environment to merge
-// into the git command. ssh_agent and anonymous return nil — they need
-// no extra env beyond the common GIT_TERMINAL_PROMPT/GIT_SSH_COMMAND
-// already set by the caller.
-func cloneAuthEnv(cred agent.GitCredential) ([]string, func() error, error) {
+// gitAuthEnv produces the credential-specific environment to merge
+// into any authenticated git command (clone, push, fetch, ...). Named
+// gitAuthEnv rather than cloneAuthEnv because push reuses it; the
+// semantics are identical across verbs.
+//
+// ssh_agent and anonymous return nil — they need no extra env beyond
+// the common GIT_TERMINAL_PROMPT/GIT_SSH_COMMAND already set by the
+// caller.
+func gitAuthEnv(cred agent.GitCredential) ([]string, func() error, error) {
 	switch cred.Kind {
 	case agent.GitCredAnonymous, agent.GitCredSSHAgent:
 		return nil, nil, nil
