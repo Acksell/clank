@@ -220,7 +220,7 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		activeHost = &ActiveHost{state: nil, name: host.HostLocal}
 	}
 
-	bp := NewSidebarModel(client, hostname, gitRef, cwd, activeHost)
+	bp := NewSidebarModel(client, gitRef, cwd, activeHost)
 	return &InboxModel{
 		client:      client,
 		pane:        paneSessions,
@@ -339,8 +339,15 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// fall through to the session view delegation would swallow it and
 	// permanently kill the refresh loop.
 	if _, ok := msg.(inboxRefreshMsg); ok {
+		// Sessions are still polled (no daemon push for session list
+		// changes yet). Branches are NOT polled — every TUI-driven
+		// branch mutation (create/merge/push/session-create) emits its
+		// own *Msg that schedules loadBranches. Polling them every 3s
+		// was wasteful and made `[r]` the only way to see branches
+		// created out-of-band, which is now an acknowledged limitation
+		// pending a daemon-side branch-events stream.
 		if m.screen == screenInbox {
-			return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches(), m.autoRefreshCmd())
+			return m, tea.Batch(m.loadDataCmd(), m.autoRefreshCmd())
 		}
 		return m, m.autoRefreshCmd()
 	}
@@ -389,6 +396,18 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleVoiceSSE(msg)
 		// Don't return — let the event continue to the session view for
 		// non-voice handling (or be ignored if it was voice-only).
+	case sessionCreateResultMsg:
+		// Snoop on successful session creation to refresh the sidebar:
+		// composing a session creates the worktree on the active host,
+		// and we no longer poll branches. The msg still flows through
+		// to the session view below for its own state machine.
+		if msg.err == nil {
+			if m.screen == screenSession && m.sessionView != nil {
+				model, sessionCmd := m.updateSessionView(msg)
+				return model, tea.Batch(sessionCmd, m.sidebar.loadBranches())
+			}
+			return m, m.sidebar.loadBranches()
+		}
 	}
 
 	// If we're in session detail view (or composing), delegate.
@@ -1559,7 +1578,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
-			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
+			m.mergeOverlay = newMergeOverlay(m.client, m.activeHost.Name(), m.sidebar.GitRefForActiveHost(), *bi)
 			m.mergeOverlay.SetSize(m.width, m.height)
 			m.showMerge = true
 		}
@@ -1579,7 +1598,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if bi == nil || bi.IsDefault {
 			return m, nil
 		}
-		return m, pushBranchCmd(m.client, m.hostname, m.gitRef, bi.Name)
+		return m, pushBranchCmd(m.client, m.activeHost.Name(), m.sidebar.GitRefForActiveHost(), bi.Name)
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
 		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
@@ -1601,10 +1620,11 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// uistate). Cursor stays in the sidebar so the user can
 		// inspect the result and tab away when ready.
 		if m.sidebar.cursorOnHost() {
-			if err := m.sidebar.activateSelectedHost(); err != nil {
+			cmd, err := m.sidebar.activateSelectedHost()
+			if err != nil {
 				m.err = fmt.Errorf("save active host: %w", err)
 			}
-			return m, nil
+			return m, cmd
 		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()

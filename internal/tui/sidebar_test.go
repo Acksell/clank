@@ -20,7 +20,7 @@ import (
 func newTestSidebar(t *testing.T) *SidebarModel {
 	t.Helper()
 	a := &ActiveHost{state: nil, name: host.HostLocal}
-	s := NewSidebarModel(nil, host.HostLocal, agent.GitRef{}, "/tmp", a)
+	s := NewSidebarModel(nil, agent.GitRef{}, "/tmp", a)
 	s.SetFocused(true)
 	s.SetSize(40, 30)
 	return &s
@@ -167,14 +167,18 @@ func TestSidebar_ActivateSelectedHostUpdatesActiveHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadActiveHost: %v", err)
 	}
-	s := NewSidebarModel(nil, host.HostLocal, agent.GitRef{}, "/tmp", a)
+	s := NewSidebarModel(nil, agent.GitRef{}, "/tmp", a)
 	s.SetFocused(true)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal, "daytona"}, nil)
 
 	// Cursor on daytona (index 1 — connected).
 	s.cursor = 1
-	if err := s.activateSelectedHost(); err != nil {
+	cmd, err := s.activateSelectedHost()
+	if err != nil {
 		t.Fatalf("activateSelectedHost: %v", err)
+	}
+	if cmd == nil {
+		t.Error("activateSelectedHost on different host returned nil cmd; want loadBranches cmd")
 	}
 	if a.Name() != "daytona" {
 		t.Errorf("active host = %q, want daytona", a.Name())
@@ -186,13 +190,13 @@ func TestSidebar_ActivateSelectedHostUpdatesActiveHost(t *testing.T) {
 // to a name the hub can't route. activateSelectedHost should refuse.
 func TestSidebar_ActivateOnDisconnectedKindNoOp(t *testing.T) {
 	a := &ActiveHost{state: nil, name: host.HostLocal}
-	s := NewSidebarModel(nil, host.HostLocal, agent.GitRef{}, "/tmp", a)
+	s := NewSidebarModel(nil, agent.GitRef{}, "/tmp", a)
 	s.SetFocused(true)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil) // daytona will be added as disconnected
 
 	// Cursor on the disconnected daytona row (index 1).
 	s.cursor = 1
-	if err := s.activateSelectedHost(); err != nil {
+	if _, err := s.activateSelectedHost(); err != nil {
 		t.Fatalf("activateSelectedHost: %v", err)
 	}
 	if a.Name() != host.HostLocal {
@@ -244,5 +248,29 @@ func TestSidebar_NewBranchKeyOnlyInWorktreesSection(t *testing.T) {
 	_ = s.handleKey(keyN())
 	if !s.creating {
 		t.Error("creating=false after 'n' on worktrees row; want true")
+	}
+}
+
+// TestSidebar_GitRefForActiveHostStripsLocalPathOnRemote is the
+// regression for Bug #1 ("worktrees created on remote host don't
+// appear in sidebar"). Branch ops must not pass the laptop's
+// LocalPath when the active host is remote — the host either errors
+// ("local_path not usable") or routes to the wrong repo and silently
+// returns an empty branch list. Endpoint is the sole remote
+// identity and must be preserved untouched.
+func TestSidebar_GitRefForActiveHostStripsLocalPathOnRemote(t *testing.T) {
+	a := &ActiveHost{state: nil, name: host.HostLocal}
+	ref := agent.GitRef{LocalPath: "/Users/axe/proj"}
+	s := NewSidebarModel(nil, ref, "/Users/axe/proj", a)
+
+	// Active host = local: LocalPath preserved (host can read fs).
+	if got := s.GitRefForActiveHost(); got.LocalPath != "/Users/axe/proj" {
+		t.Errorf("local active: LocalPath = %q, want preserved", got.LocalPath)
+	}
+
+	// Active host = daytona: LocalPath stripped.
+	a.name = "daytona"
+	if got := s.GitRefForActiveHost(); got.LocalPath != "" {
+		t.Errorf("remote active: LocalPath = %q, want empty", got.LocalPath)
 	}
 }

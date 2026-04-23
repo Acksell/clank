@@ -84,16 +84,19 @@ func (s branchSessionStatus) IsArchived() bool {
 type SidebarModel struct {
 	client *hubclient.Client
 	// projectDir is the cwd the inbox was launched from. Kept for
-	// display and for non-branch concerns (project filter); branch
-	// operations route through (hostname, gitRef).
+	// display and for non-branch concerns (project filter).
 	projectDir string
-	hostname   host.Hostname
-	gitRef     agent.GitRef
+	// gitRef identifies the repo the user is working with. The same
+	// repo identity applies regardless of which host is active — every
+	// host clones the same logical repo. Branch ops always pair this
+	// gitRef with activeHost.Name() at call time so switching the
+	// active host immediately retargets list/merge/push.
+	gitRef agent.GitRef
 
 	// activeHost is shared with the parent inbox; the sidebar mutates
-	// it when the user selects a host row. Nil means "no active host
-	// concept" (callers expected to provide one — kept as pointer to
-	// avoid copying the persisted state).
+	// it when the user selects a host row, and EVERY branch op
+	// (loadBranches, createWorktree, merge, push) reads the hostname
+	// from it. Required — branch ops have no fallback host.
 	activeHost *ActiveHost
 
 	hosts hostsSection
@@ -119,10 +122,10 @@ type SidebarModel struct {
 }
 
 // NewSidebarModel creates a sidebar for the given repo identity.
-// activeHost is required — the sidebar's host-row selection mutates
-// it. projectDir is retained for display purposes only; branch/worktree
-// ops are addressed by (hostname, gitRef).
-func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef agent.GitRef, projectDir string, activeHost *ActiveHost) SidebarModel {
+// activeHost is required — every branch op reads the hostname from
+// it, so switching active host immediately retargets list/merge/push.
+// projectDir is retained for display purposes only.
+func NewSidebarModel(client *hubclient.Client, gitRef agent.GitRef, projectDir string, activeHost *ActiveHost) SidebarModel {
 	ti := textinput.New()
 	ti.Placeholder = "branch-name"
 	ti.CharLimit = 128
@@ -135,7 +138,6 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef ag
 
 	return SidebarModel{
 		client:     client,
-		hostname:   hostname,
 		gitRef:     gitRef,
 		projectDir: projectDir,
 		activeHost: activeHost,
@@ -149,7 +151,7 @@ func NewSidebarModel(client *hubclient.Client, hostname host.Hostname, gitRef ag
 // Init fetches both the host list and branches concurrently.
 func (m *SidebarModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.hosts.loadHosts()}
-	if m.hostname != "" && (m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil) {
+	if m.gitRef.LocalPath != "" || m.gitRef.Endpoint != nil {
 		cmds = append(cmds, m.loadBranches())
 	}
 	// Position cursor on "All" by default (first row of worktrees).
@@ -396,24 +398,37 @@ func (m *SidebarModel) updateCreating(msg tea.Msg) tea.Cmd {
 
 // activateSelectedHost moves the active-host pointer to the host row
 // at the cursor. No-op when the cursor isn't in the hosts section or
-// the row is a not-yet-provisioned kind. Returns the save error from
-// uistate; the in-memory active host is updated regardless.
+// the row is a not-yet-provisioned kind. Returns the follow-up
+// loadBranches command (so the sidebar immediately repopulates with
+// the new host's worktrees) and the save error from uistate; the
+// in-memory active host is updated regardless.
 //
 // Called by the inbox on Enter (parent owns the Enter semantics so
 // it can also switch focus to the session pane).
-func (m *SidebarModel) activateSelectedHost() error {
+func (m *SidebarModel) activateSelectedHost() (tea.Cmd, error) {
 	if m.activeHost == nil {
-		return nil
+		return nil, nil
 	}
 	sec, idx := m.cursorSection()
 	if sec != sectionHosts {
-		return nil
+		return nil, nil
 	}
 	row, ok := m.hosts.rowAt(idx)
 	if !ok || !row.connected {
-		return nil
+		return nil, nil
 	}
-	return m.activeHost.Set(row.name)
+	if row.name == m.activeHost.Name() {
+		// No-op activation (cursor on already-active host); skip the
+		// reload — the data is already correct and avoiding the round
+		// trip matters now that branches aren't polled.
+		return nil, nil
+	}
+	err := m.activeHost.Set(row.name)
+	// Clear stale branches so the UI doesn't display the previous
+	// host's worktrees while the new fetch is in flight.
+	m.branches = nil
+	m.clampCursor()
+	return m.loadBranches(), err
 }
 
 // cursorOnHost returns true when the cursor is currently on a host row.
@@ -647,11 +662,14 @@ func (m *SidebarModel) ensureVisible() {
 
 // --- Daemon I/O ---
 
-// loadBranches fetches branches from the daemon for this sidebar's repo.
+// loadBranches fetches branches from the daemon for this sidebar's
+// repo on the currently active host. Reading hostname at call time
+// (not at construction) is what makes "switch host → see that host's
+// worktrees" work — see SidebarModel doc.
 func (m *SidebarModel) loadBranches() tea.Cmd {
 	client := m.client
-	hostname := m.hostname
-	gitRef := m.gitRef
+	hostname := m.activeHost.Name()
+	gitRef := m.GitRefForActiveHost()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -663,15 +681,33 @@ func (m *SidebarModel) loadBranches() tea.Cmd {
 	}
 }
 
-// createWorktree asks the daemon to create a worktree for the given branch.
+// createWorktree asks the daemon to create a worktree for the given
+// branch on the currently active host.
 func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	client := m.client
-	hostname := m.hostname
-	gitRef := m.gitRef
+	hostname := m.activeHost.Name()
+	gitRef := m.GitRefForActiveHost()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
 		return branchWorktreeCreatedMsg{branch: branch, err: err}
 	}
+}
+
+// GitRefForActiveHost returns the sidebar's gitRef adjusted for the
+// active host: LocalPath is only meaningful when the active host is
+// the laptop's local one. Sending the user's cwd to a remote (Daytona)
+// host would either confuse workDirFor's resolution or produce a
+// "local_path not usable on this host" error. The Endpoint (when set)
+// is the canonical remote identity and is preserved untouched.
+//
+// Exported so the inbox can pass the same adjusted ref to merge/push
+// actions; keeping the adjustment in one place avoids divergence.
+func (m *SidebarModel) GitRefForActiveHost() agent.GitRef {
+	ref := m.gitRef
+	if !m.activeHost.IsLocal() {
+		ref.LocalPath = ""
+	}
+	return ref
 }
