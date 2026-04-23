@@ -60,3 +60,19 @@ func (c *HTTP) MergeBranch(ctx context.Context, ref agent.GitRef, auth agent.Git
 	err := c.do(ctx, http.MethodPost, "/worktrees/merge", body, &out)
 	return out, err
 }
+
+// PushBranch pushes branch to origin on the host. The auth credential
+// is used for the push; anonymous is permitted and will succeed if the
+// remote allows it. Returns host.ErrPushRejected / ErrPushAuthRequired
+// / ErrNothingToPush (via errors.Is) for the three outcomes callers
+// care to distinguish.
+func (c *HTTP) PushBranch(ctx context.Context, ref agent.GitRef, auth agent.GitCredential, branch string) (host.PushResult, error) {
+	body := struct {
+		GitRef agent.GitRef        `json:"git_ref"`
+		Auth   agent.GitCredential `json:"auth"`
+		Branch string              `json:"branch"`
+	}{ref, auth, branch}
+	var out host.PushResult
+	err := c.do(ctx, http.MethodPost, "/worktrees/push", body, &out)
+	return out, err
+}

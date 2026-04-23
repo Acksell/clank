@@ -1,6 +1,20 @@
 package host
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/acksell/clank/internal/git"
+)
+
+// Push sentinels are re-exported from internal/git so callers above the
+// host layer (hub, TUI) can use errors.Is without importing internal/git
+// directly. Value identity is preserved — these are the same sentinels
+// returned by git.Push — so PushBranch can pass them through unwrapped.
+var (
+	ErrPushRejected     = git.ErrPushRejected
+	ErrPushAuthRequired = git.ErrPushAuthRequired
+	ErrNothingToPush    = git.ErrNothingToPush
+)
 
 // Sentinel errors for Service methods. Callers (e.g. HTTP handlers in
 // host/mux) use errors.Is to translate these into appropriate status
@@ -46,4 +60,11 @@ var (
 	// ErrInvalidBranchName is returned when ResolveWorktree is given an
 	// empty or whitespace-only branch name.
 	ErrInvalidBranchName = errors.New("host: branch name must be non-empty")
+
+	// ErrCannotPushDefault is returned when PushBranch is called with
+	// the repository's default branch. Publishing the default branch
+	// is intentionally unsupported — the feature-branch model is the
+	// only supported publish flow (see
+	// docs/publish_and_branch_defaults.md).
+	ErrCannotPushDefault = errors.New("host: cannot push the default branch")
 )

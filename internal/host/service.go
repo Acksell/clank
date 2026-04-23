@@ -563,6 +563,25 @@ func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, cred agent.
 	return s.mergeBranch(ctx, root, branch, commitMessage)
 }
 
+// PushBranch pushes branch to origin on the host holding ref's repo.
+// The push runs inside the feature-branch worktree, not the repo root —
+// this matches git's model (push takes the HEAD of the worktree's
+// checked-out branch) and avoids needing to switch the main checkout.
+//
+// Always -u (set upstream); never --force. If the remote has diverged,
+// the caller gets ErrPushRejected and must rebase locally before
+// retrying (agentic rebase is deferred —
+// see docs/publish_and_branch_defaults.md §Out of scope).
+func (s *Service) PushBranch(ctx context.Context, ref agent.GitRef, cred agent.GitCredential, branch string) (PushResult, error) {
+	repoRef := ref
+	repoRef.WorktreeBranch = ""
+	root, err := s.workDirFor(ctx, repoRef, cred)
+	if err != nil {
+		return PushResult{}, err
+	}
+	return s.pushBranch(ctx, root, branch, cred)
+}
+
 // listBranches returns the branches (and their checked-out worktrees)
 // for the repository at projectDir. Skips bare and detached entries.
 func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchInfo, error) {
@@ -769,4 +788,55 @@ func (s *Service) mergeBranch(_ context.Context, projectDir, branch, commitMessa
 		res.BranchDeleted = true
 	}
 	return res, nil
+}
+
+// PushResult describes the outcome of PushBranch.
+type PushResult struct {
+	Branch       string
+	Remote       string
+	CommitsAhead int // commits branch is ahead of the default branch at push time
+}
+
+// pushBranch pushes `branch` to origin. Operates on the feature
+// branch's worktree (git push infers the remote ref from the
+// worktree's checked-out branch).
+//
+// Refuses to push the default branch (ErrCannotPushDefault) —
+// publishing "main" is not part of the supported flow.
+//
+// `nothing to push` classification is delegated to git.Push against
+// the *remote*, not to a local `CommitsAhead` check against the
+// default branch: a branch whose ahead count is 0 (already merged
+// locally) may still legitimately be pushed to update the remote's
+// branch tip, and conversely a branch with ahead>0 can still be
+// fully up-to-date with its remote. CommitsAhead is returned only
+// as UX metadata.
+func (s *Service) pushBranch(ctx context.Context, projectDir, branch string, cred agent.GitCredential) (PushResult, error) {
+	defaultBranch, err := git.DefaultBranch(projectDir)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("determine default branch: %w", err)
+	}
+	if branch == defaultBranch {
+		return PushResult{}, ErrCannotPushDefault
+	}
+
+	wt, err := git.FindWorktreeForBranch(projectDir, branch)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("find branch worktree: %w", err)
+	}
+	if wt == nil {
+		return PushResult{}, fmt.Errorf("%w: no worktree found for branch %q", ErrNotFound, branch)
+	}
+
+	ahead, err := git.CommitsAhead(projectDir, defaultBranch, branch)
+	if err != nil {
+		// Non-fatal: metadata only. Log and continue.
+		s.log.Printf("warning: count commits ahead for %q: %v", branch, err)
+	}
+
+	if err := git.Push(ctx, wt.Path, "origin", branch, cred); err != nil {
+		return PushResult{}, err
+	}
+	s.log.Printf("pushed branch %q from %s", branch, wt.Path)
+	return PushResult{Branch: branch, Remote: "origin", CommitsAhead: ahead}, nil
 }

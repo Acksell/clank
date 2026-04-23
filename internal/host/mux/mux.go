@@ -109,6 +109,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/resolve", m.handleResolveWorktree)
 	mx.HandleFunc("POST /worktrees/remove", m.handleRemoveWorktree)
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
+	mx.HandleFunc("POST /worktrees/push", m.handlePushBranch)
 
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
 	mx.HandleFunc("POST /sessions/{id}/start", m.handleStartSession)
@@ -150,6 +151,17 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, errResp{Code: "reserved_branch", Error: err.Error()})
 	case errors.Is(err, host.ErrInvalidBranchName):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_branch_name", Error: err.Error()})
+	case errors.Is(err, host.ErrCannotPushDefault):
+		writeJSON(w, http.StatusConflict, errResp{Code: "cannot_push_default", Error: err.Error()})
+	case errors.Is(err, host.ErrPushRejected):
+		writeJSON(w, http.StatusConflict, errResp{Code: "push_rejected", Error: err.Error()})
+	case errors.Is(err, host.ErrPushAuthRequired):
+		// 401 rather than 403: the credential the hub supplied
+		// was missing or rejected; the TUI's recovery is to
+		// prompt for / refresh auth, which maps to 401 semantics.
+		writeJSON(w, http.StatusUnauthorized, errResp{Code: "push_auth_required", Error: err.Error()})
+	case errors.Is(err, host.ErrNothingToPush):
+		writeJSON(w, http.StatusConflict, errResp{Code: "nothing_to_push", Error: err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, errResp{Code: "internal", Error: err.Error()})
 	}

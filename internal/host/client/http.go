@@ -141,6 +141,14 @@ func errorFromResp(resp *http.Response, body []byte) error {
 		return fmt.Errorf("%s: %w", e.Error, host.ErrReservedBranch)
 	case "invalid_branch_name":
 		return fmt.Errorf("%s: %w", e.Error, host.ErrInvalidBranchName)
+	case "cannot_push_default":
+		return fmt.Errorf("%s: %w", e.Error, host.ErrCannotPushDefault)
+	case "push_rejected":
+		return fmt.Errorf("%s: %w", e.Error, host.ErrPushRejected)
+	case "push_auth_required":
+		return fmt.Errorf("%s: %w", e.Error, host.ErrPushAuthRequired)
+	case "nothing_to_push":
+		return fmt.Errorf("%s: %w", e.Error, host.ErrNothingToPush)
 	default:
 		return fmt.Errorf("host: %s", e.Error)
 	}
