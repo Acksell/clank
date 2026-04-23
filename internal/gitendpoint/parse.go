@@ -1,10 +1,10 @@
-package hub
-
-// Git endpoint parsing. Lives here (not in internal/agent) so the
-// agent package — which is imported by every component — stays free
-// of go-git/v5 and its dependency tree. The hub is the policy owner
-// for git access; consolidating the parser here also concentrates
-// the surface that any future "use go-git natively" port has to touch.
+// Package gitendpoint parses standard git URL forms into a canonical
+// agent.GitEndpoint. It is its own package (not in internal/agent) so
+// the agent package — imported by every component — stays free of
+// go-git/v5 and its dependency tree. It is not in internal/hub
+// because internal/store needs to call it during schema migration and
+// hub already imports store (cycle).
+package gitendpoint
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-// ParseGitEndpoint turns any standard git URL form (https://, http://,
+// Parse turns any standard git URL form (https://, http://,
 // ssh://, scp-style git@host:owner/repo.git, file://, git://) into a
 // canonical, protocol-independent agent.GitEndpoint.
 //
@@ -29,7 +29,7 @@ import (
 //
 // Returns a typed error for unrecognised protocols so callers can
 // surface a clear "not a git URL" message instead of a parser internal.
-func ParseGitEndpoint(raw string) (*agent.GitEndpoint, error) {
+func Parse(raw string) (*agent.GitEndpoint, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, fmt.Errorf("empty git URL")

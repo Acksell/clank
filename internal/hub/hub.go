@@ -23,6 +23,7 @@ import (
 	"sort"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/gitendpoint"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
@@ -128,7 +129,7 @@ func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTT
 			}
 			return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
 		}
-		parsed, perr := ParseGitEndpoint(ref.RemoteURL)
+		parsed, perr := gitendpoint.Parse(ref.RemoteURL)
 		if perr != nil {
 			return nil, agent.GitRef{}, agent.GitCredential{}, fmt.Errorf("hub: parse remote_url: %w", perr)
 		}

@@ -1,4 +1,4 @@
-package hub
+package gitendpoint
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 )
 
-func TestParseGitEndpoint(t *testing.T) {
+func TestParse(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -68,18 +68,18 @@ func TestParseGitEndpoint(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := ParseGitEndpoint(tc.raw)
+			got, err := Parse(tc.raw)
 			if err != nil {
-				t.Fatalf("ParseGitEndpoint(%q): %v", tc.raw, err)
+				t.Fatalf("Parse(%q): %v", tc.raw, err)
 			}
 			if !endpointsEqual(got, tc.want) {
-				t.Fatalf("ParseGitEndpoint(%q)=%+v want %+v", tc.raw, got, tc.want)
+				t.Fatalf("Parse(%q)=%+v want %+v", tc.raw, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestParseGitEndpointErrors(t *testing.T) {
+func TestParseErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -93,7 +93,7 @@ func TestParseGitEndpointErrors(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := ParseGitEndpoint(tc.raw)
+			_, err := Parse(tc.raw)
 			if err == nil {
 				t.Fatalf("expected error for %q", tc.raw)
 			}
@@ -101,16 +101,16 @@ func TestParseGitEndpointErrors(t *testing.T) {
 	}
 }
 
-// TestParseGitEndpointSshHttpsShareKey: the whole point of the
+// TestParseSshHttpsShareKey: the whole point of the
 // refactor — ssh and https URLs for the same repo must produce
 // endpoints whose RepoKey collapses to one entry.
-func TestParseGitEndpointSshHttpsShareKey(t *testing.T) {
+func TestParseSshHttpsShareKey(t *testing.T) {
 	t.Parallel()
-	ssh, err := ParseGitEndpoint("git@github.com:acksell/clank.git")
+	ssh, err := Parse("git@github.com:acksell/clank.git")
 	if err != nil {
 		t.Fatal(err)
 	}
-	https, err := ParseGitEndpoint("https://github.com/acksell/clank.git")
+	https, err := Parse("https://github.com/acksell/clank.git")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +121,10 @@ func TestParseGitEndpointSshHttpsShareKey(t *testing.T) {
 	}
 }
 
-// TestParseGitEndpointRoundTrip: parser → String() → parser must be
+// TestParseRoundTrip: parser → String() → parser must be
 // idempotent. Guards against drift between the parser's normalisation
 // and the type's String() rendering.
-func TestParseGitEndpointRoundTrip(t *testing.T) {
+func TestParseRoundTrip(t *testing.T) {
 	t.Parallel()
 	inputs := []string{
 		"https://github.com/acksell/clank.git",
@@ -137,11 +137,11 @@ func TestParseGitEndpointRoundTrip(t *testing.T) {
 		in := in
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
-			ep1, err := ParseGitEndpoint(in)
+			ep1, err := Parse(in)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ep2, err := ParseGitEndpoint(ep1.String())
+			ep2, err := Parse(ep1.String())
 			if err != nil {
 				t.Fatalf("re-parse of %q: %v", ep1.String(), err)
 			}
