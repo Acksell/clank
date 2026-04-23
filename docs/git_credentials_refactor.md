@@ -138,7 +138,7 @@ HEAD.
 ### Phase 2 — Endpoint parser
 - New: `internal/hub/endpoint.go` — `ParseGitEndpoint(raw string) (*agent.GitEndpoint, error)` via `transport.NewEndpoint`.
 - New: `internal/hub/endpoint_test.go` — table tests (scp form, https, ssh://, file://, malformed).
-- **Status:** [ ] not started
+- **Status:** [x] complete
 
 ### Phase 3 — Credential resolver
 - New: `internal/hub/credentials.go` — `resolveCredential(target, ep)` per the policy table above.
@@ -220,3 +220,7 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   types and `Endpoint *GitEndpoint` field on `GitRef`. `RepoKey` is
   now protocol-independent when `Endpoint` is populated. Existing
   `RemoteURL` plumbing untouched; downstream behaviour unchanged.
+- 2026-04-23 — Phase 2 complete: `internal/hub/endpoint.go` adds
+  `ParseGitEndpoint` (sole importer of `go-git/v5`). Round-trip,
+  scp↔https key-equivalence, and host-case/default-port normalisation
+  all covered by tests.
