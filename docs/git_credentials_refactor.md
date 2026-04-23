@@ -154,7 +154,7 @@ HEAD.
 
 ### Phase 5 — Host-client signatures
 - `internal/hostclient/*.go` — every method that takes a `GitRef` adds an `auth GitCredential` parameter; JSON-encodes both into the wire request.
-- **Status:** [ ] not started
+- **Status:** [x] complete
 
 ### Phase 6 — Host-side consumption
 - `internal/host/dto.go` (or wherever) — request DTOs gain `Auth GitCredential`.
@@ -235,3 +235,14 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   block in `createSession` deleted. Daytona bug now fixed across all
   paths, not just session create. Credential return value is `_` for
   one phase — Phase 5 plumbs it through hostclient.
+- 2026-04-23 — Phase 5 complete: `internal/host/client/{worktree,backend}.go`
+  every method gains an `auth agent.GitCredential` parameter, encoded
+  into the JSON request body alongside the GitRef. `agent.StartRequest`
+  gains an `Auth` field so session-create carries the credential too.
+  `/agents` and `/models` migrated from GET-with-query to POST-with-JSON
+  body — credential material has no business in URL strings (and the
+  shape stays uniform regardless of credential kind). Host-side mux
+  handlers validate the credential when present (zero-Kind tolerated
+  for one more phase; Phase 6 makes it required for clone paths). All
+  hub call sites that previously discarded `cred` with `_` now pass it
+  through. `go test ./...` green.

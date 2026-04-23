@@ -152,7 +152,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 // relay goroutine is started so that events from the backend flow through
 // the daemon's broadcast system.
 func (s *Service) activateBackend(id string, ms *managedSession) error {
-	h, ref, _, err := s.hostForRef(ms.info.Hostname, ms.info.GitRef)
+	h, ref, cred, err := s.hostForRef(ms.info.Hostname, ms.info.GitRef)
 	if err != nil {
 		return err
 	}
@@ -160,6 +160,7 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 		Backend:   ms.info.Backend,
 		Hostname:  ms.info.Hostname,
 		GitRef:    ref,
+		Auth:      cred,
 		SessionID: ms.info.ExternalID,
 	})
 	if err != nil {
@@ -344,11 +345,12 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// to the host AND what we persist on the session — the rewrite must
 	// be visible to subsequent reads of the session so reactivation,
 	// fork, etc. all see the same URL.
-	h, ref, _, err := s.hostForRef(req.Hostname, req.GitRef)
+	h, ref, cred, err := s.hostForRef(req.Hostname, req.GitRef)
 	if err != nil {
 		return nil, err
 	}
 	req.GitRef = ref
+	req.Auth = cred
 	backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)

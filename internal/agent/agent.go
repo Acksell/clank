@@ -335,6 +335,7 @@ type StartRequest struct {
 	Backend   BackendType    `json:"backend"`
 	Hostname  string         `json:"hostname,omitempty"` // Target host; empty defaults to "local" at the hub.
 	GitRef    GitRef         `json:"git_ref"`            // Wire-canonical repo identity; required. WorktreeBranch lives inside.
+	Auth      GitCredential  `json:"auth,omitempty"`     // Hub-resolved credential used by the host when cloning/fetching the GitRef. Zero value = unspecified (legacy / local-only paths); Phase 6 makes this required for clone paths.
 	Prompt    string         `json:"prompt"`
 	SessionID string         `json:"session_id,omitempty"` // Backend-external session ID for resume; empty = new session.
 	TicketID  string         `json:"ticket_id,omitempty"`  // Optional backlog ticket link

@@ -155,11 +155,12 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 			Agent:     in.Agent,
 			Model:     in.Model,
 		}
-		h, ref, _, err := s.hostForRef(req.Hostname, req.GitRef)
+		h, ref, cred, err := s.hostForRef(req.Hostname, req.GitRef)
 		if err != nil {
 			return err
 		}
 		req.GitRef = ref
+		req.Auth = cred
 		backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 		if err != nil {
 			return err
@@ -483,11 +484,11 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, hostname
 			return cached, nil
 		}
 	}
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return nil, err
 	}
-	agents, err := hc.Backend(bt).Agents(ctx, resolvedRef)
+	agents, err := hc.Backend(bt).Agents(ctx, resolvedRef, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -500,11 +501,11 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, hostname
 
 // ListModels returns available models for (backend, hostname, gitRef).
 func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, hostname host.Hostname, ref agent.GitRef) ([]agent.ModelInfo, error) {
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return nil, err
 	}
-	models, err := hc.Backend(bt).Models(ctx, resolvedRef)
+	models, err := hc.Backend(bt).Models(ctx, resolvedRef, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -526,39 +527,39 @@ func (s *Service) HostExists(id host.Hostname) bool {
 // host. The repo is identified by its GitRef (Local or Remote);
 // WorktreeBranch on ref is ignored — branches enumerate the whole repo.
 func (s *Service) ListBranchesOnHost(ctx context.Context, hostname host.Hostname, ref agent.GitRef) ([]host.BranchInfo, error) {
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return nil, err
 	}
-	return hc.ListBranches(ctx, resolvedRef)
+	return hc.ListBranches(ctx, resolvedRef, cred)
 }
 
 // ResolveWorktreeOnHost creates (or resolves) a worktree for branch.
 func (s *Service) ResolveWorktreeOnHost(ctx context.Context, hostname host.Hostname, ref agent.GitRef, branch string) (host.WorktreeInfo, error) {
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return host.WorktreeInfo{}, err
 	}
-	return hc.ResolveWorktree(ctx, resolvedRef, branch)
+	return hc.ResolveWorktree(ctx, resolvedRef, cred, branch)
 }
 
 // RemoveWorktreeOnHost removes a worktree.
 func (s *Service) RemoveWorktreeOnHost(ctx context.Context, hostname host.Hostname, ref agent.GitRef, branch string, force bool) error {
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return err
 	}
-	return hc.RemoveWorktree(ctx, resolvedRef, branch, force)
+	return hc.RemoveWorktree(ctx, resolvedRef, cred, branch, force)
 }
 
 // MergeBranchOnHost merges branch into the repo's default branch and
 // marks attached hub-side sessions as done.
 func (s *Service) MergeBranchOnHost(ctx context.Context, hostname host.Hostname, ref agent.GitRef, branch, commitMessage string) (host.MergeResult, error) {
-	hc, resolvedRef, _, err := s.hostForRef(string(hostname), ref)
+	hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 	if err != nil {
 		return host.MergeResult{}, err
 	}
-	res, err := hc.MergeBranch(ctx, resolvedRef, branch, commitMessage)
+	res, err := hc.MergeBranch(ctx, resolvedRef, cred, branch, commitMessage)
 	if err != nil {
 		return host.MergeResult{}, err
 	}

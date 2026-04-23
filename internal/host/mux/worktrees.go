@@ -11,15 +11,29 @@ import (
 // callers now identify the repo by its GitRef in the request body.
 
 type worktreeBranchRequest struct {
-	GitRef agent.GitRef `json:"git_ref"`
-	Branch string       `json:"branch"`
-	Force  bool         `json:"force,omitempty"`
+	GitRef agent.GitRef        `json:"git_ref"`
+	Auth   agent.GitCredential `json:"auth"`
+	Branch string              `json:"branch"`
+	Force  bool                `json:"force,omitempty"`
 }
 
 type mergeBranchRequest struct {
-	GitRef        agent.GitRef `json:"git_ref"`
-	Branch        string       `json:"branch"`
-	CommitMessage string       `json:"commit_message,omitempty"`
+	GitRef        agent.GitRef        `json:"git_ref"`
+	Auth          agent.GitCredential `json:"auth"`
+	Branch        string              `json:"branch"`
+	CommitMessage string              `json:"commit_message,omitempty"`
+}
+
+// validateAuth defers to GitCredential.Validate, but skips zero-value
+// credentials so legacy callers (pre-Phase-6 hub paths and tests that
+// build StartRequest by hand) keep working. Phase 6 promotes this to
+// "credential is required for clone paths" once the host actually uses
+// it; until then a zero-kind cred is silently ignored.
+func validateAuth(c agent.GitCredential) error {
+	if c.Kind == "" {
+		return nil
+	}
+	return c.Validate()
 }
 
 // HOST
@@ -30,6 +44,10 @@ func (m *Mux) handleListBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := req.GitRef.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	if err := validateAuth(req.Auth); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
@@ -56,6 +74,10 @@ func (m *Mux) handleResolveWorktree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "branch is required"})
 		return
 	}
+	if err := validateAuth(req.Auth); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
 	out, err := m.svc.ResolveWorktree(r.Context(), req.GitRef, req.Branch)
 	if err != nil {
 		writeError(w, err)
@@ -79,6 +101,10 @@ func (m *Mux) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "branch is required"})
 		return
 	}
+	if err := validateAuth(req.Auth); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
 	if err := m.svc.RemoveWorktree(r.Context(), req.GitRef, req.Branch, req.Force); err != nil {
 		writeError(w, err)
 		return
@@ -99,6 +125,10 @@ func (m *Mux) handleMergeBranch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Branch == "" {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "branch is required"})
+		return
+	}
+	if err := validateAuth(req.Auth); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
 	out, err := m.svc.MergeBranch(r.Context(), req.GitRef, req.Branch, req.CommitMessage)

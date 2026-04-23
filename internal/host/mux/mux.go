@@ -99,8 +99,8 @@ func (s *statusRecorder) Flush() {
 func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /status", m.handleStatus)
 	mx.HandleFunc("GET /backends", m.handleListBackends)
-	mx.HandleFunc("GET /agents", m.handleListAgents)
-	mx.HandleFunc("GET /models", m.handleListModels)
+	mx.HandleFunc("POST /agents", m.handleListAgents)
+	mx.HandleFunc("POST /models", m.handleListModels)
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)
 
 	// Worktree/branch ops. The repo is identified by GitRef in the

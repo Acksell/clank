@@ -26,23 +26,45 @@ func (m *Mux) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, bs)
 }
 
+// catalogRequest is the wire shape for /agents and /models. Switched
+// from query-string GET to JSON POST in Phase 5 because we now carry
+// an opaque GitCredential alongside the GitRef. Credential material
+// belongs in a request body, not a URL.
+type catalogRequest struct {
+	Backend agent.BackendType   `json:"backend"`
+	GitRef  agent.GitRef        `json:"git_ref"`
+	Auth    agent.GitCredential `json:"auth"`
+}
+
+func (req catalogRequest) validate() error {
+	if req.Backend == "" {
+		return errMsg("backend is required")
+	}
+	if err := req.GitRef.Validate(); err != nil {
+		return err
+	}
+	return validateAuth(req.Auth)
+}
+
+type errMsg string
+
+func (e errMsg) Error() string { return string(e) }
+
 // HOST
-// handleListAgents serves GET /agents?backend=&git_local_path=|git_remote_url=&worktree_branch=.
+// handleListAgents serves POST /agents with a catalogRequest body.
 // The host resolves the GitRef to a workdir internally — no paths cross
-// the wire beyond the caller-supplied LocalPath (§7.3). See refFromQuery
-// for the wire shape rationale.
+// the wire beyond the caller-supplied LocalPath (§7.3).
 func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	bt := agent.BackendType(r.URL.Query().Get("backend"))
-	ref, err := refFromQuery(r)
-	if err != nil {
+	var req catalogRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if bt == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "backend is required"})
+	if err := req.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ListAgents(r.Context(), bt, ref)
+	out, err := m.svc.ListAgents(r.Context(), req.Backend, req.GitRef)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -52,42 +74,21 @@ func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
 
 // HOST
 func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
-	bt := agent.BackendType(r.URL.Query().Get("backend"))
-	ref, err := refFromQuery(r)
-	if err != nil {
+	var req catalogRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if bt == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "backend is required"})
+	if err := req.validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ListModels(r.Context(), bt, ref)
+	out, err := m.svc.ListModels(r.Context(), req.Backend, req.GitRef)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// refFromQuery extracts the GitRef from the query string. Callers send
-// the discrete pointer-shape fields (git_local_path | git_remote_url +
-// optional worktree_branch) rather than a canonical form so the host
-// doesn't have to round-trip parse, and a Hub that cached the GitRef as
-// a struct can reconstruct the wire shape verbatim.
-func refFromQuery(r *http.Request) (agent.GitRef, error) {
-	q := r.URL.Query()
-	ref := agent.GitRef{WorktreeBranch: q.Get("worktree_branch")}
-	if p := q.Get("git_local_path"); p != "" {
-		ref.LocalPath = p
-	}
-	if u := q.Get("git_remote_url"); u != "" {
-		ref.RemoteURL = u
-	}
-	if err := ref.Validate(); err != nil {
-		return agent.GitRef{}, err
-	}
-	return ref, nil
 }
 
 // HOST
