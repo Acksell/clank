@@ -64,7 +64,7 @@ func (m *Mux) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ListAgents(r.Context(), req.Backend, req.GitRef)
+	out, err := m.svc.ListAgents(r.Context(), req.Backend, req.GitRef, req.Auth)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -83,7 +83,7 @@ func (m *Mux) handleListModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ListModels(r.Context(), req.Backend, req.GitRef)
+	out, err := m.svc.ListModels(r.Context(), req.Backend, req.GitRef, req.Auth)
 	if err != nil {
 		writeError(w, err)
 		return

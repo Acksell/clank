@@ -11,6 +11,16 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
+// fileEndpoint builds a GitEndpoint for a local source dir. Used by
+// CreateSession tests that simulate the remote-ref clone path without
+// going through the hub's parser.
+func fileEndpoint(sourceDir string) *agent.GitEndpoint {
+	return &agent.GitEndpoint{
+		Protocol: agent.GitProtoFile,
+		Path:     strings.TrimPrefix(sourceDir, "/"),
+	}
+}
+
 // newTestServiceWithClonesDir builds a Service with a temp clones_dir so
 // remote-ref tests don't pollute ~/.clank/clones.
 func newTestServiceWithClonesDir(t *testing.T) (*host.Service, string) {
@@ -158,7 +168,9 @@ func TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing(t *testing.T) {
 		GitRef: agent.GitRef{
 			LocalPath: "/nonexistent/path/on/this/host",
 			RemoteURL: sourceURL,
+			Endpoint:  fileEndpoint(source),
 		},
+		Auth:   agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt: "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-fallback", req); err != nil {
@@ -187,7 +199,8 @@ func TestCreateSession_RemoteRef_ClonesIntoClonesDir(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL},
+		GitRef:  agent.GitRef{RemoteURL: sourceURL, Endpoint: fileEndpoint(source)},
+		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone", req); err != nil {
@@ -220,7 +233,8 @@ func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
 
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: sourceURL},
+		GitRef:  agent.GitRef{RemoteURL: sourceURL, Endpoint: fileEndpoint(source)},
+		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone-1", req); err != nil {
@@ -257,8 +271,15 @@ func TestCreateSession_RemoteRef_RemovesPartialCloneOnFailure(t *testing.T) {
 	bogusURL := "file:///definitely/does/not/exist/repo.git"
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
-		GitRef:  agent.GitRef{RemoteURL: bogusURL},
-		Prompt:  "hi",
+		GitRef: agent.GitRef{
+			RemoteURL: bogusURL,
+			Endpoint: &agent.GitEndpoint{
+				Protocol: agent.GitProtoFile,
+				Path:     "definitely/does/not/exist/repo",
+			},
+		},
+		Auth:   agent.GitCredential{Kind: agent.GitCredAnonymous},
+		Prompt: "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-fail-1", req); err == nil {
 		t.Fatalf("expected error from bogus clone URL, got nil")

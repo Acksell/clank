@@ -165,7 +165,7 @@ HEAD.
   - `ssh_agent` → scp-form URL; refuse if `CLANK_HOST_KIND` indicates remote
 - New: `internal/git/askpass.go` — temp-file helper, mode 0700, cleanup closure.
 - Update `internal/git/git_test.go`. Add askpass test using local file:// remote.
-- **Status:** [ ] not started
+- **Status:** [x] complete
 
 ### Phase 7 — TUI / voice / clankcli ingress
 - `internal/tui/inbox.go:172`, `internal/tui/sessionview_compose.go:63,237`, `clankcli/clankcli.go:141`, `voice/tools.go:340` — call `hub.ParseGitEndpoint` instead of stuffing raw string.
@@ -246,3 +246,21 @@ The first fix attempt (commit `51a9773`) is fully superseded.
   for one more phase; Phase 6 makes it required for clone paths). All
   hub call sites that previously discarded `cred` with `_` now pass it
   through. `go test ./...` green.
+- 2026-04-23 — Phase 6 complete: `internal/git/git.go` `Clone` rewritten
+  to take `(*GitEndpoint, GitCredential)` and dispatch on `cred.Kind`.
+  New `internal/git/askpass.go` writes mode-0700 temp scripts so HTTPS
+  basic/token secrets never appear in argv or `os.Environ()`. Defense-
+  in-depth invariant `authMatchesEndpoint` rejects mismatched kind/
+  protocol pairs (e.g. `ssh_agent` for HTTPS, anonymous for SSH) before
+  invoking git. Host-side `Service.workDirFor` and all five public
+  GitRef-taking methods (`CreateSession`, `ListAgents`, `ListModels`,
+  `ListBranches`, `ResolveWorktree`, `RemoveWorktree`, `MergeBranch`)
+  now thread `GitCredential` through. The clone branch refuses if hub
+  forgot to populate `ref.Endpoint` (no host-side go-git import) and
+  refuses `ssh_agent` when `s.id != HostLocal`. New
+  `GitEndpoint.CloneURL()` differs from `String()` only for `file://`
+  where the trailing `.git` would refer to a nonexistent on-disk path.
+  Mux handlers stop discarding `req.Auth`. Tests updated to construct
+  endpoints/credentials directly; new `askpass_test.go` round-trips
+  the script with awkward secrets (spaces, single quotes, $/\`/").
+  `go test ./...` green.

@@ -111,3 +111,21 @@ func (e *GitEndpoint) String() string {
 func (e *GitEndpoint) IsLocal() bool {
 	return e != nil && e.Protocol == GitProtoFile
 }
+
+// CloneURL returns a wire URL suitable for `git clone`. Differs from
+// String() only for file:// endpoints, where the trailing ".git"
+// String() appends would refer to a directory that doesn't exist on
+// disk under the original local path. For all network protocols this
+// is identical to String() — github/gitlab/etc. accept both forms.
+func (e *GitEndpoint) CloneURL() string {
+	if e == nil {
+		return ""
+	}
+	if e.Protocol == GitProtoFile {
+		if e.Host != "" {
+			return "file://" + e.Host + "/" + e.Path
+		}
+		return "file:///" + e.Path
+	}
+	return e.String()
+}

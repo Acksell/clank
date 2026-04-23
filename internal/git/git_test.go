@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // initTestRepo creates a git repository in a temporary directory with an
@@ -832,7 +834,11 @@ func TestClone_LocalFileURL(t *testing.T) {
 	t.Parallel()
 	src := initTestRepo(t)
 	dst := filepath.Join(t.TempDir(), "checkout")
-	if err := Clone(context.Background(), "file://"+src, dst); err != nil {
+	ep := &agent.GitEndpoint{
+		Protocol: agent.GitProtoFile,
+		Path:     strings.TrimPrefix(src, "/"),
+	}
+	if err := Clone(context.Background(), ep, agent.GitCredential{Kind: agent.GitCredAnonymous}, dst); err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dst, ".git")); err != nil {
@@ -849,7 +855,11 @@ func TestClone_BadURLFailsFast(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "checkout")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := Clone(ctx, "file:///nonexistent/path/that/does/not/exist.git", dst)
+	ep := &agent.GitEndpoint{
+		Protocol: agent.GitProtoFile,
+		Path:     "nonexistent/path/that/does/not/exist",
+	}
+	err := Clone(ctx, ep, agent.GitCredential{Kind: agent.GitCredAnonymous}, dst)
 	if err == nil {
 		t.Fatalf("expected error for nonexistent source, got nil")
 	}
@@ -864,7 +874,13 @@ func TestClone_ContextCancelStops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	err := Clone(ctx, "https://127.0.0.1:1/repo.git", dst)
+	ep := &agent.GitEndpoint{
+		Protocol: agent.GitProtoHTTPS,
+		Host:     "127.0.0.1",
+		Port:     1,
+		Path:     "repo",
+	}
+	err := Clone(ctx, ep, agent.GitCredential{Kind: agent.GitCredAnonymous}, dst)
 	if err == nil {
 		t.Fatalf("expected error from cancelled clone")
 	}

@@ -51,7 +51,7 @@ func (m *Mux) handleListBranches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ListBranches(r.Context(), req.GitRef)
+	out, err := m.svc.ListBranches(r.Context(), req.GitRef, req.Auth)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -78,7 +78,7 @@ func (m *Mux) handleResolveWorktree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.ResolveWorktree(r.Context(), req.GitRef, req.Branch)
+	out, err := m.svc.ResolveWorktree(r.Context(), req.GitRef, req.Auth, req.Branch)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -105,7 +105,7 @@ func (m *Mux) handleRemoveWorktree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := m.svc.RemoveWorktree(r.Context(), req.GitRef, req.Branch, req.Force); err != nil {
+	if err := m.svc.RemoveWorktree(r.Context(), req.GitRef, req.Auth, req.Branch, req.Force); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -131,7 +131,7 @@ func (m *Mux) handleMergeBranch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	out, err := m.svc.MergeBranch(r.Context(), req.GitRef, req.Branch, req.CommitMessage)
+	out, err := m.svc.MergeBranch(r.Context(), req.GitRef, req.Auth, req.Branch, req.CommitMessage)
 	if err != nil {
 		writeError(w, err)
 		return

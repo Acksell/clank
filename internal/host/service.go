@@ -195,7 +195,7 @@ func (s *Service) ListBackends(_ context.Context) ([]BackendInfo, error) {
 // Returns (nil, nil) when the backend is unknown to this host or its
 // manager does not implement listing — both are normal "this host does
 // not surface that capability" answers, not errors.
-func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]AgentInfo, error) {
+func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agent.GitRef, cred agent.GitCredential) ([]AgentInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -204,7 +204,7 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 	if !ok {
 		return nil, nil
 	}
-	workDir, err := s.workDirFor(ctx, ref)
+	workDir, err := s.workDirFor(ctx, ref, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func (s *Service) ListAgents(ctx context.Context, bt agent.BackendType, ref agen
 }
 
 // ListModels mirrors ListAgents for model catalogs.
-func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef) ([]ModelInfo, error) {
+func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agent.GitRef, cred agent.GitCredential) ([]ModelInfo, error) {
 	mgr, ok := s.backendManagers[bt]
 	if !ok {
 		return nil, nil
@@ -221,7 +221,7 @@ func (s *Service) ListModels(ctx context.Context, bt agent.BackendType, ref agen
 	if !ok {
 		return nil, nil
 	}
-	workDir, err := s.workDirFor(ctx, ref)
+	workDir, err := s.workDirFor(ctx, ref, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +280,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err := req.GitRef.Validate(); err != nil {
 		return nil, "", fmt.Errorf("git_ref: %w", err)
 	}
-	workDir, err := s.workDirFor(ctx, req.GitRef)
+	workDir, err := s.workDirFor(ctx, req.GitRef, req.Auth)
 	if err != nil {
 		return nil, "", err
 	}
@@ -349,7 +349,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 // "laptop TUI sent a path that doesn't exist on this remote host" case;
 // the host clones from the remote and proceeds. Step 1 failing with
 // no RemoteURL set IS an error.
-func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, error) {
+func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.GitCredential) (string, error) {
 	var base string
 
 	if ref.LocalPath != "" {
@@ -374,6 +374,21 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		if s.clonesDir == "" {
 			return "", fmt.Errorf("cannot resolve remote ref: host has no clones_dir configured")
 		}
+		// Hub is responsible for parsing the remote URL into Endpoint
+		// before forwarding (see internal/hub/hub.go:hostForRef). Host
+		// refuses to parse — keeps go-git out of host's deps and
+		// guarantees one canonical interpretation per (hub, host)
+		// pair.
+		if ref.Endpoint == nil {
+			return "", fmt.Errorf("git ref has remote_url %q but no parsed endpoint; hub must populate ref.Endpoint", ref.RemoteURL)
+		}
+		// Defense-in-depth: ssh-agent only makes sense on the local
+		// host (the laptop's running ssh-agent). A remote host hit
+		// with ssh_agent would either fail to clone or, worse, use
+		// some other ssh identity the user didn't choose.
+		if cred.Kind == agent.GitCredSSHAgent && s.id != HostLocal {
+			return "", fmt.Errorf("ssh_agent credential not valid on remote host %q", s.id)
+		}
 		name, err := agent.CloneDirName(ref.RemoteURL)
 		if err != nil {
 			return "", fmt.Errorf("clone dir name for %q: %w", ref.RemoteURL, err)
@@ -394,7 +409,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 				}
 				s.log.Printf("cloning %s into %s", ref.RemoteURL, base)
 				start := time.Now()
-				if cloneErr := git.Clone(ctx, ref.RemoteURL, base); cloneErr != nil {
+				if cloneErr := git.Clone(ctx, ref.Endpoint, cred, base); cloneErr != nil {
 					// Clean up the partial directory git left
 					// behind (e.g. a `.git/` with HEAD pointing to
 					// the placeholder `.invalid` ref when ssh hung
@@ -510,10 +525,10 @@ func (s *Service) StopSession(id string) error {
 // ListBranches returns the branches (and their checked-out worktrees)
 // for the repository identified by ref. Skips bare and detached entries.
 // ref.WorktreeBranch is ignored — listing operates on the repo root.
-func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef) ([]BranchInfo, error) {
+func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef, cred agent.GitCredential) ([]BranchInfo, error) {
 	repoRef := ref
 	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.workDirFor(ctx, repoRef, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -524,10 +539,10 @@ func (s *Service) ListBranches(ctx context.Context, ref agent.GitRef) ([]BranchI
 // returns its info. ref.WorktreeBranch is ignored — pass branch as a
 // distinct argument so the caller's intent ("resolve THIS branch") is
 // explicit at the call site.
-func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch string) (WorktreeInfo, error) {
+func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, cred agent.GitCredential, branch string) (WorktreeInfo, error) {
 	repoRef := ref
 	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.workDirFor(ctx, repoRef, cred)
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
@@ -535,10 +550,10 @@ func (s *Service) ResolveWorktree(ctx context.Context, ref agent.GitRef, branch 
 }
 
 // RemoveWorktree removes the worktree for (ref's repo, branch).
-func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch string, force bool) error {
+func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, cred agent.GitCredential, branch string, force bool) error {
 	repoRef := ref
 	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.workDirFor(ctx, repoRef, cred)
 	if err != nil {
 		return err
 	}
@@ -546,10 +561,10 @@ func (s *Service) RemoveWorktree(ctx context.Context, ref agent.GitRef, branch s
 }
 
 // MergeBranch merges branch into ref's repo's default branch.
-func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, branch, commitMessage string) (MergeResult, error) {
+func (s *Service) MergeBranch(ctx context.Context, ref agent.GitRef, cred agent.GitCredential, branch, commitMessage string) (MergeResult, error) {
 	repoRef := ref
 	repoRef.WorktreeBranch = ""
-	root, err := s.workDirFor(ctx, repoRef)
+	root, err := s.workDirFor(ctx, repoRef, cred)
 	if err != nil {
 		return MergeResult{}, err
 	}

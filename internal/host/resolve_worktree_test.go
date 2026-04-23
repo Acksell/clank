@@ -31,7 +31,7 @@ func TestResolveWorktree_RejectsDefaultBranch_Main(t *testing.T) {
 
 	svc := newTestService(t)
 	ctx := context.Background()
-	_, err := svc.ResolveWorktree(ctx, agent.GitRef{LocalPath: repo}, "main")
+	_, err := svc.ResolveWorktree(ctx, agent.GitRef{LocalPath: repo}, agent.GitCredential{Kind: agent.GitCredAnonymous}, "main")
 	if !errors.Is(err, host.ErrReservedBranch) {
 		t.Fatalf("expected ErrReservedBranch, got %v", err)
 	}
@@ -53,7 +53,7 @@ func TestResolveWorktree_RejectsDefaultBranch_Master(t *testing.T) {
 
 	svc := newTestService(t)
 	ctx := context.Background()
-	_, err := svc.ResolveWorktree(ctx, agent.GitRef{LocalPath: repo}, "master")
+	_, err := svc.ResolveWorktree(ctx, agent.GitRef{LocalPath: repo}, agent.GitCredential{Kind: agent.GitCredAnonymous}, "master")
 	if !errors.Is(err, host.ErrReservedBranch) {
 		t.Fatalf("expected ErrReservedBranch, got %v", err)
 	}
@@ -70,7 +70,7 @@ func TestResolveWorktree_FindsExistingDefaultBranchWorktree(t *testing.T) {
 	// repo is on "main" by default.
 
 	svc := newTestService(t)
-	wt, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, "main")
+	wt, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, agent.GitCredential{Kind: agent.GitCredAnonymous}, "main")
 	if err != nil {
 		t.Fatalf("expected lookup to succeed, got %v", err)
 	}
@@ -98,7 +98,7 @@ func TestResolveWorktree_RejectsEmptyBranch(t *testing.T) {
 
 	svc := newTestService(t)
 	for _, name := range []string{"", "   ", "\t"} {
-		_, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, name)
+		_, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, agent.GitCredential{Kind: agent.GitCredAnonymous}, name)
 		if !errors.Is(err, host.ErrInvalidBranchName) {
 			t.Fatalf("name=%q: expected ErrInvalidBranchName, got %v", name, err)
 		}
@@ -112,7 +112,7 @@ func TestResolveWorktree_CreatesNonDefaultBranch(t *testing.T) {
 	repo := initGitRepo(t, "git@example.com:acme/widget.git")
 
 	svc := newTestService(t)
-	wt, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, "feat-x")
+	wt, err := svc.ResolveWorktree(context.Background(), agent.GitRef{LocalPath: repo}, agent.GitCredential{Kind: agent.GitCredAnonymous}, "feat-x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

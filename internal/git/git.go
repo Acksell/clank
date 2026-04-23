@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // Worktree represents a git worktree entry as returned by `git worktree list --porcelain`.
@@ -83,39 +85,118 @@ func RemoteURLs(dir string) (map[string]string, error) {
 	return urls, nil
 }
 
-// Clone runs `git clone <url> <destDir>` under ctx. destDir must not
-// exist (git creates it). Used by the host when a caller asks for
-// implicit cloning via StartRequest.AllowClone.
+// Clone runs `git clone` for the given endpoint into destDir. destDir
+// must not exist (git creates it). The credential's Kind selects the
+// auth mechanism:
 //
-// The command runs with prompting disabled so an unconfigured remote
-// (no SSH key, no cached HTTPS credential, unknown host key) fails
-// fast instead of hanging forever waiting on a TTY that doesn't exist:
+//   - GitCredAnonymous: no auth env. Valid for HTTP(S), file://, and
+//     git://. Rejected for ssh:// — anonymous SSH is meaningless and
+//     would invariably hang on host-key prompts.
+//   - GitCredHTTPSBasic / GitCredHTTPSToken: secret travels through
+//     a temp GIT_ASKPASS script (mode 0700, unlinked on return). Never
+//     in argv, never in os.Environ() of the git process.
+//   - GitCredSSHAgent: relies on a running ssh-agent in the host's
+//     environment. Validity (must be a local host) is enforced by the
+//     caller — this function only refuses obviously wrong combos like
+//     ssh_agent + non-ssh endpoint.
 //
-//   - GIT_TERMINAL_PROMPT=0 stops git itself from prompting for HTTPS
-//     credentials.
-//   - GIT_SSH_COMMAND adds BatchMode=yes (no password prompt),
-//     ConnectTimeout=10 (TCP-level cap), and StrictHostKeyChecking=
-//     accept-new (auto-trust on first contact, refuse on mismatch).
+// Common to all kinds: GIT_TERMINAL_PROMPT=0 and (for SSH)
+// BatchMode=yes + ConnectTimeout=10 + StrictHostKeyChecking=accept-new
+// so an unconfigured remote fails fast instead of blocking on a TTY
+// the host doesn't have.
 //
 // On context cancellation the underlying process is killed; partial
 // state inside destDir is the caller's problem to clean up — see the
 // host service's workDirFor for the singleflight + cleanup wrapper.
-func Clone(ctx context.Context, url, destDir string) error {
+func Clone(ctx context.Context, ep *agent.GitEndpoint, cred agent.GitCredential, destDir string) error {
+	if err := ep.Validate(); err != nil {
+		return fmt.Errorf("clone: invalid endpoint: %w", err)
+	}
+	if err := cred.Validate(); err != nil {
+		return fmt.Errorf("clone: invalid credential: %w", err)
+	}
+	if err := authMatchesEndpoint(ep, cred); err != nil {
+		return err
+	}
+
 	parent := filepath.Dir(destDir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create clone parent %s: %w", parent, err)
 	}
+
+	url := ep.CloneURL()
+	envExtra, cleanup, err := cloneAuthEnv(cred)
+	if err != nil {
+		return fmt.Errorf("clone: prepare auth env: %w", err)
+	}
+	if cleanup != nil {
+		defer func() { _ = cleanup() }()
+	}
+
 	cmd := exec.CommandContext(ctx, "git", "clone", url, destDir)
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new",
 	)
+	cmd.Env = append(cmd.Env, envExtra...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git clone %s: %s (%w)", url, strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
+}
+
+// authMatchesEndpoint enforces credential-vs-protocol invariants the
+// hub resolver should already have established. Defense-in-depth: if a
+// host gets a nonsensical pair (e.g. ssh-agent for an https endpoint)
+// fail loudly before invoking git rather than surface it as an opaque
+// auth failure later.
+func authMatchesEndpoint(ep *agent.GitEndpoint, cred agent.GitCredential) error {
+	switch cred.Kind {
+	case agent.GitCredAnonymous:
+		if ep.Protocol == agent.GitProtoSSH {
+			return fmt.Errorf("clone: anonymous credential not valid for ssh endpoint %s", ep.String())
+		}
+	case agent.GitCredSSHAgent:
+		if ep.Protocol != agent.GitProtoSSH {
+			return fmt.Errorf("clone: ssh_agent credential not valid for %s endpoint", ep.Protocol)
+		}
+	case agent.GitCredHTTPSBasic, agent.GitCredHTTPSToken:
+		if ep.Protocol != agent.GitProtoHTTPS && ep.Protocol != agent.GitProtoHTTP {
+			return fmt.Errorf("clone: %s credential not valid for %s endpoint", cred.Kind, ep.Protocol)
+		}
+	default:
+		return fmt.Errorf("clone: unknown credential kind %q", cred.Kind)
+	}
+	return nil
+}
+
+// cloneAuthEnv produces the credential-specific environment to merge
+// into the git command. ssh_agent and anonymous return nil — they need
+// no extra env beyond the common GIT_TERMINAL_PROMPT/GIT_SSH_COMMAND
+// already set by the caller.
+func cloneAuthEnv(cred agent.GitCredential) ([]string, func() error, error) {
+	switch cred.Kind {
+	case agent.GitCredAnonymous, agent.GitCredSSHAgent:
+		return nil, nil, nil
+	case agent.GitCredHTTPSToken:
+		// HTTPS bearer auth: git treats the username as anything
+		// non-empty when the host accepts a token-as-password, but
+		// github/gitlab specifically require a non-empty username.
+		// We only need askpass to feed the token as the password.
+		env, cleanup, err := AskpassScript(cred.Token)
+		return env, cleanup, err
+	case agent.GitCredHTTPSBasic:
+		// For now we only support password-as-prompt. If the host's
+		// git was configured with a credential helper that wants the
+		// username too, we'd need a second askpass script for
+		// GIT_ASKPASS-username — out of scope for v1.
+		env, cleanup, err := AskpassScript(cred.Password)
+		return env, cleanup, err
+	default:
+		return nil, nil, fmt.Errorf("unknown credential kind %q", cred.Kind)
+	}
 }
 
 // CurrentBranch returns the currently checked-out branch in dir.
