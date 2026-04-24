@@ -28,7 +28,14 @@ func Launch(ctx context.Context, opts LaunchOptions) (*hostclient.HTTP, *Handle,
 		return nil, nil, err
 	}
 
-	binPath, err := buildHostBinary(opts)
+	// Bound the *whole* sequence — including buildHostBinary's
+	// cross-compile, which on a cold cache can dominate the wall time
+	// on a slow box. Previously this timeout started after the build,
+	// so a stalled build wouldn't surface until well past ReadyTimeout.
+	launchCtx, cancel := context.WithTimeout(ctx, opts.ReadyTimeout)
+	defer cancel()
+
+	binPath, err := buildHostBinary(launchCtx, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -37,9 +44,6 @@ func Launch(ctx context.Context, opts LaunchOptions) (*hostclient.HTTP, *Handle,
 	if err != nil {
 		return nil, nil, err
 	}
-
-	launchCtx, cancel := context.WithTimeout(ctx, opts.ReadyTimeout)
-	defer cancel()
 
 	sb, err := createSandbox(launchCtx, c, opts)
 	if err != nil {

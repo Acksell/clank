@@ -1,6 +1,7 @@
 package daytona
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -32,7 +33,7 @@ const hostBinarySiblingName = "clank-host"
 // The cache key for the source-build path is the SHA-256 of the
 // produced binary, computed after the build, so a source change → new
 // binary → new cache entry.
-func buildHostBinary(opts LaunchOptions) (string, error) {
+func buildHostBinary(ctx context.Context, opts LaunchOptions) (string, error) {
 	if opts.BinaryPath != "" {
 		// Trust caller-provided paths verbatim. Fail fast if the file
 		// is missing — silently ignoring the option would mask a
@@ -61,7 +62,7 @@ func buildHostBinary(opts LaunchOptions) (string, error) {
 		return "", err
 	}
 
-	cmd := exec.Command("go", "build", "-o", binPath, srcDir)
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath, srcDir)
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+opts.Arch, "CGO_ENABLED=0")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
