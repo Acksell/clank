@@ -11,20 +11,27 @@ import (
 	"runtime"
 )
 
-// buildHostBinary returns a path to a linux/arm64 build of cmd/clank-host
+// hostBinarySiblingName is the name we look for next to the running
+// clankd binary when no explicit BinaryPath is set and source isn't
+// available (the typical `go install` / packaged release layout).
+const hostBinarySiblingName = "clank-host"
+
+// buildHostBinary returns a path to a linux/<arch> build of cmd/clank-host
 // suitable for upload into a Daytona sandbox.
 //
-// If opts.BinaryPath is set, it's returned as-is (the caller has
-// pre-built or pre-staged the binary; we trust the path). Otherwise we
-// cross-compile from source into a content-addressed cache directory
-// (~/.cache/clank/clank-host-linux-arm64-<sha>) so repeat launches
-// across `clankd` invocations are instant.
+// Resolution order:
+//  1. opts.BinaryPath (caller-provided, trusted verbatim).
+//  2. A "clank-host" file sitting next to the current executable —
+//     standard packaged-release layout.
+//  3. Cross-compile from source via runtime.Caller anchoring (dev mode
+//     when running `go run ./cmd/clankd` from a checkout).
 //
-// The cache key is the SHA-256 of the produced binary, computed after
-// the build, so a source change → new binary → new cache entry. We do
-// not attempt to predict the SHA from sources (would require hashing
-// the entire module graph); the cost of one redundant build per source
-// change is acceptable for a launcher used at session start.
+// On a `go install`-built binary with no checkout and no sibling file,
+// step 3 fails with a clear error pointing the user at BinaryPath.
+//
+// The cache key for the source-build path is the SHA-256 of the
+// produced binary, computed after the build, so a source change → new
+// binary → new cache entry.
 func buildHostBinary(opts LaunchOptions) (string, error) {
 	if opts.BinaryPath != "" {
 		// Trust caller-provided paths verbatim. Fail fast if the file
@@ -34,6 +41,10 @@ func buildHostBinary(opts LaunchOptions) (string, error) {
 			return "", fmt.Errorf("daytona: BinaryPath %q: %w", opts.BinaryPath, err)
 		}
 		return opts.BinaryPath, nil
+	}
+
+	if sibling, ok := siblingHostBinary(); ok {
+		return sibling, nil
 	}
 
 	out, err := os.MkdirTemp("", "clank-host-build-*")
@@ -72,20 +83,50 @@ func buildHostBinary(opts LaunchOptions) (string, error) {
 	return cached, nil
 }
 
+// siblingHostBinary looks for a "clank-host" file in the same
+// directory as the running executable. Returns (path, true) if found
+// and statable; ("", false) otherwise. Used for packaged-release
+// layouts where clankd ships beside clank-host.
+//
+// We don't verify GOOS/GOARCH here — the operator is responsible for
+// pairing a linux/<arch> clank-host with their clankd. A wrong-arch
+// binary will surface as an "exec format error" inside the sandbox,
+// which the launcher already surfaces via fetchLogs.
+func siblingHostBinary() (string, bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	candidate := filepath.Join(filepath.Dir(exe), hostBinarySiblingName)
+	if _, err := os.Stat(candidate); err != nil {
+		return "", false
+	}
+	return candidate, true
+}
+
 // resolveHostCmdDir returns an absolute path to cmd/clank-host within
-// this repo. It uses runtime.Caller to anchor the search, so the
-// package can be invoked from any CWD.
+// this repo. It uses runtime.Caller to anchor the search, which only
+// works when running from a source checkout (e.g. `go run ./cmd/clankd`).
+// Released binaries built via `go install` / `go build` have a build-
+// machine path embedded in runtime.Caller that won't exist on the
+// deployment host — for those callers, [siblingHostBinary] handles
+// the lookup, and the error here points users at BinaryPath as a
+// last-resort escape hatch.
 func resolveHostCmdDir() (string, error) {
 	// Walk up from this source file: internal/host/daytona/binary.go
 	// → repo root. Then into cmd/clank-host.
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
-		return "", fmt.Errorf("daytona: runtime.Caller failed; cannot locate cmd/clank-host source")
+		return "", fmt.Errorf("daytona: runtime.Caller failed; set BinaryPath or place a clank-host binary next to clankd")
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
 	srcDir := filepath.Join(repoRoot, "cmd", "clank-host")
 	if _, err := os.Stat(srcDir); err != nil {
-		return "", fmt.Errorf("daytona: cmd/clank-host not found at %s: %w", srcDir, err)
+		return "", fmt.Errorf(
+			"daytona: cmd/clank-host source not found at %s (this is expected for released binaries); "+
+				"set LaunchOptions.BinaryPath to a pre-built clank-host, or place a clank-host file next to your clankd executable: %w",
+			srcDir, err,
+		)
 	}
 	return srcDir, nil
 }
@@ -121,32 +162,59 @@ func promoteToCache(binPath, sha, arch string) (string, error) {
 		_ = os.Remove(binPath)
 		return dst, nil
 	}
-	if err := os.Rename(binPath, dst); err != nil {
-		// Cross-device rename: fall back to copy.
-		if err := copyFile(binPath, dst); err != nil {
+	if err := os.Rename(binPath, dst); err == nil {
+		if err := os.Chmod(dst, 0o755); err != nil {
 			return "", err
 		}
-		_ = os.Remove(binPath)
+		return dst, nil
 	}
+	// Cross-device rename: fall back to atomic copy-then-rename so a
+	// crashed/concurrent launch can't leave a truncated cache file
+	// that future runs would happily reuse.
+	if err := atomicCopy(binPath, dst); err != nil {
+		return "", err
+	}
+	_ = os.Remove(binPath)
 	if err := os.Chmod(dst, 0o755); err != nil {
 		return "", err
 	}
 	return dst, nil
 }
 
-func copyFile(src, dst string) error {
+// atomicCopy copies src into a temp file inside the same directory as
+// dst, fsyncs it, and renames it into place. Same-directory rename is
+// atomic on POSIX, so concurrent readers will only ever see a
+// fully-written dst (or no dst at all). The temp file is removed on
+// any error path.
+func atomicCopy(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	tmpPath := tmp.Name()
+	// Best-effort cleanup on any non-success path.
+	defer func() {
+		if _, err := os.Stat(tmpPath); err == nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return nil
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, dst)
 }
