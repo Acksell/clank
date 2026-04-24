@@ -508,6 +508,12 @@ func (m *SidebarModel) View() string {
 	for i, b := range m.branches {
 		linearIdx := allCursor + 1 + i
 		lines = append(lines, m.renderBranch(b, linearIdx, contentWidth))
+		// Selected non-default rows get a one-line discoverability hint
+		// for the actions available on this row. Without it [m]/[p]
+		// were invisible to anyone who didn't open `?` help.
+		if hint := m.renderBranchHint(b, linearIdx); hint != "" {
+			lines = append(lines, hint)
+		}
 	}
 
 	// New branch input.

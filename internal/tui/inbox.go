@@ -1670,6 +1670,13 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.creating {
 			break
 		}
+		// Merge runs against the local working copy — `git merge` on a
+		// remote sandbox would land on the remote tree, not the user's
+		// laptop. Gate to local so the affordance never lies. The hint
+		// rendered under the selected branch row honors the same rule.
+		if !m.activeHost.IsLocal() {
+			return m, nil
+		}
 		bi := m.sidebar.SelectedBranchInfo()
 		if bi != nil && !bi.IsDefault {
 			m.mergeOverlay = newMergeOverlay(m.client, m.activeHost.Name(), m.sidebar.GitRefForActiveHost(), *bi)
