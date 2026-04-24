@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/acksell/clank/internal/agent"
@@ -94,5 +95,19 @@ func TestStack_NilEndpointRejected(t *testing.T) {
 	_, err := Stack{}.Discover(context.Background(), nil)
 	if err == nil {
 		t.Fatal("nil endpoint must error")
+	}
+}
+
+// TestStack_NilDiscovererRejected guards a nil entry in the
+// Discoverers slice — without the explicit check we'd panic on
+// the nil interface call. (CodeRabbit PR #3 inline 3137099827.)
+func TestStack_NilDiscovererRejected(t *testing.T) {
+	t.Parallel()
+	_, err := Stack{Discoverers: []Discoverer{nil}}.Discover(context.Background(), validEp(t, "github.com"))
+	if err == nil {
+		t.Fatal("nil discoverer must error")
+	}
+	if !strings.Contains(err.Error(), "is nil") {
+		t.Fatalf("err = %v; want one mentioning 'is nil'", err)
 	}
 }

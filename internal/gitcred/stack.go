@@ -32,6 +32,13 @@ func (s Stack) Discover(ctx context.Context, ep *agent.GitEndpoint) (agent.GitCr
 		return agent.GitCredential{}, fmt.Errorf("gitcred: invalid endpoint: %w", err)
 	}
 	for i, d := range s.Discoverers {
+		// Reject nil entries up front rather than letting them
+		// panic on d.Discover(...). A nil slot is a programming
+		// bug at registration time and we want a clear error.
+		// (CodeRabbit PR #3 inline 3137099827.)
+		if d == nil {
+			return agent.GitCredential{}, fmt.Errorf("gitcred: discoverer %d is nil", i)
+		}
 		cred, err := d.Discover(ctx, ep)
 		if err == nil {
 			if vErr := cred.Validate(); vErr != nil {
