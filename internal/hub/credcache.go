@@ -42,10 +42,12 @@ type credCacheKey struct {
 // not cached, so a user who saves a token mid-session sees it on the
 // next attempt without restarting.
 //
-// Safe for concurrent use.
+// Safe for concurrent use. Uses RWMutex because the steady state is
+// "many concurrent reads (cache hits), rare writes (first miss per
+// key, infrequent invalidations)" — every push consults the cache.
 type CachingDiscoverer struct {
 	inner gitcred.Discoverer
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	cache map[credCacheKey]agent.GitCredential
 }
 
@@ -72,9 +74,9 @@ func (c *CachingDiscoverer) DiscoverFor(ctx context.Context, target host.Hostnam
 	}
 	key := credCacheKey{target: target, endpointHost: ep.Host}
 
-	c.mu.Lock()
+	c.mu.RLock()
 	cred, ok := c.cache[key]
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	if ok {
 		return cred, nil
 	}

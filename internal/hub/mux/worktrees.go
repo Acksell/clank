@@ -25,7 +25,13 @@ func writeRepoErr(w http.ResponseWriter, err error) {
 		errors.Is(err, host.ErrNothingToPush):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, host.ErrPushAuthRequired):
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		// Include "code" so the hub client can identity-match the
+		// sentinel rather than relying on a bare 401 (which other
+		// endpoints could conceivably emit for non-push reasons).
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"code":  "push_auth_required",
+			"error": err.Error(),
+		})
 	default:
 		writeServiceErr(w, err)
 	}

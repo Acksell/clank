@@ -59,17 +59,21 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	if resp.StatusCode >= 400 {
 		var errResp map[string]string
 		msg := ""
+		code := ""
 		if json.Unmarshal(respBody, &errResp) == nil {
 			msg = errResp["error"]
+			code = errResp["code"]
 		}
 		if msg == "" {
 			msg = string(respBody)
 		}
 		// Preserve sentinel identity across the wire for the auth
 		// path so the TUI's errors.Is(err, host.ErrPushAuthRequired)
-		// keeps working. The hub mux maps ONLY ErrPushAuthRequired
-		// to 401 today, so the status code is an unambiguous signal.
-		if resp.StatusCode == http.StatusUnauthorized {
+		// keeps working. Match on the explicit "code" field — the
+		// hub mux populates "push_auth_required" only for the auth
+		// sentinel, so we don't conflate it with any other 401 a
+		// future endpoint might emit.
+		if code == "push_auth_required" {
 			return fmt.Errorf("daemon: %s: %w", msg, host.ErrPushAuthRequired)
 		}
 		if msg != "" {

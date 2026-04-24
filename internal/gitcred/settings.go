@@ -143,18 +143,41 @@ func loadSettings(path string) (settingsFile, error) {
 }
 
 func writeSettings(path string, f settingsFile) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("gitcred: mkdir %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("gitcred: mkdir %s: %w", dir, err)
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("gitcred: marshal: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, settingsFileMode); err != nil {
+	// Unique temp name avoids collision when two writers race on the
+	// same settings file (e.g. two `clank cred set` calls). The fixed
+	// path+".tmp" approach would have one writer clobber the other's
+	// in-flight tmp before either finished renaming.
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("gitcred: create temp in %s: %w", dir, err)
+	}
+	tmp := tmpFile.Name()
+	// Best-effort cleanup if anything below fails before Rename.
+	cleanup := func() { _ = os.Remove(tmp) }
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		cleanup()
 		return fmt.Errorf("gitcred: write %s: %w", tmp, err)
 	}
+	if err := tmpFile.Chmod(settingsFileMode); err != nil {
+		_ = tmpFile.Close()
+		cleanup()
+		return fmt.Errorf("gitcred: chmod %s: %w", tmp, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("gitcred: close %s: %w", tmp, err)
+	}
 	if err := os.Rename(tmp, path); err != nil {
+		cleanup()
 		return fmt.Errorf("gitcred: rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil
