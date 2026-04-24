@@ -244,7 +244,7 @@ type gitRefColumns struct {
 // discovery). Endpoint MUST already be parsed by the caller — the
 // store performs no URL parsing of its own (see Phase 9 of
 // docs/git_credentials_refactor.md).
-func gitRefToColumns(g agent.GitRef) (gitRefColumns, error) {
+func gitRefToColumns(g agent.GitRef) gitRefColumns {
 	c := gitRefColumns{ProjectDir: g.LocalPath}
 	if g.Endpoint != nil {
 		c.EndpointProtocol = string(g.Endpoint.Protocol)
@@ -253,7 +253,7 @@ func gitRefToColumns(g agent.GitRef) (gitRefColumns, error) {
 		c.EndpointPort = g.Endpoint.Port
 		c.EndpointPath = g.Endpoint.Path
 	}
-	return c, nil
+	return c
 }
 
 // gitRefFromColumns reconstructs a GitRef from the stored columns. If
@@ -361,12 +361,9 @@ func (s *Store) UpsertSession(info agent.SessionInfo) error {
 	if hostname == "" {
 		hostname = "local"
 	}
-	c, err := gitRefToColumns(info.GitRef)
-	if err != nil {
-		return fmt.Errorf("upsert session %s: %w", info.ID, err)
-	}
+	c := gitRefToColumns(info.GitRef)
 
-	_, err = s.db.Exec(`
+	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO sessions
 			(id, external_id, backend, status, visibility, follow_up,
 			 host_id, project_dir,
@@ -436,12 +433,9 @@ func (s *Store) LoadPrimaryAgents(backend agent.BackendType, hostname string, re
 	if hostname == "" {
 		hostname = "local"
 	}
-	c, err := gitRefToColumns(ref)
-	if err != nil {
-		return nil, fmt.Errorf("load primary agents for %s/%s/%s: %w", backend, hostname, agent.RepoDisplayName(ref), err)
-	}
+	c := gitRefToColumns(ref)
 	var agentsJSON string
-	err = s.db.QueryRow(`
+	err := s.db.QueryRow(`
 		SELECT primary_agents_json FROM primary_agents
 		WHERE backend = ? AND host_id = ?
 		  AND project_dir = ?
@@ -477,10 +471,7 @@ func (s *Store) UpsertPrimaryAgents(backend agent.BackendType, hostname string, 
 	if ref.LocalPath == "" && ref.Endpoint == nil {
 		return fmt.Errorf("upsert primary agents: git ref is required")
 	}
-	c, err := gitRefToColumns(ref)
-	if err != nil {
-		return fmt.Errorf("upsert primary agents for %s/%s/%s: %w", backend, hostname, agent.RepoDisplayName(ref), err)
-	}
+	c := gitRefToColumns(ref)
 	data, err := json.Marshal(agents)
 	if err != nil {
 		return fmt.Errorf("encode primary agents: %w", err)

@@ -351,9 +351,13 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// Remote-host default-branch policy: keep work off the repo's
 	// default branch on ephemeral sandboxes so push/PR flows have a
 	// real branch to target. See internal/hub/branchdefault.go.
-	req.GitRef.WorktreeBranch = defaultWorktreeBranch(
+	branch, err := defaultWorktreeBranch(
 		host.Hostname(req.Hostname), id, req.GitRef.WorktreeBranch,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+	req.GitRef.WorktreeBranch = branch
 
 	// hostForRef does the credential resolution + ssh→https rewrite for
 	// remote hosts in one place. The returned ref is what we forward
