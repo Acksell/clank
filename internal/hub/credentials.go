@@ -66,12 +66,28 @@ func ResolveCredential(ctx context.Context, target host.Hostname, ep *agent.GitE
 	isLocalTarget := target == "" || target == host.HostLocal
 
 	switch ep.Protocol {
-	case agent.GitProtoHTTPS, agent.GitProtoHTTP, agent.GitProtoGit:
-		// Public/anonymous-friendly transports. With a discoverer
-		// configured we try to upgrade to a token (required for
-		// push); without one (or on soft miss) we return anonymous
-		// — clone of public repos still works.
+	case agent.GitProtoHTTPS:
+		// Discoverers may upgrade us to a token (required for push);
+		// without one (or on soft miss) we return anonymous — clone of
+		// public repos still works.
 		return discoverOrAnonymous(ctx, target, ep, disc)
+
+	case agent.GitProtoHTTP:
+		// Cleartext HTTP. Refuse to attach discovered PATs — sending
+		// a token over an unencrypted channel would leak it to any
+		// network observer. Anonymous keeps anonymous-clone working;
+		// push will naturally fail at the host, which is the safe
+		// outcome. Users who really need authenticated HTTP must
+		// upgrade their remote to HTTPS.
+		return agent.GitCredential{Kind: agent.GitCredAnonymous}, ep, nil
+
+	case agent.GitProtoGit:
+		// git:// is the unauthenticated daemon protocol — there's no
+		// Basic auth channel for a token to ride on, so attempting
+		// discovery would be wasted work and the push retry/save
+		// flow could never recover. Return anonymous and let the
+		// transport itself reject any write.
+		return agent.GitCredential{Kind: agent.GitCredAnonymous}, ep, nil
 
 	case agent.GitProtoSSH:
 		if isLocalTarget {

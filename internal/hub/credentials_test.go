@@ -8,6 +8,19 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
+// alwaysTokenDiscoverer hands out a github PAT for any endpoint. Used
+// to prove that ResolveCredential refuses to forward it for
+// non-HTTPS protocols regardless of what the discoverer offers.
+type alwaysTokenDiscoverer struct{}
+
+func (alwaysTokenDiscoverer) DiscoverFor(_ context.Context, _ host.Hostname, _ *agent.GitEndpoint) (agent.GitCredential, error) {
+	return agent.GitCredential{
+		Kind:     agent.GitCredHTTPSBasic,
+		Username: "x-access-token",
+		Password: "ghp_must_not_leak",
+	}, nil
+}
+
 func TestResolveCredential(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -80,12 +93,40 @@ func TestResolveCredential(t *testing.T) {
 			wantKind:  agent.GitCredSSHAgent,
 			wantProto: agent.GitProtoSSH,
 		},
+		{
+			// Cleartext HTTP must stay anonymous even with a
+			// discoverer present — attaching a PAT would leak it
+			// over the wire.
+			name:      "http never gets a token",
+			target:    host.HostLocal,
+			ep:        &agent.GitEndpoint{Protocol: agent.GitProtoHTTP, Host: "github.com", Path: "a/b"},
+			wantKind:  agent.GitCredAnonymous,
+			wantProto: agent.GitProtoHTTP,
+		},
+		{
+			// git:// has no Basic auth channel; trying to attach a
+			// token is meaningless and the push-retry/save flow can
+			// never recover.
+			name:      "git:// never gets a token",
+			target:    host.HostLocal,
+			ep:        &agent.GitEndpoint{Protocol: agent.GitProtoGit, Host: "github.com", Path: "a/b"},
+			wantKind:  agent.GitCredAnonymous,
+			wantProto: agent.GitProtoGit,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cred, gotEp, err := ResolveCredential(context.Background(), tc.target, tc.ep, nil)
+			// Inject a discoverer that ALWAYS returns a token so we
+			// can prove that http/git refuse to attach it. HTTPS
+			// cases above don't pass this discoverer (nil) so they
+			// keep their anonymous expectations.
+			var disc credDiscoverer
+			if tc.ep != nil && (tc.ep.Protocol == agent.GitProtoHTTP || tc.ep.Protocol == agent.GitProtoGit) {
+				disc = alwaysTokenDiscoverer{}
+			}
+			cred, gotEp, err := ResolveCredential(context.Background(), tc.target, tc.ep, disc)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got cred=%+v ep=%+v", cred, gotEp)
