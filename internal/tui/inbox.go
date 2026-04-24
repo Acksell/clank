@@ -102,6 +102,13 @@ type InboxModel struct {
 	showCredModal bool
 	credModal     credentialModalModel
 
+	// Push confirmation modal — owns [p] from key press through
+	// pushResultMsg. Bypassed by the credential-modal retry path
+	// (a token paste should not require a second confirmation).
+	// See internal/tui/pushconfirm.go.
+	showPushConfirm bool
+	pushConfirm     pushConfirmModel
+
 	// Transient bottom-anchored toast (lipgloss compositor overlay,
 	// does NOT consume a layout row). See toast.go.
 	toast toastModel
@@ -397,7 +404,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// handling so voice works on both inbox and session screens.
 	// Skip when the sidebar is in text-input mode (creating a new branch)
 	// so that space goes to the text input instead.
-	voiceInterceptOK := !(m.pane == paneSidebar && m.sidebar.creating) && !m.showMerge && !m.showCredModal
+	voiceInterceptOK := !(m.pane == paneSidebar && m.sidebar.creating) && !m.showMerge && !m.showCredModal && !m.showPushConfirm
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if voiceInterceptOK {
@@ -458,6 +465,14 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCredModal(msg)
 	}
 
+	// If push confirmation modal is open, delegate. Routed AFTER
+	// credModal because an auth-error during a confirmed push
+	// closes the confirm modal and opens credModal — credModal
+	// must take priority once that handoff has happened.
+	if m.showPushConfirm {
+		return m.updatePushConfirm(msg)
+	}
+
 	// If menu is open, delegate to menu.
 	if m.showMenu {
 		return m.updateMenu(msg)
@@ -479,6 +494,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.showCredModal {
 			m.credModal.SetSize(m.width, m.height)
+		}
+		if m.showPushConfirm {
+			m.pushConfirm.SetSize(m.width, m.height)
 		}
 		return m, nil
 
@@ -503,33 +521,15 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushResultMsg:
 		if msg.err != nil {
-			// Auth-required surfaces a modal so the user can paste
-			// a token (or fix `gh auth` and retry) without having
-			// to drop to a shell. errors.As (not Is) because we
-			// need the structured fields — host + endpoint — to
-			// route the save and to render the prompt.
 			var authErr *host.PushAuthRequiredError
 			if errors.As(msg.err, &authErr) {
-				m.credModal = newCredentialModal(
-					m.client,
-					authErr.Hostname,
-					m.sidebar.GitRefForActiveHost(),
-					msg.branch,
-					authErr.EndpointHost,
-					msg.err,
-				)
-				m.credModal.SetSize(m.width, m.height)
-				m.showCredModal = true
+				m.openCredentialModalForPushAuth(authErr, msg.branch, msg.err)
 				return m, nil
 			}
 			m.err = msg.err
 			return m, nil
 		}
-		m.err = nil
-		// Refresh branches so any CommitsAhead/metadata updates land
-		// (e.g. a "now in sync with remote" indicator once we add one).
-		toastCmd := m.toast.Show("Pushed "+msg.branch, toastSuccess)
-		return m, tea.Batch(m.sidebar.loadBranches(), toastCmd)
+		return m, m.handlePushSuccess(msg.branch)
 
 	case nativeCLIReturnMsg:
 		// User returned from native CLI — refresh inbox to pick up any
@@ -1452,6 +1452,13 @@ func (m *InboxModel) View() tea.View {
 		content = overlayCenter(content, m.credModal.View(), m.width, m.height)
 	}
 
+	// Overlay push confirm modal if open. Auth-error transitions
+	// close this modal before opening credModal, so the two are
+	// never visible together.
+	if m.showPushConfirm {
+		content = overlayCenter(content, m.pushConfirm.View(), m.width, m.height)
+	}
+
 	// Overlay help if open.
 	if m.showHelp {
 		content = m.overlayHelp(content)
@@ -1699,7 +1706,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if bi == nil || bi.IsDefault {
 			return m, nil
 		}
-		return m, pushBranchCmd(m.client, m.activeHost.Name(), m.sidebar.GitRefForActiveHost(), bi.Name)
+		// Open the confirm modal; the modal owns the actual push so
+		// in-flight state, errors, and [r]etry all live in one place.
+		// The credential-modal retry path bypasses this modal — a
+		// token paste should land directly on a push attempt without
+		// asking the user to re-confirm intent.
+		m.pushConfirm = newPushConfirm(m.client, m.activeHost.Name(), m.sidebar.GitRefForActiveHost(), bi.Name)
+		m.pushConfirm.SetSize(m.width, m.height)
+		m.showPushConfirm = true
+		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right"))):
 		// Right arrow navigates to the session pane.
 		if m.sidebar.creating {
