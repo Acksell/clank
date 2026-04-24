@@ -185,18 +185,21 @@ func gitAuthEnv(cred agent.GitCredential) ([]string, func() error, error) {
 	case agent.GitCredAnonymous, agent.GitCredSSHAgent:
 		return nil, nil, nil
 	case agent.GitCredHTTPSToken:
-		// HTTPS bearer auth: git treats the username as anything
-		// non-empty when the host accepts a token-as-password, but
-		// github/gitlab specifically require a non-empty username.
-		// We only need askpass to feed the token as the password.
-		env, cleanup, err := AskpassScript(cred.Token)
+		// HTTPS bearer auth. github/gitlab require ANY non-empty
+		// username; the conventional placeholder is "x-access-token"
+		// (matches gh, hub, and the GitHub docs). Without this the
+		// askpass helper would echo the token to git's username
+		// prompt, which works on some hosts but not all and is
+		// surprising in logs.
+		env, cleanup, err := AskpassScriptForCreds("x-access-token", cred.Token)
 		return env, cleanup, err
 	case agent.GitCredHTTPSBasic:
-		// For now we only support password-as-prompt. If the host's
-		// git was configured with a credential helper that wants the
-		// username too, we'd need a second askpass script for
-		// GIT_ASKPASS-username — out of scope for v1.
-		env, cleanup, err := AskpassScript(cred.Password)
+		// Provide both Username and Password so git's two askpass
+		// invocations (Username prompt + Password prompt) get the
+		// right answer. Previously this fed Password to both, which
+		// authenticated as user=<password> on hosts that accept any
+		// non-empty username and failed on hosts that validate it.
+		env, cleanup, err := AskpassScriptForCreds(cred.Username, cred.Password)
 		return env, cleanup, err
 	default:
 		return nil, nil, fmt.Errorf("unknown credential kind %q", cred.Kind)

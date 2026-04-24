@@ -27,7 +27,30 @@ import (
 // On Windows GIT_ASKPASS expects a .bat / .cmd; not supported here
 // because the Clank host targets Unix. Errors loudly rather than
 // producing a script git won't execute.
+//
+// AskpassScript answers every prompt with the same secret. Use
+// AskpassScriptForCreds when git asks for both Username and Password
+// (HTTPS Basic) so the username prompt isn't accidentally answered
+// with the password.
 func AskpassScript(secret string) (env []string, cleanup func() error, err error) {
+	return AskpassScriptForCreds("", secret)
+}
+
+// AskpassScriptForCreds writes a GIT_ASKPASS helper that distinguishes
+// the Username prompt from the Password prompt. Git invokes askpass
+// once per missing credential field with the prompt text as argv[1],
+// e.g. "Username for 'https://github.com': " or "Password for ...: ".
+//
+// When username is non-empty, the script returns username for prompts
+// starting with "Username" and secret for everything else. When
+// username is empty the behaviour matches AskpassScript (returns
+// secret for any prompt).
+//
+// This matters for HTTPS Basic auth: the previous AskpassScript-only
+// path would echo the password into git's username prompt, then echo
+// the password again into the password prompt, so the configured
+// Username field was silently ignored.
+func AskpassScriptForCreds(username, secret string) (env []string, cleanup func() error, err error) {
 	if runtime.GOOS == "windows" {
 		return nil, nil, fmt.Errorf("askpass: windows hosts are not supported")
 	}
@@ -39,10 +62,10 @@ func AskpassScript(secret string) (env []string, cleanup func() error, err error
 		return nil, nil, fmt.Errorf("askpass: mkdtemp: %w", err)
 	}
 	// 0700 on the dir + 0700 on the file: nothing else on the box can
-	// read either. We escape the secret so a value containing single
-	// quotes doesn't break out of the shell literal.
+	// read either. We escape both fields so values containing single
+	// quotes don't break out of the shell literal.
 	path := filepath.Join(dir, "askpass.sh")
-	body := "#!/bin/sh\nexec printf %s '" + shellEscapeSingle(secret) + "'\n"
+	body := buildAskpassBody(username, secret)
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, nil, fmt.Errorf("askpass: write script: %w", err)
@@ -57,6 +80,20 @@ func AskpassScript(secret string) (env []string, cleanup func() error, err error
 		return os.RemoveAll(dir)
 	}
 	return env, cleanup, nil
+}
+
+// buildAskpassBody renders the shell script. Split out for clarity and
+// to keep the dispatch logic adjacent to the prompt-format contract.
+func buildAskpassBody(username, secret string) string {
+	if username == "" {
+		return "#!/bin/sh\nexec printf %s '" + shellEscapeSingle(secret) + "'\n"
+	}
+	// Git askpass receives the prompt text on $1; "Username for ..."
+	// vs "Password for ...". Match the prefix to dispatch.
+	return "#!/bin/sh\ncase \"$1\" in\n" +
+		"  Username*) exec printf %s '" + shellEscapeSingle(username) + "' ;;\n" +
+		"  *) exec printf %s '" + shellEscapeSingle(secret) + "' ;;\n" +
+		"esac\n"
 }
 
 // shellEscapeSingle escapes a string for safe interpolation inside a
