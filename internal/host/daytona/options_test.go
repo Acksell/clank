@@ -80,3 +80,20 @@ func TestDefaultsAreNonZero(t *testing.T) {
 		t.Errorf("defaultReadyTimeout %v looks wrong", defaultReadyTimeout)
 	}
 }
+
+// withDefaults must not mutate the caller's Labels map. Regression
+// for: previously the labelClankHost write went through the aliased
+// map, so a caller that reused a Labels literal across multiple
+// Launch calls (or kept a reference for inspection) would observe
+// surprising "clank/host" labels appearing on it.
+func TestLaunchOptionsWithDefaults_DoesNotMutateCallerLabels(t *testing.T) {
+	t.Parallel()
+	caller := map[string]string{"team": "platform"}
+	_ = LaunchOptions{APIKey: "k", Labels: caller}.withDefaults()
+	if _, mutated := caller[labelClankHost]; mutated {
+		t.Fatalf("withDefaults mutated caller's Labels: %v", caller)
+	}
+	if len(caller) != 1 || caller["team"] != "platform" {
+		t.Fatalf("caller's Labels modified: %v", caller)
+	}
+}

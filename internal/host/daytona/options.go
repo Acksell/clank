@@ -65,10 +65,16 @@ func (o LaunchOptions) withDefaults() LaunchOptions {
 	if out.Arch == "" {
 		out.Arch = defaultArch
 	}
-	if out.Labels == nil {
-		out.Labels = map[string]string{}
+	// Defensive copy: when the caller passes a non-nil Labels map,
+	// out.Labels aliases it and our labelClankHost write would
+	// mutate the caller's map. Always allocate a fresh map so
+	// withDefaults is a pure function of its receiver.
+	labels := make(map[string]string, len(out.Labels)+1)
+	for k, v := range out.Labels {
+		labels[k] = v
 	}
-	out.Labels[labelClankHost] = "true"
+	labels[labelClankHost] = "true"
+	out.Labels = labels
 	return out
 }
 
