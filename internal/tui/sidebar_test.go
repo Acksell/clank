@@ -35,6 +35,7 @@ func keyN() tea.KeyPressMsg    { return tea.KeyPressMsg{Text: "n", Code: 'n'} }
 // disconnected row. Regression: forgetting this merge would leave
 // users no way to provision daytona from the TUI.
 func TestHostsSection_AppliesLoadedMergesKnownKinds(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil)
@@ -59,6 +60,7 @@ func TestHostsSection_AppliesLoadedMergesKnownKinds(t *testing.T) {
 // has been provisioned, /hosts will include it; KnownHostKinds must
 // not add a second row.
 func TestHostsSection_KnownKindAlreadyConnectedNotDuplicated(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal, "daytona"}, nil)
 
@@ -76,6 +78,7 @@ func TestHostsSection_KnownKindAlreadyConnectedNotDuplicated(t *testing.T) {
 // worktrees section starts at index hosts.count() — Phase F's most
 // likely off-by-one.
 func TestSidebar_CursorTraversalAcrossSections(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil) // 2 host rows
 	s.branches = []host.BranchInfo{{Name: "main"}, {Name: "feature"}}
@@ -109,6 +112,7 @@ func TestSidebar_CursorTraversalAcrossSections(t *testing.T) {
 // account for the hosts section taking up the first N cursor slots.
 // Off-by-one here would silently apply the wrong branch filter.
 func TestSidebar_BranchIndexCorrectAcrossHostsOffset(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil) // 2 host rows
 	s.branches = []host.BranchInfo{{Name: "main"}, {Name: "feature"}}
@@ -136,6 +140,7 @@ func TestSidebar_BranchIndexCorrectAcrossHostsOffset(t *testing.T) {
 // dispatch: Enter on a host row activates the host; Enter on a branch
 // row selects it and switches panes. cursorOnHost is the predicate.
 func TestSidebar_CursorOnHostDetectsSection(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal, "daytona"}, nil)
 	s.branches = []host.BranchInfo{{Name: "main"}}
@@ -162,6 +167,8 @@ func TestSidebar_CursorOnHostDetectsSection(t *testing.T) {
 // daytona row should flip the active host pointer (and persist when
 // the state is non-nil — covered separately in active_host_test.go).
 func TestSidebar_ActivateSelectedHostUpdatesActiveHost(t *testing.T) {
+	// Cannot use t.Parallel(): t.Setenv below is incompatible with parallel
+	// execution per the testing package contract.
 	t.Setenv("HOME", t.TempDir())
 	a, err := LoadActiveHost()
 	if err != nil {
@@ -189,6 +196,7 @@ func TestSidebar_ActivateSelectedHostUpdatesActiveHost(t *testing.T) {
 // row is not a real host, so activating it would set the active host
 // to a name the hub can't route. activateSelectedHost should refuse.
 func TestSidebar_ActivateOnDisconnectedKindNoOp(t *testing.T) {
+	t.Parallel()
 	a := &ActiveHost{state: nil, name: host.HostLocal}
 	s := NewSidebarModel(nil, agent.GitRef{}, "/tmp", a)
 	s.SetFocused(true)
@@ -213,6 +221,7 @@ func TestSidebar_ActivateOnDisconnectedKindNoOp(t *testing.T) {
 // dispatching a hostsLoadedMsg with a reordered list where local is
 // no longer first. The cursor should follow local, not stay at 0.
 func TestSidebar_HostsLoadedPreservesCursorIdentity(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil)
 	s.cursor = 0 // on local
@@ -234,6 +243,7 @@ func TestSidebar_HostsLoadedPreservesCursorIdentity(t *testing.T) {
 // the cursor is on a host row must not enter create-branch mode —
 // otherwise the user would type a branch name into nowhere.
 func TestSidebar_NewBranchKeyOnlyInWorktreesSection(t *testing.T) {
+	t.Parallel()
 	s := newTestSidebar(t)
 	s.hosts.applyLoaded([]host.Hostname{host.HostLocal}, nil)
 	s.branches = []host.BranchInfo{{Name: "main"}}
@@ -259,6 +269,7 @@ func TestSidebar_NewBranchKeyOnlyInWorktreesSection(t *testing.T) {
 // returns an empty branch list. Endpoint is the sole remote
 // identity and must be preserved untouched.
 func TestSidebar_GitRefForActiveHostStripsLocalPathOnRemote(t *testing.T) {
+	t.Parallel()
 	a := &ActiveHost{state: nil, name: host.HostLocal}
 	ref := agent.GitRef{LocalPath: "/Users/axe/proj"}
 	s := NewSidebarModel(nil, ref, "/Users/axe/proj", a)
