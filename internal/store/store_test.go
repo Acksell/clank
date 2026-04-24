@@ -737,7 +737,14 @@ func TestConcurrentWrites(t *testing.T) {
 		}()
 	}
 
-	// Launch concurrent primary agent upserts.
+	// Launch concurrent primary agent upserts. Refs are precomputed on
+	// the test goroutine because mustParseRemoteRef calls t.Fatalf, and
+	// the testing package only permits Fatal-family calls from the
+	// goroutine that owns *T.
+	refs := make([]agent.GitRef, numWriters)
+	for i := range numWriters {
+		refs[i] = mustParseRemoteRef(t, fmt.Sprintf("git@github.com:acksell/repo-%d.git", i))
+	}
 	for i := range numWriters {
 		wg.Add(1)
 		go func() {
@@ -745,8 +752,7 @@ func TestConcurrentWrites(t *testing.T) {
 			agents := []agent.AgentInfo{
 				{Name: fmt.Sprintf("agent-%d", i), Mode: "primary"},
 			}
-			ref := mustParseRemoteRef(t, fmt.Sprintf("git@github.com:acksell/repo-%d.git", i))
-			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", ref, agents); err != nil {
+			if err := s.UpsertPrimaryAgents(agent.BackendOpenCode, "local", refs[i], agents); err != nil {
 				errs <- fmt.Errorf("UpsertPrimaryAgents(%d): %w", i, err)
 			}
 		}()
