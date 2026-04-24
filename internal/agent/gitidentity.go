@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // GitIdentity is the (name, email) pair used as committer/author on a
 // host. The hub propagates the laptop user's `git config --global
@@ -16,15 +19,18 @@ type GitIdentity struct {
 	Email string `json:"email"`
 }
 
-// Validate returns an error when either field is empty. The hub uses
-// this to hard-fail provisioning rather than fall back to a synthetic
-// identity like "clank@local" — silently mis-attributing commits is
-// worse than failing loudly.
+// Validate returns an error when either field is empty or whitespace-
+// only. The hub uses this to hard-fail provisioning rather than fall
+// back to a synthetic identity like "clank@local" — silently mis-
+// attributing commits is worse than failing loudly. Whitespace-only
+// values are rejected because git accepts them and produces commits
+// with blank authors, which is the same silent-mis-attribution failure
+// mode in a different disguise.
 func (g GitIdentity) Validate() error {
-	if g.Name == "" {
+	if strings.TrimSpace(g.Name) == "" {
 		return fmt.Errorf("git identity: name is required")
 	}
-	if g.Email == "" {
+	if strings.TrimSpace(g.Email) == "" {
 		return fmt.Errorf("git identity: email is required")
 	}
 	return nil
