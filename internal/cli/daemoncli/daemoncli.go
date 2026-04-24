@@ -126,15 +126,20 @@ func RunStart(foreground bool) error {
 			return fmt.Errorf("register host launchers: %w", err)
 		}
 
-		// Wire credential discovery: env vars → gh CLI → on-disk
-		// settings, wrapped in a process-lifetime cache. Without this
+		// Wire credential discovery: env vars → on-disk settings →
+		// gh CLI, wrapped in a process-lifetime cache. Without this
 		// the resolver returns anonymous for every HTTPS endpoint and
 		// remote pushes 401 (the daytona-push bug).
+		//
+		// Settings precedes the gh CLI so a user-saved PAT (via
+		// `clank auth login`) takes effect even when a stale or
+		// scope-limited `gh auth token` is sitting on the same box.
+		// Env vars still win over both as the explicit override.
 		d.SetCredentialDiscoverer(hub.NewCachingDiscoverer(gitcred.Stack{
 			Discoverers: []gitcred.Discoverer{
 				gitcred.FromEnv(),
-				gitcred.FromGH(),
 				gitcred.FromSettings(),
+				gitcred.FromGH(),
 			},
 		}))
 
