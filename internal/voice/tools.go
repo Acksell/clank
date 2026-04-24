@@ -338,7 +338,11 @@ func createSessionTool(tp ToolProvider) *tools.Tool {
 			}
 			ep, err := gitendpoint.Parse(remote)
 			if err != nil {
-				return "", fmt.Errorf("parse remote URL %q: %w", remote, err)
+				// Redact userinfo before logging: `git remote -v` can
+				// surface URLs with embedded tokens (https://x:tok@host),
+				// and the voice tool's error string flows back to the
+				// transcript log.
+				return "", fmt.Errorf("parse remote URL %q: %w", gitendpoint.RedactURL(remote), err)
 			}
 			info, err := tp.CreateSession(ctx, agent.StartRequest{
 				Backend:  agent.BackendType(args.Backend),
