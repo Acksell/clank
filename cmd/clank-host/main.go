@@ -161,6 +161,15 @@ func openTCPListener(addr string, allowPublic bool) (net.Listener, func(), error
 	}
 	// Empty host means "all interfaces" — same risk profile as a
 	// non-loopback IP. Force the user to be explicit.
+	//
+	// TODO(security): --allow-public opens an unauthenticated HTTP
+	// listener. Today the only public-bind caller is the Daytona
+	// launcher (internal/host/daytona/serve.go), and Daytona's edge
+	// gateway gates traffic behind the per-sandbox preview token
+	// (x-daytona-preview-token) — without that header no packets
+	// reach this process. Any future caller that bypasses the
+	// Daytona gateway MUST add bearer-token (or mTLS) auth in the
+	// hostmux before calling --allow-public.
 	if !isLoopbackAddr(hostPart) && !allowPublic {
 		return nil, nil, fmt.Errorf(
 			"--addr %q binds a non-loopback interface; pass --allow-public to confirm. "+
