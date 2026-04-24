@@ -141,6 +141,15 @@ func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTT
 	if err != nil {
 		return nil, agent.GitRef{}, agent.GitCredential{}, err
 	}
+	// Normalize the hostname identically to hostFor: empty defaults
+	// to local. ResolveCredential keys discovery + cache by host id;
+	// passing the raw "" here would route requests to the local host
+	// (correct) but resolve credentials under "" (wrong), so the
+	// local SSH-agent path is bypassed and the wrong auth mode wins.
+	resolvedHost := host.Hostname(hostname)
+	if resolvedHost == "" {
+		resolvedHost = host.HostLocal
+	}
 
 	if ref.Endpoint == nil {
 		// Local-only ref (LocalPath set, no remote): no credential is
@@ -153,7 +162,7 @@ func (s *Service) hostForRef(hostname string, ref agent.GitRef) (*hostclient.HTT
 		return c, ref, agent.GitCredential{Kind: agent.GitCredAnonymous}, nil
 	}
 
-	cred, resolvedEp, err := ResolveCredential(s.ctx, host.Hostname(hostname), ref.Endpoint, s.credentialDiscoverer())
+	cred, resolvedEp, err := ResolveCredential(s.ctx, resolvedHost, ref.Endpoint, s.credentialDiscoverer())
 	if err != nil {
 		return nil, agent.GitRef{}, agent.GitCredential{}, err
 	}
