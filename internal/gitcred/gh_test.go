@@ -38,6 +38,28 @@ func TestGHDiscoverer_GhMissingIsSoftMiss(t *testing.T) {
 	}
 }
 
+func TestGHDiscoverer_LookPathNonNotFoundIsHardError(t *testing.T) {
+	t.Parallel()
+	// Any LookPath failure that isn't ErrNotFound (e.g. permission
+	// denied, exec.ErrDot) signals a misconfigured environment. We
+	// must surface it instead of silently downgrading to anonymous
+	// auth — the docstring on GHDiscoverer promises this.
+	bogus := errors.New("permission denied")
+	g := &GHDiscoverer{
+		lookPath: func(string) (string, error) { return "", bogus },
+	}
+	_, err := g.Discover(context.Background(), validEp(t, "github.com"))
+	if err == nil {
+		t.Fatal("err = nil, want hard error")
+	}
+	if errors.Is(err, ErrNoCredential) {
+		t.Fatalf("err = %v, must NOT be ErrNoCredential (would silently downgrade)", err)
+	}
+	if !errors.Is(err, bogus) {
+		t.Fatalf("err = %v, want wrap of underlying lookpath error", err)
+	}
+}
+
 func TestGHDiscoverer_NotLoggedInIsSoftMiss(t *testing.T) {
 	t.Parallel()
 	// Run a real subprocess that exits non-zero so we get a genuine

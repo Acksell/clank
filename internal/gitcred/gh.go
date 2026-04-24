@@ -57,8 +57,14 @@ func (g *GHDiscoverer) Discover(ctx context.Context, ep *agent.GitEndpoint) (age
 	}
 	bin, err := lookPath("gh")
 	if err != nil {
-		// LookPath failure means gh isn't installed; that's a soft miss.
-		return agent.GitCredential{}, ErrNoCredential
+		// gh not installed is a soft miss; any other LookPath failure
+		// (e.g. exec.ErrDot, permission error) indicates a misconfigured
+		// environment that should surface, not silently fall through to
+		// anonymous auth and a confusing 401 at push time.
+		if errors.Is(err, exec.ErrNotFound) {
+			return agent.GitCredential{}, ErrNoCredential
+		}
+		return agent.GitCredential{}, fmt.Errorf("gh lookpath: %w", err)
 	}
 
 	subCtx, cancel := context.WithTimeout(ctx, ghTimeout)
