@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -134,6 +135,12 @@ func Clone(ctx context.Context, ep *agent.GitEndpoint, cred agent.GitCredential,
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "clone", url, destDir)
+	// On ctx cancel exec.CommandContext SIGKILLs git, but git spawns
+	// helpers (git-remote-https, askpass) that inherit our stderr
+	// pipe. cmd.Wait would then block forever draining the pipe.
+	// WaitDelay forces the pipes closed shortly after the kill so
+	// Clone returns promptly when ctx fires.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new",

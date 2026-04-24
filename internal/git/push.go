@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/acksell/clank/internal/agent"
 )
@@ -71,6 +72,9 @@ func Push(ctx context.Context, dir, remote, branch string, cred agent.GitCredent
 
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", remote, branch)
 	cmd.Dir = dir
+	// See git.go Clone for WaitDelay rationale: git's helper procs
+	// inherit our pipes and would block cmd.Wait past ctx cancel.
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new",

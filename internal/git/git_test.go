@@ -3,6 +3,8 @@ package git
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -866,21 +868,48 @@ func TestClone_BadURLFailsFast(t *testing.T) {
 }
 
 // TestClone_ContextCancelStops verifies the underlying git process is
-// killed when ctx is cancelled. Uses a bogus https URL to a port that
-// won't connect; ctx cancellation must beat git's own timeout.
+// killed when ctx is cancelled. Points clone at a local TCP listener
+// that accepts connections but never speaks, so git's HTTPS handshake
+// hangs until ctx fires. (A "127.0.0.1:1" target would refuse the
+// connection immediately and git would exit before ctx had a chance
+// to cancel anything, making this test pass spuriously.)
 func TestClone_ContextCancelStops(t *testing.T) {
 	t.Parallel()
 	dst := filepath.Join(t.TempDir(), "checkout")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	// Accept connections in a goroutine and hold them open until the
+	// listener closes. Without this, git would see RST and exit fast.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Pin the connection open; the test's deferred ln.Close
+			// will unblock these reads when the test exits.
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(io.Discard, c)
+			}(conn)
+		}
+	}()
+
 	start := time.Now()
+	port := ln.Addr().(*net.TCPAddr).Port
 	ep := &agent.GitEndpoint{
 		Protocol: agent.GitProtoHTTPS,
 		Host:     "127.0.0.1",
-		Port:     1,
+		Port:     port,
 		Path:     "repo",
 	}
-	err := Clone(ctx, ep, agent.GitCredential{Kind: agent.GitCredAnonymous}, dst)
+	err = Clone(ctx, ep, agent.GitCredential{Kind: agent.GitCredAnonymous}, dst)
 	if err == nil {
 		t.Fatalf("expected error from cancelled clone")
 	}
