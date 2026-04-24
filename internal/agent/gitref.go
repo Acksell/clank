@@ -73,12 +73,26 @@ func (g GitRef) Validate() error {
 // `ssh://github.com/foo` and `https://github.com/foo` collapse to one
 // entry — important once the credential resolver may rewrite ssh→https
 // for remote hosts. Falls back to LocalPath for repos with no configured
-// origin. Returns "" for invalid refs.
+// origin. Returns "" for invalid refs (so a malformed entry can never
+// collide with a real repo's key — important because RepoKey feeds
+// dedup maps where collisions would mask state).
 func RepoKey(g GitRef) string {
 	switch {
 	case g.Endpoint != nil:
+		// Reject malformed endpoints rather than producing a key
+		// like "E\x00\x00\x00branch" that two different invalid
+		// refs would share. (CodeRabbit PR #3 outside-diff on
+		// gitref.go:77-85.)
+		if err := g.Endpoint.Validate(); err != nil {
+			return ""
+		}
 		return "E\x00" + g.Endpoint.Host + "\x00" + g.Endpoint.Path + "\x00" + g.WorktreeBranch
 	case g.LocalPath != "":
+		// Same reasoning: a relative or empty-after-trim path
+		// must not produce a colliding key.
+		if !filepath.IsAbs(g.LocalPath) {
+			return ""
+		}
 		return "L\x00" + g.LocalPath + "\x00" + g.WorktreeBranch
 	default:
 		return ""

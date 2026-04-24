@@ -84,6 +84,31 @@ func TestRepoKey(t *testing.T) {
 	}
 }
 
+// TestRepoKey_RejectsInvalid guards the validation step in RepoKey:
+// invalid endpoints and non-absolute LocalPaths must return "" so they
+// can never collide with a real repo's key in dedup maps. (CodeRabbit
+// PR #3 outside-diff on gitref.go:77-85.)
+func TestRepoKey_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		ref  GitRef
+	}{
+		{"endpoint missing host", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoHTTPS, Path: "x/y"}}},
+		{"endpoint missing path", GitRef{Endpoint: &GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com"}}},
+		{"endpoint missing protocol", GitRef{Endpoint: &GitEndpoint{Host: "github.com", Path: "x/y"}}},
+		{"local path relative", GitRef{LocalPath: "relative/path"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := RepoKey(tc.ref); got != "" {
+				t.Errorf("RepoKey(%+v) = %q, want \"\"", tc.ref, got)
+			}
+		})
+	}
+}
+
 // TestRepoKeyEndpointProtocolIndependent: ssh and https endpoints
 // pointing at the same repo must share a key, so dedup tables don't
 // double-count the same project once the credential resolver may
