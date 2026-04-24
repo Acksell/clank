@@ -120,6 +120,7 @@ func isAuthFailure(s string) bool {
 		"could not read Username",
 		"could not read Password",
 		"terminal prompts disabled",
+		"401 Unauthorized",
 		"403 Forbidden",
 		"Permission denied (publickey)",
 		"Host key verification failed",
