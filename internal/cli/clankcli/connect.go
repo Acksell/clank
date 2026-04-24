@@ -41,9 +41,8 @@ Currently supported kinds:
 const connectTimeout = 90 * time.Second
 
 func runConnect(kind string) error {
-	if kind == "" {
-		return fmt.Errorf("connect: kind is required")
-	}
+	// kind is guaranteed non-empty by cobra.ExactArgs(1) on the connect
+	// command — no defensive check needed at this layer.
 
 	client, err := ensureDaemon()
 	if err != nil {

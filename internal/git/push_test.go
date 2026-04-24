@@ -33,8 +33,8 @@ func cloneWithRemote(t *testing.T, bare string) string {
 	return dir
 }
 
-// commitFile writes a file with content and commits it. Returns the
-// new branch's name (assumes current branch).
+// commitFile writes a file with content and commits it on the current
+// branch.
 func commitFile(t *testing.T, dir, name, content, message string) {
 	t.Helper()
 	writeFile(t, filepath.Join(dir, name), content)

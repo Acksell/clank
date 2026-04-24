@@ -27,9 +27,6 @@ func (m *SidebarModel) renderBranchHint(b host.BranchInfo, linearIdx int) string
 		actions = append(actions, "[m]erge")
 	}
 	actions = append(actions, "[p]ush")
-	if len(actions) == 0 {
-		return ""
-	}
 
 	style := lipgloss.NewStyle().Foreground(dimColor)
 	hint := "    "

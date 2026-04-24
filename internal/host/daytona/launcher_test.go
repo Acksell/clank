@@ -19,6 +19,7 @@ import (
 // (which must actually delete the sandbox; check the dashboard
 // afterwards if you suspect a leak).
 func TestLaunch_Smoke(t *testing.T) {
+	t.Parallel()
 	apiKey := os.Getenv("DAYTONA_API_KEY")
 	if apiKey == "" {
 		t.Skip("DAYTONA_API_KEY not set; skipping live Daytona smoke test")

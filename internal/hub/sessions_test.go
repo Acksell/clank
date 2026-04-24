@@ -47,6 +47,7 @@ func TestDaemonCreateSession(t *testing.T) {
 // Local-host sessions retain the empty branch (tested by the baseline
 // TestDaemonCreateSession above).
 func TestDaemonCreateSession_RemoteHostDefaultsBranch(t *testing.T) {
+	t.Parallel()
 	s, client, cleanup := testDaemon(t)
 	defer cleanup()
 
@@ -80,6 +81,7 @@ func TestDaemonCreateSession_RemoteHostDefaultsBranch(t *testing.T) {
 // TestDaemonCreateSession_RemoteHostExplicitBranchUnchanged verifies the
 // Phase A policy does NOT override a caller-supplied branch on remote hosts.
 func TestDaemonCreateSession_RemoteHostExplicitBranchUnchanged(t *testing.T) {
+	t.Parallel()
 	s, client, cleanup := testDaemon(t)
 	defer cleanup()
 
