@@ -32,8 +32,8 @@ work is (a) always on a named branch and (b) recoverable via a remote.
 | Policy seam | Fill `WorktreeBranch` at the hub seam (one place), not at each of the 4 ingress sites. |
 | Publish verbs | **Two distinct verbs**: `merge` and `push`. Not a single magic `publish`. TUI surfaces `[m]erge` and `[p]ush` hints on worktrees with a diff. |
 | Force-push | **Never.** Non-fast-forward push is a hard error. Smooth rebases with agentic conflict resolution come later (see §Out of scope). |
-| Credential consent | First `push` per credential triggers a modal asking the user to (a) confirm use of the discovered credential and (b) opt into auto-push / auto-commit. Preferences persist in settings JSON. |
-| Credential discovery | **Deferred.** Push v0 only works when the "Token-discovery PR" follow-up from `git_credentials_refactor.md` §Deferred has landed. Until then `clank push` on a private remote fails fast with `ErrPushAuthRequired`. |
+| Credential consent | First `push` per credential triggers a modal asking the user to (a) confirm use of the discovered credential and (b) opt into auto-push / auto-commit. Preferences persist in settings JSON. **Implemented in slimmer form:** the modal only appears on push *failure* (`PushAuthRequiredError`); successful auto-discovery via env / `gh auth token` runs without prompting. See `docs/credential_discovery.md`. |
+| Credential discovery | ~~**Deferred.** Push v0 only works when the "Token-discovery PR" follow-up from `git_credentials_refactor.md` §Deferred has landed.~~ **Done** — env vars / `gh auth token` / `~/.clank/credentials.json` discovered hub-side; failures open the credential modal in the TUI. |
 | Auto-push | **Deferred** (Phase E, out of scope for this plan). Shipped later once settings infra exists. |
 | `git.Push` auth transit | Same `GIT_ASKPASS` pattern as `git.Clone`. No tokens in argv. |
 | Wire transport | New `POST /worktrees/push`, symmetrical to `/worktrees/merge`. |
@@ -187,11 +187,14 @@ project convention).
     `host.Service.listBranches`, `service.go:568`).
   - On `p`, dispatch `PushBranchOnHost` via hub client; show spinner;
     surface result inline.
-  - **Credential-consent modal:** deferred until the token-discovery
-    follow-up + settings infra land. For v0, a missing credential
-    surfaces `ErrPushAuthRequired` inline with text "no credential
-    configured; see `docs/git_credentials_refactor.md` §Deferred:
-    Token-discovery PR".
+  - **Credential modal:** on `host.PushAuthRequiredError` the inbox
+    opens `credentialModalModel` (see `internal/tui/credentialmodal.go`)
+    offering `[r]etry` (re-runs discovery — useful if the user just
+    fixed `gh auth login` in another terminal) or `[t]` to paste a
+    PAT that gets persisted to `~/.clank/credentials.json` (mode
+    0600) and immediately picked up by the next push. Discovery
+    order and storage layout are documented in
+    `docs/credential_discovery.md`.
 
 **Tests:**
 - `internal/hub/api_push_test.go`: hub-level integration, asserts

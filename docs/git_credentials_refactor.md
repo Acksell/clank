@@ -31,7 +31,7 @@ new branch in a URL string-matcher.
 | PR shape | Single full-refactor PR. Commit per phase. |
 | Token transit | `GIT_ASKPASS` script — no tokens in argv. |
 | SQLite | New flat columns `git_endpoint_*` + `git_remote_url` (derived, diagnostic). Drop legacy `remote_url`. |
-| Token discovery | Out of scope. v1 supports public repos only. `GitCredKindHTTPSBasic` exists in the type system, resolver never emits it yet. |
+| Token discovery | Out of scope at v1 (`anonymous` only). **Shipped in the push-credentials follow-up — env vars / `gh auth token` / `~/.clank/credentials.json` discovered hub-side and cached per (target, endpoint).** See `docs/credential_discovery.md`. |
 | Credential names | `anonymous`, `https_basic` (TODO), `https_token` (TODO), `ssh_agent` (was `ssh_local` — renamed; locality is a separate invariant from the mechanism). |
 | Migration failures | Hard-fail loudly. Ask user before dropping conflicting rows. |
 | TUI parse failures | Refuse the action, surface inline error. No silent fallback. |
@@ -40,8 +40,9 @@ new branch in a URL string-matcher.
 
 ## Deferred (explicit follow-ups)
 
-- **Token-discovery PR.** Read `gh auth token` / env vars / config file.
-  Wire up `GitCredKindHTTPSBasic` emission in resolver. Enables private repos.
+- **Token-discovery PR.** ~~Read `gh auth token` / env vars / config file.
+  Wire up `GitCredKindHTTPSBasic` emission in resolver. Enables private repos.~~
+  **Done.** See `docs/credential_discovery.md` and `internal/gitcred/`.
 - **`LocalPath` removal + deviceID-based locality.** Drop `LocalPath` from
   the wire DTO. Local hosts maintain an `Endpoint → localPath` registry.
   Replace the `"local"` Hostname sentinel with deviceID intersection
