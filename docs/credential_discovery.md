@@ -93,15 +93,28 @@ needing to know that a cache exists.
 
 ## TUI flow
 
-When `*host.PushAuthRequiredError` reaches the inbox via
-`pushResultMsg`, the credential modal opens
-(`internal/tui/credentialmodal.go`). Two paths:
+When the user presses `[p]` on a non-default branch row the **push
+confirm modal** opens first (`internal/tui/pushconfirm.go`). On
+`[enter]` the modal owns the in-flight push: a spinner replaces the
+confirm hint, and any non-auth error stays inside the modal so `[r]`
+retries without re-pressing `[p]`.
 
-- **`[r]etry`** — close the modal, re-issue `pushBranchCmd`. The
-  hub-side cache was already invalidated so the next push re-runs
-  the full discovery stack from scratch. Useful when the user has
-  fixed `gh auth login` in another terminal since the previous
-  attempt.
+When `*host.PushAuthRequiredError` reaches the inbox via
+`pushResultMsg`, the push confirm modal closes and the credential
+modal opens (`internal/tui/credentialmodal.go`). The handoff goes
+through a single helper (`InboxModel.openCredentialModalForPushAuth`)
+so this remains the **only** entry point that constructs a credential
+modal — the hub stays the sole credential authority and a future
+self-hosted hub can swap its credential UI without touching the push
+flow. Two paths from the credential modal:
+
+- **`[r]etry`** — close the modal, re-issue `pushBranchCmd`
+  **directly**, bypassing the push confirm modal. A token paste
+  should land on a push attempt without asking the user to
+  re-confirm intent. The hub-side cache was already invalidated so
+  the next push re-runs the full discovery stack from scratch.
+  Useful when the user has fixed `gh auth login` in another
+  terminal since the previous attempt.
 - **`[t]` then paste** — collect a PAT in a masked textinput,
   persist it to `~/.clank/credentials.json` via
   `gitcred.FromSettings().SaveToken(host, token)`, then close the
