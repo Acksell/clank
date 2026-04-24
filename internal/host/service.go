@@ -323,7 +323,10 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	if err := req.GitRef.Validate(); err != nil {
 		return nil, "", fmt.Errorf("git_ref: %w", err)
 	}
-	workDir, err := s.workDirFor(ctx, req.GitRef, req.Auth)
+	if req.Auth == nil {
+		return nil, "", fmt.Errorf("auth credential is required (hub must populate StartRequest.Auth via hostForRef)")
+	}
+	workDir, err := s.workDirFor(ctx, req.GitRef, *req.Auth)
 	if err != nil {
 		return nil, "", err
 	}

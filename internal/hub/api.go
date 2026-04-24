@@ -160,7 +160,7 @@ func (s *Service) SendMessage(ctx context.Context, id string, in SendMessageInpu
 			return err
 		}
 		req.GitRef = ref
-		req.Auth = cred
+		req.Auth = &cred
 		backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 		if err != nil {
 			return err

@@ -167,7 +167,7 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 		Backend:   ms.info.Backend,
 		Hostname:  ms.info.Hostname,
 		GitRef:    ref,
-		Auth:      cred,
+		Auth:      &cred,
 		SessionID: ms.info.ExternalID,
 	})
 	if err != nil {
@@ -365,7 +365,7 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 		return nil, err
 	}
 	req.GitRef = ref
-	req.Auth = cred
+	req.Auth = &cred
 	backend, serverURL, err := h.Sessions().Create(s.ctx, id, req)
 	if err != nil {
 		return nil, fmt.Errorf("create session backend: %w", err)

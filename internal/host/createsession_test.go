@@ -49,6 +49,7 @@ func TestCreateSession_LocalRef_Success(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-local", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -67,6 +68,7 @@ func TestCreateSession_LocalRef_RejectsNonGit(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "hi",
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 	_, _, err := svc.CreateSession(context.Background(), "sid-bad", req)
 	if err == nil {
@@ -87,6 +89,7 @@ func TestCreateSession_LocalRef_RejectsRelativePath(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: "relative/path"},
 		Prompt:  "hi",
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-rel", req); err == nil {
 		t.Fatal("expected error for relative path, got nil")
@@ -109,6 +112,7 @@ func TestCreateSession_LocalRef_RejectsSubdir(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: sub},
 		Prompt:  "hi",
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-sub", req); err == nil {
 		t.Fatal("expected error for non-root dir")
@@ -139,6 +143,7 @@ func TestCreateSession_BothRefs_PrefersLocalPath(t *testing.T) {
 			},
 		},
 		Prompt: "hi",
+		Auth:   &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-bug3", req); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -173,7 +178,7 @@ func TestCreateSession_BothRefs_FallsBackToCloneWhenLocalMissing(t *testing.T) {
 			LocalPath: "/nonexistent/path/on/this/host",
 			Endpoint:  fileEndpoint(source),
 		},
-		Auth:   agent.GitCredential{Kind: agent.GitCredAnonymous},
+		Auth:   &agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt: "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-fallback", req); err != nil {
@@ -202,7 +207,7 @@ func TestCreateSession_RemoteRef_ClonesIntoClonesDir(t *testing.T) {
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{Endpoint: fileEndpoint(source)},
-		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone", req); err != nil {
@@ -235,7 +240,7 @@ func TestCreateSession_RemoteRef_ReusesExistingClone(t *testing.T) {
 	req := agent.StartRequest{
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{Endpoint: fileEndpoint(source)},
-		Auth:    agent.GitCredential{Kind: agent.GitCredAnonymous},
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt:  "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-clone-1", req); err != nil {
@@ -277,7 +282,7 @@ func TestCreateSession_RemoteRef_RemovesPartialCloneOnFailure(t *testing.T) {
 				Path:     "definitely/does/not/exist/repo",
 			},
 		},
-		Auth:   agent.GitCredential{Kind: agent.GitCredAnonymous},
+		Auth:   &agent.GitCredential{Kind: agent.GitCredAnonymous},
 		Prompt: "hi",
 	}
 	if _, _, err := svc.CreateSession(context.Background(), "sid-fail-1", req); err == nil {

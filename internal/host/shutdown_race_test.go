@@ -77,6 +77,7 @@ func TestService_ShutdownDuringCreateSession_DoesNotLeakBackend(t *testing.T) {
 		Backend: agent.BackendOpenCode,
 		GitRef:  agent.GitRef{LocalPath: dir},
 		Prompt:  "race",
+		Auth:    &agent.GitCredential{Kind: agent.GitCredAnonymous},
 	}
 
 	type result struct {
