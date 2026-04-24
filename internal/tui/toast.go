@@ -28,7 +28,7 @@ import (
 
 // toastTTL is how long a toast stays on screen. Long enough to read a
 // short sentence, short enough not to feel sticky.
-const toastTTL = 3 * time.Second
+const toastTTL = 6 * time.Second
 
 // toastKind selects the toast's color theme. Keep this enum small —
 // each kind is a distinct visual signal and adding too many dilutes
