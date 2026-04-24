@@ -102,7 +102,14 @@ func TestSettingsDiscoverer_MultipleHostsIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover gitlab: %v", err)
 	}
-	if gh.Password == gl.Password {
-		t.Fatalf("hosts share password (%q) — entries crossed", gh.Password)
+	// Assert exact per-host tokens rather than just inequality.
+	// The weaker check passed even if both hosts returned an empty
+	// or wrong-but-different token — as long as they didn't match.
+	// (CodeRabbit PR #3 inline 3137099822.)
+	if gh.Password != "gh-tok" {
+		t.Errorf("github.com password = %q, want %q", gh.Password, "gh-tok")
+	}
+	if gl.Password != "gl-tok" {
+		t.Errorf("gitlab.com password = %q, want %q", gl.Password, "gl-tok")
 	}
 }
