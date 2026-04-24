@@ -63,6 +63,20 @@ func TestParse(t *testing.T) {
 			"git://github.com/acksell/clank.git",
 			&agent.GitEndpoint{Protocol: agent.GitProtoGit, Host: "github.com", Path: "acksell/clank"},
 		},
+		// Regression: trailing slash AFTER .git was previously left
+		// in the path because normalisePath stripped ".git" before
+		// the slash, so the suffix never matched. RepoKey/equality
+		// then diverged from the no-slash form.
+		{
+			"https with .git/ trailing slash",
+			"https://github.com/acksell/clank.git/",
+			&agent.GitEndpoint{Protocol: agent.GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
+		},
+		{
+			"ssh scp-style with .git/",
+			"git@github.com:acksell/clank.git/",
+			&agent.GitEndpoint{Protocol: agent.GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank"},
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

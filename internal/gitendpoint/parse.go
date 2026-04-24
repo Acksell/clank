@@ -111,9 +111,14 @@ func defaultPortFor(p agent.GitEndpointProtocol) int {
 // For file:// the leading slash is significant to absolute-path
 // resolution but we keep the no-slash invariant on GitEndpoint.Path
 // and reattach during String() rendering.
+//
+// Order matters: trim trailing slashes BEFORE the ".git" suffix.
+// Otherwise "owner/repo.git/" loses the trailing "/" only after the
+// ".git" check has already failed, and the suffix sticks to the path —
+// breaking equality with "owner/repo.git" and "owner/repo".
 func normalisePath(p string, _ agent.GitEndpointProtocol) string {
 	p = strings.TrimLeft(p, "/")
-	p = strings.TrimSuffix(p, ".git")
 	p = strings.TrimRight(p, "/")
+	p = strings.TrimSuffix(p, ".git")
 	return p
 }
