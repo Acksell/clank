@@ -162,9 +162,15 @@ func TestService_HostsLocalPinnedFirst(t *testing.T) {
 
 	// Register in lex-bad order (daytona < local) plus a third name
 	// that lex-sorts after local, to confirm "local first, rest sorted".
-	_, _ = s.RegisterHost("daytona", hc1)
-	_, _ = s.RegisterHost("zeta", hc2)
-	_, _ = s.RegisterHost("local", hc3)
+	if _, err := s.RegisterHost("daytona", hc1); err != nil {
+		t.Fatalf("RegisterHost(daytona): %v", err)
+	}
+	if _, err := s.RegisterHost("zeta", hc2); err != nil {
+		t.Fatalf("RegisterHost(zeta): %v", err)
+	}
+	if _, err := s.RegisterHost("local", hc3); err != nil {
+		t.Fatalf("RegisterHost(local): %v", err)
+	}
 
 	got := s.Hosts()
 	want := []host.Hostname{"local", "daytona", "zeta"}

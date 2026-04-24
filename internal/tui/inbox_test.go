@@ -2622,8 +2622,12 @@ func TestInbox_ForwardsHostsLoadedMsgToSidebar(t *testing.T) {
 
 	_, _ = m.Update(hostsLoadedMsg{hosts: []host.Hostname{host.HostLocal}, err: nil})
 
-	// Post-dispatch: 1 connected host (local) + KnownHostKinds (daytona) = 2.
-	if got := m.sidebar.hosts.count(); got != 2 {
-		t.Fatalf("post-dispatch row count = %d, want 2; hostsLoadedMsg was likely swallowed by inbox.Update", got)
+	// Verify forwarding by asserting the local host row is present,
+	// rather than a fixed total count (which is brittle: appending a
+	// new entry to KnownHostKinds would break this test for an
+	// unrelated reason). The whole point of the regression is that
+	// the forwarded message produced *some* row for HostLocal.
+	if got := m.sidebar.hosts.indexOf(host.HostLocal); got < 0 {
+		t.Fatalf("local host row not found after dispatch (rows=%d); hostsLoadedMsg was likely swallowed by inbox.Update", m.sidebar.hosts.count())
 	}
 }

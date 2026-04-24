@@ -80,6 +80,54 @@ func TestGitEndpointString(t *testing.T) {
 	}
 }
 
+// TestGitEndpointCloneURL pins the file:// behavior: CloneURL must
+// NOT append the trailing ".git" that String() does, because the
+// on-disk path is the original directory and "<dir>.git" doesn't
+// exist. Network protocols round-trip identically to String().
+func TestGitEndpointCloneURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		ep   *GitEndpoint
+		want string
+	}{
+		{
+			"file no host: no trailing .git",
+			&GitEndpoint{Protocol: GitProtoFile, Path: "srv/git/foo"},
+			"file:///srv/git/foo",
+		},
+		{
+			"file with host: no trailing .git",
+			&GitEndpoint{Protocol: GitProtoFile, Host: "server", Path: "share/repo"},
+			"file://server/share/repo",
+		},
+		{
+			"https: identical to String()",
+			&GitEndpoint{Protocol: GitProtoHTTPS, Host: "github.com", Path: "acksell/clank"},
+			"https://github.com/acksell/clank.git",
+		},
+		{
+			"ssh: identical to String()",
+			&GitEndpoint{Protocol: GitProtoSSH, User: "git", Host: "github.com", Path: "acksell/clank"},
+			"ssh://git@github.com/acksell/clank.git",
+		},
+		{
+			"nil: empty string",
+			nil,
+			"",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.ep.CloneURL(); got != tc.want {
+				t.Fatalf("CloneURL()=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGitEndpointIsLocal(t *testing.T) {
 	t.Parallel()
 	if (&GitEndpoint{Protocol: GitProtoFile, Path: "x"}).IsLocal() != true {

@@ -60,7 +60,10 @@ func (s *Service) refreshPrimaryAgentsInBackground(bt agent.BackendType, hostnam
 
 		hc, resolvedRef, cred, err := s.hostForRef(string(hostname), ref)
 		if err != nil {
-			s.log.Printf("background primary agent refresh: %v", err)
+			// Include backend/host/repo so the failure is triageable
+			// without grepping nearby goroutine state.
+			s.log.Printf("background primary agent refresh: backend=%s host=%s repo=%s: %v",
+				bt, hostname, agent.RepoKey(ref), err)
 			return
 		}
 		agents, err := hc.Backend(bt).Agents(ctx, resolvedRef, cred)
