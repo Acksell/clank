@@ -1075,7 +1075,7 @@ func formatSessionError(e opencode.EventListResponseEventSessionErrorPropertiesE
 		// Body excerpt is bounded so a multi-KiB upstream error page
 		// doesn't wreck the TUI line.
 		status := int(v.Data.StatusCode)
-		body := truncate(v.Data.ResponseBody, 256)
+		body := truncate(singleLine(v.Data.ResponseBody), 256)
 		if status > 0 && body != "" {
 			return fmt.Sprintf("%s: HTTP %d: %s: %s", name, status, v.Data.Message, body)
 		}
@@ -1089,7 +1089,7 @@ func formatSessionError(e opencode.EventListResponseEventSessionErrorPropertiesE
 		// Unknown variant — surface raw JSON so we don't lose info.
 		// JSON.RawJSON() returns the full event-error payload as
 		// received off the wire.
-		if raw := e.JSON.RawJSON(); raw != "" {
+		if raw := truncate(singleLine(e.JSON.RawJSON()), 256); raw != "" {
 			return fmt.Sprintf("%s: %s", name, raw)
 		}
 		return name
@@ -1117,6 +1117,16 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// singleLine collapses CR/LF into spaces so a multi-line payload
+// (HTTP body excerpt, raw JSON, etc.) doesn't break the TUI's
+// one-line-per-event contract before [truncate] runs.
+func singleLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return strings.TrimSpace(s)
 }
 
 // refreshServerURL calls the resolver to get the current server URL. If the
