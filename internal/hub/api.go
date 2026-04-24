@@ -571,6 +571,14 @@ func (s *Service) MergeBranchOnHost(ctx context.Context, hostname host.Hostname,
 // Credentials come from the hub's per-ref resolver (same path merge
 // and clone use) — the TUI never handles tokens directly.
 //
+// On a credential-cache stale-token failure, this method invalidates
+// the cache entry and retries once. If the retry also fails with
+// ErrPushAuthRequired, the error is wrapped in
+// host.PushAuthRequiredError carrying (hostname, endpoint host) so
+// the TUI can prompt for a fresh credential. A single in-flight
+// retry is enough — if discovery still has the same broken token
+// after invalidation, looping further would just spam the remote.
+//
 // Unlike Merge, this does not close hub-side sessions: publishing a
 // branch is non-destructive, and the session likely still has work
 // to do (more commits, refinements) before a later Merge retires it.
@@ -579,7 +587,43 @@ func (s *Service) PushBranchOnHost(ctx context.Context, hostname host.Hostname, 
 	if err != nil {
 		return host.PushResult{}, err
 	}
-	return hc.PushBranch(ctx, resolvedRef, cred, branch)
+	res, err := hc.PushBranch(ctx, resolvedRef, cred, branch)
+	if err == nil {
+		return res, nil
+	}
+	if !errors.Is(err, host.ErrPushAuthRequired) {
+		return host.PushResult{}, err
+	}
+
+	// Auth failed. Drop the cached credential for this (host, endpoint
+	// host) pair so the second attempt re-runs discovery — useful when
+	// the user has just saved a fresh token via the TUI modal.
+	if disc := s.credentialDiscoverer(); disc != nil {
+		if cd, ok := disc.(*CachingDiscoverer); ok && resolvedRef.Endpoint != nil {
+			cd.Invalidate(hostname, resolvedRef.Endpoint.Host)
+		}
+	}
+
+	hc, retryRef, retryCred, err := s.hostForRef(string(hostname), ref)
+	if err != nil {
+		return host.PushResult{}, err
+	}
+	res, err = hc.PushBranch(ctx, retryRef, retryCred, branch)
+	if err == nil {
+		return res, nil
+	}
+	if errors.Is(err, host.ErrPushAuthRequired) {
+		epHost := ""
+		if retryRef.Endpoint != nil {
+			epHost = retryRef.Endpoint.Host
+		}
+		return host.PushResult{}, &host.PushAuthRequiredError{
+			Hostname:     hostname,
+			EndpointHost: epHost,
+			Underlying:   err,
+		}
+	}
+	return host.PushResult{}, err
 }
 
 // --- Hosts ---

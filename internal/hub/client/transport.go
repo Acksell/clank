@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
 )
 
 // HTTP request helpers used by all sub-clients. The wire format is
@@ -57,10 +58,22 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 
 	if resp.StatusCode >= 400 {
 		var errResp map[string]string
+		msg := ""
 		if json.Unmarshal(respBody, &errResp) == nil {
-			if msg, ok := errResp["error"]; ok {
-				return fmt.Errorf("daemon: %s", msg)
-			}
+			msg = errResp["error"]
+		}
+		if msg == "" {
+			msg = string(respBody)
+		}
+		// Preserve sentinel identity across the wire for the auth
+		// path so the TUI's errors.Is(err, host.ErrPushAuthRequired)
+		// keeps working. The hub mux maps ONLY ErrPushAuthRequired
+		// to 401 today, so the status code is an unambiguous signal.
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("daemon: %s: %w", msg, host.ErrPushAuthRequired)
+		}
+		if msg != "" {
+			return fmt.Errorf("daemon: %s", msg)
 		}
 		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, respBody)
 	}

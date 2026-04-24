@@ -2,6 +2,7 @@ package host
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/acksell/clank/internal/git"
 )
@@ -15,6 +16,38 @@ var (
 	ErrPushAuthRequired = git.ErrPushAuthRequired
 	ErrNothingToPush    = git.ErrNothingToPush
 )
+
+// PushAuthRequiredError is the structured form of ErrPushAuthRequired
+// surfaced by the hub after a push retry has already been attempted
+// and still failed. It carries the (target host, endpoint host) pair
+// the TUI needs to render a useful prompt — "save a token for
+// github.com" rather than a bare "push needs auth".
+//
+// Wraps ErrPushAuthRequired so existing errors.Is(err,
+// host.ErrPushAuthRequired) checks at intermediate layers still match.
+// TUI code that wants the structured detail should errors.As() into
+// *PushAuthRequiredError.
+type PushAuthRequiredError struct {
+	// Hostname is the clank host the push ran on (e.g. "local",
+	// "daytona-1"). Empty for local-only refs that somehow got here.
+	Hostname Hostname
+	// EndpointHost is the git remote host (e.g. "github.com"). This
+	// is the key the TUI should write to credentials.json when the
+	// user supplies a token.
+	EndpointHost string
+	// Underlying is the original error from the host (typically
+	// ErrPushAuthRequired wrapping git's stderr).
+	Underlying error
+}
+
+func (e *PushAuthRequiredError) Error() string {
+	return fmt.Sprintf("push to %s on host %q requires authentication: %v",
+		e.EndpointHost, e.Hostname, e.Underlying)
+}
+
+// Unwrap exposes the underlying error so errors.Is(err,
+// ErrPushAuthRequired) keeps working through the wrap.
+func (e *PushAuthRequiredError) Unwrap() error { return e.Underlying }
 
 // Sentinel errors for Service methods. Callers (e.g. HTTP handlers in
 // host/mux) use errors.Is to translate these into appropriate status
