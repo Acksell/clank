@@ -157,4 +157,22 @@ func TestSeedIdentityIfMissing_VisibleInWorktree(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("commit in worktree: %v\n%s", err, out)
 	}
+
+	// And the resulting commit must actually carry the seeded
+	// identity. Without this assertion the test passes even if the
+	// seed silently regressed to e.g. an empty/fallback name —
+	// `git commit --allow-empty` would still succeed because the
+	// pre-existing throwaway identity (or any other side-channel)
+	// could satisfy git. (CodeRabbit PR #3 inline 3137099802.)
+	logCmd := exec.Command("git", "log", "-1", "--format=%an <%ae>")
+	logCmd.Dir = wt
+	out, err := logCmd.Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	want := "Alice <a@example.com>"
+	if got != want {
+		t.Fatalf("worktree commit author = %q, want %q", got, want)
+	}
 }
