@@ -64,6 +64,15 @@ type Service struct {
 	remoteHandlesMu sync.Mutex
 	remoteHandles   map[host.Hostname]RemoteHostHandle
 
+	// provisionMu serializes ProvisionHost so the
+	// idempotency-check / Launch / RegisterHost sequence is atomic.
+	// Without it two concurrent callers for the same kind both miss
+	// the catalog check and end up double-launching, leaking the
+	// loser's handle. Held only across provisioning, not during
+	// normal session traffic, so the contention is negligible
+	// (Daytona Launch is sub-second; nothing else takes this lock).
+	provisionMu sync.Mutex
+
 	mu       sync.RWMutex
 	sessions map[string]*managedSession // keyed by hub session ID
 	// subscribers receive all events broadcast by the hub.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,9 +21,10 @@ import (
 // same path production daytona.Launch follows, just with a local
 // listener instead of a Daytona preview URL.
 type httptestLauncher struct {
-	srv     *httptest.Server
-	svc     *host.Service
-	stopped atomic.Int32
+	srv      *httptest.Server
+	svc      *host.Service
+	stopped  atomic.Int32
+	teardown sync.Once
 }
 
 func newHTTPTestLauncher(t *testing.T) *httptestLauncher {
@@ -31,7 +33,16 @@ func newHTTPTestLauncher(t *testing.T) *httptestLauncher {
 		BackendManagers: map[agent.BackendType]agent.BackendManager{},
 	})
 	srv := httptest.NewServer(hostmux.New(svc, nil).Handler())
-	return &httptestLauncher{srv: srv, svc: svc}
+	l := &httptestLauncher{srv: srv, svc: svc}
+	// Tests like TestRegisterHostLauncher_Validation never drive
+	// Stop via the hub teardown path, so register an unconditional
+	// teardown here to keep the listener+goroutine from outliving
+	// the test (CodeRabbit PR #3 inline 3134413690).
+	t.Cleanup(func() {
+		srv.Close()
+		svc.Shutdown()
+	})
+	return l
 }
 
 func (l *httptestLauncher) Launch(ctx context.Context) (*hostclient.HTTP, hub.RemoteHostHandle, error) {
@@ -39,11 +50,15 @@ func (l *httptestLauncher) Launch(ctx context.Context) (*hostclient.HTTP, hub.Re
 }
 
 // Stop satisfies hub.RemoteHostHandle. Records that the hub asked us
-// to tear down, so tests can assert shutdown ordering.
+// to tear down, so tests can assert shutdown ordering. Idempotent so
+// the t.Cleanup in newHTTPTestLauncher and the hub-driven Stop can
+// both fire without double-closing the listener.
 func (l *httptestLauncher) Stop(ctx context.Context) error {
 	l.stopped.Add(1)
-	l.srv.Close()
-	l.svc.Shutdown()
+	l.teardown.Do(func() {
+		l.srv.Close()
+		l.svc.Shutdown()
+	})
 	return nil
 }
 
@@ -164,6 +179,75 @@ func TestRegisterHostLauncher_Validation(t *testing.T) {
 	if _, err := s.RegisterHostLauncher("daytona", nil); err == nil {
 		t.Error("nil launcher: want error")
 	}
+}
+
+// TestProvisionHost_ConcurrentSameKindLaunchesOnce verifies the
+// check-and-launch sequence is serialized: two goroutines racing into
+// ProvisionHost for the same kind must result in exactly one Launch
+// (and therefore no leaked launcher handle). Regression test for
+// CodeRabbit PR #3 inline 3134413693 — the prior implementation read
+// the catalog without a lock, so both racers could miss the
+// idempotency check and double-launch.
+func TestProvisionHost_ConcurrentSameKindLaunchesOnce(t *testing.T) {
+	t.Parallel()
+	s := hub.New()
+	s.IdentityProvider = func() (string, string, error) { return "Alice", "a@example.com", nil }
+	defer s.Stop()
+
+	// blockingLauncher widens the race window so the bug would
+	// reliably trigger without the provisionMu serialization.
+	bl := &blockingLauncher{inner: newHTTPTestLauncher(t), delay: 50 * time.Millisecond}
+	if _, err := s.RegisterHostLauncher("daytona", bl); err != nil {
+		t.Fatalf("RegisterHostLauncher: %v", err)
+	}
+
+	const racers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, racers)
+	wg.Add(racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := s.ProvisionHost(ctx, "daytona"); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("racer ProvisionHost: %v", err)
+	}
+	if got := bl.launches.Load(); got != 1 {
+		t.Errorf("Launch invoked %d times; want exactly 1 (TOCTOU regression)", got)
+	}
+	// And no leaked handle: nothing has been Stop()'d yet because
+	// the hub is still running.
+	if got := bl.inner.stopped.Load(); got != 0 {
+		t.Errorf("launcher Stop called %d times during provisioning; want 0", got)
+	}
+}
+
+// blockingLauncher delays Launch to widen the window where two
+// concurrent ProvisionHost callers can both miss the catalog
+// idempotency check. Counts invocations so the test can assert
+// exactly-once.
+type blockingLauncher struct {
+	inner    *httptestLauncher
+	delay    time.Duration
+	launches atomic.Int32
+}
+
+func (b *blockingLauncher) Launch(ctx context.Context) (*hostclient.HTTP, hub.RemoteHostHandle, error) {
+	b.launches.Add(1)
+	select {
+	case <-time.After(b.delay):
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	return b.inner.Launch(ctx)
 }
 
 // TestProvisionHost_PropagatesIdentity verifies the laptop user's git

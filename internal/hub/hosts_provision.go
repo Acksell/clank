@@ -77,6 +77,16 @@ func (s *Service) ProvisionHost(ctx context.Context, kind string) (host.Hostname
 	}
 	hostname := host.Hostname(kind)
 
+	// Serialize the check-and-launch sequence so two concurrent
+	// callers for the same kind don't both miss the catalog lookup
+	// and end up double-launching, leaking the loser's remote
+	// resource. The lock is hub-wide rather than per-kind because
+	// kinds are few (a handful) and Launch is sub-second; the
+	// simpler model trades a negligible amount of cross-kind
+	// throughput for a guaranteed-correct invariant.
+	s.provisionMu.Lock()
+	defer s.provisionMu.Unlock()
+
 	// Idempotent fast path. Using the catalog (not remoteHandles) as
 	// the source of truth so a host registered through any path
 	// (RegisterHost, SetHostClient, ProvisionHost) is honored.
