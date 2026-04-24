@@ -1,8 +1,10 @@
 package git_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -90,7 +92,42 @@ func TestSeedIdentityIfMissing_RequiresBothInputs(t *testing.T) {
 	}
 }
 
-// TestSeedIdentityIfMissing_VisibleInWorktree verifies the seeding
+// LocalGlobalIdentity must surface real `git config --global --get`
+// failures (broken config, missing git, permissions) instead of
+// reporting them as the misleading "is not set; run `git config ...`"
+// hint. We stub `git` with a shell script that exits 128, the code
+// git uses for fatal config errors, and assert the error wraps the
+// non-1 exit code with stderr context rather than the "not set"
+// message.
+//
+// Cannot t.Parallel: PATH is process-wide.
+func TestLocalGlobalIdentity_PropagatesNonExit1Failure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script git stub is POSIX-only")
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "git")
+	script := "#!/bin/sh\necho 'fatal: bad config line' >&2\nexit 128\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	_, _, err := git.LocalGlobalIdentity()
+	if err == nil {
+		t.Fatal("expected error from broken git, got nil")
+	}
+	if strings.Contains(err.Error(), "is not set") {
+		t.Fatalf("error masks real failure as 'not set': %v", err)
+	}
+	if !strings.Contains(err.Error(), "exited 128") {
+		t.Fatalf("error should mention real exit code 128, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bad config line") {
+		t.Fatalf("error should include stderr context, got: %v", err)
+	}
+}
+
 // holds for `git commit` inside a linked worktree of the same repo —
 // this is the actual production shape (the agent commits inside a
 // per-branch worktree, not the clone root).

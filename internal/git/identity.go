@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -77,9 +78,24 @@ func LocalGlobalIdentity() (name, email string, err error) {
 
 func readGlobal(key string) (string, error) {
 	cmd := exec.Command("git", "config", "--global", "--get", key)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	_ = cmd.Run()
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	// `git config --get` exits 1 when the key is unset (which is
+	// what we want to surface as "not set" with a friendly hint).
+	// Any other exit code — or a non-ExitError like "git not on
+	// PATH" or a permissions failure — is a real environmental
+	// problem the user needs to see verbatim.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.ExitCode() != 1 {
+			return "", fmt.Errorf("git config --global --get %s exited %d: %s",
+				key, exitErr.ExitCode(), strings.TrimSpace(stderr.String()))
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("git config --global --get %s: %w", key, err)
+	}
 	v := strings.TrimSpace(stdout.String())
 	if v == "" {
 		return "", fmt.Errorf("git global %s is not set; run `git config --global %s <value>`", key, key)
