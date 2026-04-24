@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -158,8 +159,12 @@ func TestActiveHost_LoadMalformedReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "uistate") {
 		t.Errorf("error = %v; want one mentioning uistate", err)
 	}
-	// Sanity: the underlying error chain should be a parse failure.
-	if errors.Is(err, errors.New("nope")) {
-		t.Error("errors.Is matched a fresh sentinel; chain is suspicious")
+	// Sanity: the underlying error chain should be a JSON parse
+	// failure, not just any wrapped error. Asserts via errors.As
+	// against *json.SyntaxError so a future refactor that swallows
+	// the parse error (e.g. a fallback path) trips this test.
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Errorf("error chain missing *json.SyntaxError: %v", err)
 	}
 }
