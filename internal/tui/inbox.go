@@ -102,6 +102,10 @@ type InboxModel struct {
 	showCredModal bool
 	credModal     credentialModalModel
 
+	// Transient bottom-anchored toast (lipgloss compositor overlay,
+	// does NOT consume a layout row). See toast.go.
+	toast toastModel
+
 	// Search state.
 	searching      bool                // true when the search bar is active
 	searchInput    textinput.Model     // text input for search queries
@@ -359,6 +363,15 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.autoRefreshCmd()
 	}
 
+	// Toast TTL expiry. Routed early so any screen (inbox or session)
+	// can let a stale toast clear itself without interfering with the
+	// rest of Update. HandleClear is gen-aware so a stale tick is a
+	// no-op.
+	if msg, ok := msg.(toastClearMsg); ok {
+		m.toast.HandleClear(msg)
+		return m, nil
+	}
+
 	// Detect Kitty keyboard protocol support. Bubble Tea sends this once
 	// after startup when the View requests ReportEventTypes.
 	if msg, ok := msg.(tea.KeyboardEnhancementsMsg); ok {
@@ -515,7 +528,8 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		// Refresh branches so any CommitsAhead/metadata updates land
 		// (e.g. a "now in sync with remote" indicator once we add one).
-		return m, m.sidebar.loadBranches()
+		toastCmd := m.toast.Show("Pushed "+msg.branch, toastSuccess)
+		return m, tea.Batch(m.sidebar.loadBranches(), toastCmd)
 
 	case nativeCLIReturnMsg:
 		// User returned from native CLI — refresh inbox to pick up any
@@ -1446,6 +1460,13 @@ func (m *InboxModel) View() tea.View {
 	// Overlay Kitty keyboard warning if shown.
 	if m.showKittyWarning {
 		content = m.overlayKittyWarning(content)
+	}
+
+	// Toast is last so it floats above every other overlay. Rendered
+	// via lipgloss compositor (see overlayBottomRight) so it does NOT
+	// consume a layout row — the underlying view is untouched.
+	if toast := m.toast.Render(m.width); toast != "" {
+		content = overlayBottomRight(content, toast, m.width, m.height)
 	}
 
 	v := newVoiceEnabledView(content)
