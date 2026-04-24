@@ -13,11 +13,15 @@ import (
 // preference order. The first non-empty value wins.
 //
 // We intentionally do NOT consult provider-agnostic envs like
-// `GIT_TOKEN` — they would leak a github PAT to a gitlab endpoint.
+// `GIT_TOKEN` — they would leak a github PAT to an unrelated host.
+//
+// GitHub is the only officially-supported provider for now. Other
+// providers (GitLab, Bitbucket, self-hosted) need a richer credential
+// model than this discoverer offers — Bitbucket app passwords reject
+// a synthetic basic-auth username, GitLab/self-hosted users may want
+// SSH keys instead of PATs, etc. Adding them later is intentional.
 var envProviderTokens = map[string][]string{
-	"github.com":    {"GH_TOKEN", "GITHUB_TOKEN"},
-	"gitlab.com":    {"GITLAB_TOKEN", "GL_TOKEN"},
-	"bitbucket.org": {"BITBUCKET_TOKEN"},
+	"github.com": {"GH_TOKEN", "GITHUB_TOKEN"},
 }
 
 // clankEnvPrefix is the universal override. CLANK_GIT_TOKEN_<HOST>
@@ -28,9 +32,9 @@ var envProviderTokens = map[string][]string{
 const clankEnvPrefix = "CLANK_GIT_TOKEN_"
 
 // gitTokenUsername is the conventional username for HTTPS-basic auth
-// when the password is actually a token. github, gitlab, and bitbucket
-// all accept "x-access-token" (or any non-empty username) as the basic
-// pair, so we standardise on it across providers.
+// when the password is actually a token. GitHub accepts any non-empty
+// username when the password is a PAT or GITHUB_TOKEN — GitHub Actions
+// itself uses "x-access-token". We standardise on the same value.
 const gitTokenUsername = "x-access-token"
 
 // EnvDiscoverer reads tokens from environment variables. Stateless;
