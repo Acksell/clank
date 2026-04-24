@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"log"
@@ -94,6 +95,12 @@ type InboxModel struct {
 	// Merge overlay state.
 	showMerge    bool
 	mergeOverlay mergeOverlayModel
+
+	// Credential modal state — opened when a push fails with
+	// host.PushAuthRequiredError after the hub-side single-retry
+	// has been exhausted. See internal/tui/credentialmodal.go.
+	showCredModal bool
+	credModal     credentialModalModel
 
 	// Search state.
 	searching      bool                // true when the search bar is active
@@ -377,7 +384,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// handling so voice works on both inbox and session screens.
 	// Skip when the sidebar is in text-input mode (creating a new branch)
 	// so that space goes to the text input instead.
-	voiceInterceptOK := !(m.pane == paneSidebar && m.sidebar.creating) && !m.showMerge
+	voiceInterceptOK := !(m.pane == paneSidebar && m.sidebar.creating) && !m.showMerge && !m.showCredModal
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if voiceInterceptOK {
@@ -433,6 +440,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMerge(msg)
 	}
 
+	// If credential modal is open, delegate.
+	if m.showCredModal {
+		return m.updateCredModal(msg)
+	}
+
 	// If menu is open, delegate to menu.
 	if m.showMenu {
 		return m.updateMenu(msg)
@@ -451,6 +463,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
 		if m.showMerge {
 			m.mergeOverlay.SetSize(m.width, m.height)
+		}
+		if m.showCredModal {
+			m.credModal.SetSize(m.width, m.height)
 		}
 		return m, nil
 
@@ -475,6 +490,25 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pushResultMsg:
 		if msg.err != nil {
+			// Auth-required surfaces a modal so the user can paste
+			// a token (or fix `gh auth` and retry) without having
+			// to drop to a shell. errors.As (not Is) because we
+			// need the structured fields — host + endpoint — to
+			// route the save and to render the prompt.
+			var authErr *host.PushAuthRequiredError
+			if errors.As(msg.err, &authErr) {
+				m.credModal = newCredentialModal(
+					m.client,
+					authErr.Hostname,
+					m.sidebar.GitRefForActiveHost(),
+					msg.branch,
+					authErr.EndpointHost,
+					msg.err,
+				)
+				m.credModal.SetSize(m.width, m.height)
+				m.showCredModal = true
+				return m, nil
+			}
 			m.err = msg.err
 			return m, nil
 		}
@@ -635,6 +669,37 @@ func (m *InboxModel) updateMerge(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	default:
 		cmd := m.mergeOverlay.Update(msg)
+		return m, cmd
+	}
+}
+
+// updateCredModal handles messages while the credential modal is
+// open. The modal is fully self-contained for input handling; the
+// inbox only reacts to the result envelope (close + maybe re-issue
+// the push that triggered the modal).
+func (m *InboxModel) updateCredModal(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case credentialModalResultMsg:
+		m.showCredModal = false
+		if msg.saveErr != nil {
+			m.err = msg.saveErr
+			return m, nil
+		}
+		if msg.retry {
+			m.err = nil
+			// Capture the retry context BEFORE clearing the
+			// modal so we don't depend on its zero value. The
+			// branch/host were already validated when the modal
+			// was opened, so we don't re-check sidebar state.
+			branch := m.credModal.branch
+			hostname := m.credModal.hostname
+			gitRef := m.credModal.gitRef
+			return m, pushBranchCmd(m.client, hostname, gitRef, branch)
+		}
+		return m, nil
+
+	default:
+		cmd := m.credModal.Update(msg)
 		return m, cmd
 	}
 }
@@ -1363,6 +1428,14 @@ func (m *InboxModel) View() tea.View {
 	// Overlay merge dialog if open.
 	if m.showMerge {
 		content = overlayCenter(content, m.mergeOverlay.View(), m.width, m.height)
+	}
+
+	// Overlay credential modal if open. Rendered after merge so a
+	// merge that triggered an auth error stays visually anchored to
+	// the merge dialog beneath; in practice they're mutually
+	// exclusive (only [p]ush goes through credentials today).
+	if m.showCredModal {
+		content = overlayCenter(content, m.credModal.View(), m.width, m.height)
 	}
 
 	// Overlay help if open.
