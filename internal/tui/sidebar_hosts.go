@@ -188,12 +188,20 @@ func (h *hostsSection) renderRow(row hostRow, active bool, selected bool, maxWid
 	}
 
 	// Truncate name if needed so prefix+mark+name+hint fits maxWidth.
-	available := maxWidth - len(prefix) - 2 - 1 - lipgloss.Width(hint) - 1
+	// All measurements use display width (lipgloss.Width) — using
+	// len() on prefix would double-count the ANSI escape bytes that
+	// the lipgloss-styled "> " prefix carries.
+	available := maxWidth - lipgloss.Width(prefix) - 2 - 1 - lipgloss.Width(hint) - 1
 	if available < 4 {
 		available = 4
 	}
-	if len(name) > available {
-		name = name[:available-1] + "…"
+	if lipgloss.Width(name) > available {
+		// Slice by runes to avoid splitting a multi-byte character
+		// mid-codepoint (would render as a replacement glyph).
+		runes := []rune(name)
+		if available-1 < len(runes) {
+			name = string(runes[:available-1]) + "…"
+		}
 	}
 
 	line := prefix + mark + " " + nameStyle.Render(name)

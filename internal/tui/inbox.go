@@ -1753,7 +1753,11 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.cursorOnHost() {
 			cmd, err := m.sidebar.activateSelectedHost()
 			if err != nil {
-				m.err = fmt.Errorf("save active host: %w", err)
+				// Preserve the underlying error message; "save active
+				// host" obscured what actually failed (uistate write,
+				// host not registered, etc.). The wrap prefix is now
+				// the user-facing action name only.
+				m.err = fmt.Errorf("activate host: %w", err)
 			}
 			return m, cmd
 		}

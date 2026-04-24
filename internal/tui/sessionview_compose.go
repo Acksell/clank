@@ -31,6 +31,30 @@ type sessionCreateResultMsg struct {
 	err       error
 }
 
+// buildGitRef encodes the wire policy for composing a GitRef from a
+// laptop-side project. Single source of truth shared by the
+// constructor (eager pre-launch ref for prefetch) and launchSession
+// (final wire payload). Policy:
+//   - LocalPath is set only when the host can read the laptop FS
+//     (host.HostLocal). Remote hosts ignore it and we'd otherwise be
+//     leaking misleading wire data.
+//   - Endpoint is populated only if `origin` is a parseable URL. A
+//     half-formed Endpoint is worse than no Endpoint — the host's
+//     auto-clone path keys on it.
+//   - worktreeBranch is opaque here; callers pass "" pre-launch.
+func buildGitRef(projectDir string, hostname host.Hostname, worktreeBranch string) agent.GitRef {
+	ref := agent.GitRef{WorktreeBranch: worktreeBranch}
+	if hostname == host.HostLocal {
+		ref.LocalPath = projectDir
+	}
+	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
+		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
+			ref.Endpoint = ep
+		}
+	}
+	return ref
+}
+
 // NewSessionViewComposing creates a SessionViewModel in composing mode.
 // No daemon session exists yet — the user writes their first prompt here.
 //
@@ -54,20 +78,6 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string, hostna
 	if hostname == "" {
 		hostname = host.HostLocal
 	}
-	// LocalPath is only meaningful when the host can read the laptop's
-	// filesystem. For remote hosts we send only Endpoint and let the
-	// host's auto-clone path take over.
-	ref := agent.GitRef{}
-	if hostname == host.HostLocal {
-		ref.LocalPath = projectDir
-	}
-	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil {
-		// On parse error refuse to attach a half-formed ref (TUI policy:
-		// don't propagate unparseable refs across the wire).
-		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
-			ref.Endpoint = ep
-		}
-	}
 	return &SessionViewModel{
 		client:      client,
 		composing:   true,
@@ -75,7 +85,7 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string, hostna
 		backend:     agent.BackendOpenCode,
 		projectDir:  projectDir,
 		hostname:    hostname,
-		gitRef:      ref,
+		gitRef:      buildGitRef(projectDir, hostname, ""),
 		follow:      true,
 		input:       ta,
 		spinner:     sp,
@@ -230,20 +240,8 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	m.err = nil
 	m.submitting = true
 
-	// LocalPath only when host is co-located with the laptop FS.
-	// Remote hosts ignore (and can't read) it; sending it would just
-	// be misleading wire data.
-	gitRef := agent.GitRef{
-		WorktreeBranch: m.worktreeBranch,
-	}
-	if m.hostname == host.HostLocal {
-		gitRef.LocalPath = m.projectDir
-	}
-	if remoteURL, err := git.RemoteURL(m.projectDir, "origin"); err == nil {
-		if ep, perr := gitendpoint.Parse(remoteURL); perr == nil {
-			gitRef.Endpoint = ep
-		}
-	}
+	// Single source of truth for ref construction (see buildGitRef).
+	gitRef := buildGitRef(m.projectDir, m.hostname, m.worktreeBranch)
 
 	req := agent.StartRequest{
 		Backend:  m.backend,
