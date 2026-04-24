@@ -50,6 +50,7 @@ func (l *httptestLauncher) Stop(ctx context.Context) error {
 func TestProvisionHost_RegistersAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	s := hub.New()
+	s.IdentityProvider = func() (string, string, error) { return "Alice", "a@example.com", nil }
 	defer s.Stop()
 
 	launcher := newHTTPTestLauncher(t)
@@ -122,6 +123,7 @@ func (f failingLauncher) Launch(ctx context.Context) (*hostclient.HTTP, hub.Remo
 func TestStop_TearsDownProvisionedHosts(t *testing.T) {
 	t.Parallel()
 	s := hub.New()
+	s.IdentityProvider = func() (string, string, error) { return "Alice", "a@example.com", nil }
 
 	launcher := newHTTPTestLauncher(t)
 	if _, err := s.RegisterHostLauncher("daytona", launcher); err != nil {
@@ -161,5 +163,63 @@ func TestRegisterHostLauncher_Validation(t *testing.T) {
 	}
 	if _, err := s.RegisterHostLauncher("daytona", nil); err == nil {
 		t.Error("nil launcher: want error")
+	}
+}
+
+// TestProvisionHost_PropagatesIdentity verifies the laptop user's git
+// identity is pushed to the provisioned host so the agent's commits in
+// a fresh sandbox don't fail with "Please tell me who you are".
+func TestProvisionHost_PropagatesIdentity(t *testing.T) {
+	t.Parallel()
+	s := hub.New()
+	defer s.Stop()
+
+	launcher := newHTTPTestLauncher(t)
+	if _, err := s.RegisterHostLauncher("daytona", launcher); err != nil {
+		t.Fatalf("RegisterHostLauncher: %v", err)
+	}
+	s.IdentityProvider = func() (string, string, error) {
+		return "Alice", "alice@example.com", nil
+	}
+
+	if _, err := s.ProvisionHost(context.Background(), "daytona"); err != nil {
+		t.Fatalf("ProvisionHost: %v", err)
+	}
+
+	// Inspect the host service the launcher exposed: SetIdentity
+	// should have been called on it.
+	gotName, gotEmail := hub.ExportHostIdentity(launcher.svc)
+	if gotName != "Alice" || gotEmail != "alice@example.com" {
+		t.Fatalf("identity on host = (%q, %q), want (Alice, alice@example.com)", gotName, gotEmail)
+	}
+}
+
+// TestProvisionHost_HardFailsWithoutIdentity verifies the hub refuses
+// to provision a remote host when the laptop has no global git
+// identity, and tears down the launcher to avoid leaking the resource.
+func TestProvisionHost_HardFailsWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	s := hub.New()
+	defer s.Stop()
+
+	launcher := newHTTPTestLauncher(t)
+	if _, err := s.RegisterHostLauncher("daytona", launcher); err != nil {
+		t.Fatalf("RegisterHostLauncher: %v", err)
+	}
+	wantErr := errors.New("git global user.name is not set")
+	s.IdentityProvider = func() (string, string, error) { return "", "", wantErr }
+
+	_, err := s.ProvisionHost(context.Background(), "daytona")
+	if err == nil {
+		t.Fatal("ProvisionHost without identity returned nil; want error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v; want wrap of %v", err, wantErr)
+	}
+	if hs := s.Hosts(); len(hs) != 0 {
+		t.Errorf("host registered despite identity failure: %v", hs)
+	}
+	if got := launcher.stopped.Load(); got != 1 {
+		t.Errorf("launcher Stop called %d times after failed provision; want 1", got)
 	}
 }

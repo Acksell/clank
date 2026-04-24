@@ -102,6 +102,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /agents", m.handleListAgents)
 	mx.HandleFunc("POST /models", m.handleListModels)
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)
+	mx.HandleFunc("POST /identity", m.handleSetIdentity)
 
 	// Worktree/branch ops. The repo is identified by GitRef in the
 	// request body — the host repo registry was removed in §7.8.

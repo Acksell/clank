@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 	"github.com/acksell/clank/internal/store"
@@ -99,6 +100,13 @@ type Service struct {
 	// Removed in Phase 2 once tests get a `WithHost` constructor option.
 	BackendManagers map[agent.BackendType]agent.BackendManager
 
+	// IdentityProvider returns the (name, email) the hub propagates
+	// to remote hosts in ProvisionHost. Defaults to
+	// git.LocalGlobalIdentity (the laptop user's `git config
+	// --global` values). Tests override this so they don't depend on
+	// the test machine's environment.
+	IdentityProvider func() (name, email string, err error)
+
 	// Store is the optional SQLite persistence layer. When non-nil, session
 	// metadata is written through on every mutation and loaded on startup.
 	// When nil (e.g. in tests), the daemon operates purely in-memory.
@@ -140,6 +148,7 @@ func New() *Service {
 		log:                          log.New(os.Stderr, "[clank-hub] ", log.LstdFlags|log.Lmsgprefix),
 		BackendManagers:              make(map[agent.BackendType]agent.BackendManager),
 		primaryAgentsRefreshInFlight: make(map[string]bool),
+		IdentityProvider:             git.LocalGlobalIdentity,
 	}
 }
 

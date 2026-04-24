@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
@@ -109,6 +110,23 @@ func (s *Service) ProvisionHost(ctx context.Context, kind string) (host.Hostname
 		return "", fmt.Errorf("hub.ProvisionHost(%s): register: %w", kind, err)
 	}
 
+	// Propagate the laptop user's git identity so commits the agent
+	// makes inside the freshly-provisioned sandbox carry the user's
+	// name/email. Without this `git commit` in a Daytona sandbox
+	// fails with "Please tell me who you are". Hard-fail when the
+	// laptop has no global identity rather than synthesize a
+	// placeholder — silently mis-attributing commits is worse than
+	// failing loudly.
+	name, email, idErr := s.IdentityProvider()
+	if idErr != nil {
+		s.tearDownProvisioned(hostname, handle)
+		return "", fmt.Errorf("hub.ProvisionHost(%s): %w", kind, idErr)
+	}
+	if err := client.SetIdentity(ctx, agent.GitIdentity{Name: name, Email: email}); err != nil {
+		s.tearDownProvisioned(hostname, handle)
+		return "", fmt.Errorf("hub.ProvisionHost(%s): set identity: %w", kind, err)
+	}
+
 	s.remoteHandlesMu.Lock()
 	if s.remoteHandles == nil {
 		s.remoteHandles = make(map[host.Hostname]RemoteHostHandle)
@@ -116,6 +134,17 @@ func (s *Service) ProvisionHost(ctx context.Context, kind string) (host.Hostname
 	s.remoteHandles[hostname] = handle
 	s.remoteHandlesMu.Unlock()
 	return hostname, nil
+}
+
+// tearDownProvisioned undoes a partial ProvisionHost when a post-
+// RegisterHost step (SetIdentity, future setup) fails. Unregisters
+// the host from the catalog and stops the launcher handle so the
+// remote resource doesn't leak.
+func (s *Service) tearDownProvisioned(hostname host.Hostname, handle RemoteHostHandle) {
+	s.UnregisterHost(hostname)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = handle.Stop(stopCtx)
 }
 
 // stopRemoteHandles tears down every launcher-provisioned host. Called

@@ -59,6 +59,49 @@ type Service struct {
 	// past the os.Stat-not-exist check would otherwise both invoke
 	// `git clone` into the same target dir; the loser fails noisily.
 	cloneSF singleflight.Group
+
+	// identity is the (name, email) the hub installed via SetIdentity
+	// for use as committer/author on this host. Nil for the local
+	// host (which inherits the laptop user's ~/.gitconfig); set on
+	// every remote host the hub provisions so a fresh sandbox can
+	// produce commits without manual `git config` plumbing.
+	identityMu sync.RWMutex
+	identity   *agent.GitIdentity
+}
+
+// SetIdentity records the (name, email) the hub wants this host to use
+// as committer/author. Idempotent; later calls overwrite earlier ones.
+// workDirFor seeds the value into each repo's --local config on first
+// use. Validation happens at the mux boundary, not here, because
+// in-process callers (tests) may legitimately want to set then
+// overwrite during setup.
+func (s *Service) SetIdentity(id agent.GitIdentity) {
+	s.identityMu.Lock()
+	defer s.identityMu.Unlock()
+	s.identity = &id
+}
+
+// currentIdentity returns a copy of the seeded identity, or nil when
+// the hub hasn't called SetIdentity. Returning a copy keeps the
+// pointer-vs-value race obvious to callers.
+func (s *Service) currentIdentity() *agent.GitIdentity {
+	s.identityMu.RLock()
+	defer s.identityMu.RUnlock()
+	if s.identity == nil {
+		return nil
+	}
+	cp := *s.identity
+	return &cp
+}
+
+// Identity returns the seeded git identity (or the zero value when
+// none was seeded). Exposed so callers and tests can inspect what the
+// hub propagated; production wiring uses currentIdentity internally.
+func (s *Service) Identity() agent.GitIdentity {
+	if id := s.currentIdentity(); id != nil {
+		return *id
+	}
+	return agent.GitIdentity{}
 }
 
 // Options configures a Service at construction time.
@@ -425,11 +468,24 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef, cred agent.G
 	}
 
 	if ref.WorktreeBranch != "" {
+		// Seed before resolving the worktree so a brand-new worktree
+		// inherits the identity (worktrees share .git/config with
+		// their main repo). Idempotent — runs on every workDirFor.
+		if id := s.currentIdentity(); id != nil {
+			if err := git.SeedIdentityIfMissing(base, id.Name, id.Email); err != nil {
+				return "", fmt.Errorf("seed git identity in %s: %w", base, err)
+			}
+		}
 		wt, err := s.resolveWorktree(ctx, base, ref.WorktreeBranch)
 		if err != nil {
 			return "", fmt.Errorf("resolve worktree for branch %q: %w", ref.WorktreeBranch, err)
 		}
 		return wt.WorktreeDir, nil
+	}
+	if id := s.currentIdentity(); id != nil {
+		if err := git.SeedIdentityIfMissing(base, id.Name, id.Email); err != nil {
+			return "", fmt.Errorf("seed git identity in %s: %w", base, err)
+		}
 	}
 	return base, nil
 }
