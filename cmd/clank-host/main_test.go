@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -82,6 +83,7 @@ func TestRun_PublicBindRequiresFlag(t *testing.T) {
 // preview-URL proxy. AGENTS.md: real integration over real sockets,
 // no mocks.
 func TestClankHost_TCPListenerServes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires building clank-host binary")
 	}
@@ -124,6 +126,7 @@ func TestClankHost_TCPListenerServes(t *testing.T) {
 // terminates the process with a non-zero exit, not just returns an
 // error from run().
 func TestClankHost_PublicBindExitsNonZero(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires building clank-host binary")
 	}
@@ -169,11 +172,18 @@ func pickFreePort(t *testing.T) string {
 }
 
 func waitForHTTP(ctx context.Context, url string) error {
-	deadline := time.Now().Add(10 * time.Second)
+	// Honor only the caller's context. We previously had a redundant
+	// 10s internal deadline that would race with ctx — easy to get
+	// confusing "timed out" errors when the caller's ctx was actually
+	// the limiting clock. Caller passes a context.WithTimeout, so
+	// they own the budget.
 	var lastErr error
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr == nil {
+				return err
+			}
+			return fmt.Errorf("%w (last attempt: %v)", err, lastErr)
 		}
 		resp, err := http.Get(url)
 		if err == nil {
@@ -185,10 +195,10 @@ func waitForHTTP(ctx context.Context, url string) error {
 		} else {
 			lastErr = err
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("timed out without a concrete error")
-	}
-	return lastErr
 }

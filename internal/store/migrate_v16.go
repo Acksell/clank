@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/gitendpoint"
 )
 
@@ -87,6 +88,7 @@ func (s *Store) backfillSessionEndpoints() error {
 
 	type row struct {
 		id, url string
+		ep      *agent.GitEndpoint
 	}
 	var toUpdate []row
 	var failures []string
@@ -95,10 +97,12 @@ func (s *Store) backfillSessionEndpoints() error {
 		if err := rows.Scan(&r.id, &r.url); err != nil {
 			return fmt.Errorf("scan session row: %w", err)
 		}
-		if _, perr := gitendpoint.Parse(r.url); perr != nil {
+		ep, perr := gitendpoint.Parse(r.url)
+		if perr != nil {
 			failures = append(failures, fmt.Sprintf("  session %s: %q (%v)", r.id, r.url, perr))
 			continue
 		}
+		r.ep = ep
 		toUpdate = append(toUpdate, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -113,7 +117,7 @@ func (s *Store) backfillSessionEndpoints() error {
 	// Update outside the read iteration (single-conn pool — re-entrant
 	// queries on the same connection are unsupported).
 	for _, r := range toUpdate {
-		ep, _ := gitendpoint.Parse(r.url)
+		ep := r.ep
 		if _, err := s.db.Exec(`
 			UPDATE sessions SET
 				git_endpoint_protocol = ?,

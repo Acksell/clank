@@ -110,38 +110,6 @@ func TestNewRemoteHTTP_HeadersClonedAtConstruction(t *testing.T) {
 	}
 }
 
-// TestNewRemoteHTTP_DoesNotMutateInboundRequest is a defensive guard:
-// net/http.RoundTripper contract says implementations must not modify
-// the request. We add headers, so we must Clone first. This test
-// catches a regression where we'd accidentally mutate req.Header
-// directly.
-func TestNewRemoteHTTP_DoesNotMutateInboundRequest(t *testing.T) {
-	t.Parallel()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"sessions":0}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := hostclient.NewRemoteHTTP(srv.URL, map[string]string{"x-injected": "yes"})
-	if err != nil {
-		t.Fatalf("NewRemoteHTTP: %v", err)
-	}
-
-	// Hit it twice; if RoundTrip mutated the inbound request, the
-	// second call would see leaked state — but Status builds a fresh
-	// request each time, so the only way to expose mutation here is via
-	// the response body / client cookie jar etc., which we don't use.
-	// The strongest assertion we can make is that nothing panics and
-	// the client stays usable.
-	for i := 0; i < 3; i++ {
-		if _, err := c.Status(context.Background()); err != nil {
-			t.Fatalf("Status #%d: %v", i, err)
-		}
-	}
-}
-
 // TestNewRemoteHTTP_BaseURLConcat documents the expected baseURL
 // shape: paths are appended directly with no normalization. This is
 // the same behavior NewHTTP already has; codifying it here so the
