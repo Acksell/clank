@@ -437,6 +437,37 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Window resize must propagate to every layer regardless of
+	// which modal/screen owns input. If we let it fall through to
+	// the modal-delegation block below, an open modal would swallow
+	// the resize and the inbox/sidebar/modal layouts would all stay
+	// stuck at the pre-resize dimensions until the modal closed.
+	// (CodeRabbit PR #3 inline 3137099839.)
+	if msg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = msg.Width
+		m.height = msg.Height
+		m.searchInput.SetWidth(m.sessionPaneWidth())
+		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+		if m.showMerge {
+			m.mergeOverlay.SetSize(m.width, m.height)
+		}
+		if m.showCredModal {
+			m.credModal.SetSize(m.width, m.height)
+		}
+		if m.showPushConfirm {
+			m.pushConfirm.SetSize(m.width, m.height)
+		}
+		// Forward to session view too so its layout updates while
+		// the user is inside a session and we still receive a
+		// resize at the inbox level.
+		if m.screen == screenSession && m.sessionView != nil {
+			model, cmd := m.sessionView.Update(msg)
+			m.sessionView = model.(*SessionViewModel)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	// If we're in session detail view (or composing), delegate.
 	if m.screen == screenSession && m.sessionView != nil {
 		return m.updateSessionView(msg)
@@ -484,22 +515,6 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.searchInput.SetWidth(m.sessionPaneWidth())
-		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
-		if m.showMerge {
-			m.mergeOverlay.SetSize(m.width, m.height)
-		}
-		if m.showCredModal {
-			m.credModal.SetSize(m.width, m.height)
-		}
-		if m.showPushConfirm {
-			m.pushConfirm.SetSize(m.width, m.height)
-		}
-		return m, nil
-
 	case branchLoadedMsg, branchWorktreeCreatedMsg, hostsLoadedMsg, hostProvisionedMsg:
 		cmd := m.sidebar.Update(msg)
 		return m, cmd
