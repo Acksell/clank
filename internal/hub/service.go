@@ -159,8 +159,6 @@ func (s *Service) Run(listener net.Listener, handler http.Handler) error {
 				if info.Status == agent.StatusBusy || info.Status == agent.StatusStarting || info.Status == agent.StatusDead {
 					info.Status = agent.StatusIdle
 				}
-				s.log.Printf("DEBUG load: hub_id=%s ext_id=%q backend=%q hostname=%q git_local=%q git_remote=%q title=%q status=%q",
-					info.ID, info.ExternalID, info.Backend, info.Hostname, info.GitRef.LocalPath, info.GitRef.RemoteURL, info.Title, info.Status)
 				s.sessions[info.ID] = &managedSession{info: info, backend: nil}
 			}
 			s.mu.Unlock()
