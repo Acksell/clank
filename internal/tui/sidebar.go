@@ -166,7 +166,7 @@ func (m *SidebarModel) CursorOnSettings() bool {
 // row; idx>=1 means branches[idx-1]. For sectionSettings, idx is
 // always 0 (single row).
 func (m *SidebarModel) cursorSection() (sidebarSection, int) {
-	if m.cursor == m.settingsCursorIndex() {
+	if m.cursor >= m.settingsCursorIndex() {
 		return sectionSettings, 0
 	}
 	return sectionWorktrees, m.cursor

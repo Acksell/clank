@@ -104,8 +104,9 @@ func TestSettingsView_EscEmitsCloseMsg(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected cmd on esc")
 	}
-	if _, ok := cmd().(settingsCloseMsg); !ok {
-		t.Errorf("expected settingsCloseMsg, got %T", cmd())
+	msg := cmd()
+	if _, ok := msg.(settingsCloseMsg); !ok {
+		t.Errorf("expected settingsCloseMsg, got %T", msg)
 	}
 }
 
@@ -117,8 +118,9 @@ func TestSettingsView_LeftEmitsFocusSidebarMsg(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected cmd on left")
 	}
-	if _, ok := cmd().(settingsFocusSidebarMsg); !ok {
-		t.Errorf("expected settingsFocusSidebarMsg, got %T", cmd())
+	msg := cmd()
+	if _, ok := msg.(settingsFocusSidebarMsg); !ok {
+		t.Errorf("expected settingsFocusSidebarMsg, got %T", msg)
 	}
 }
 
