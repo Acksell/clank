@@ -104,51 +104,29 @@ func (b *OpenCodeBackend) Open(ctx context.Context) error {
 	return nil
 }
 
-// OpenAndSend opens the session and dispatches the initial prompt. The
-// prompt dispatch is async; this returns once the SSE listener is up
-// and the prompt goroutine has been scheduled. See runPrompt for the
-// async-dispatch rationale.
+// OpenAndSend opens the session and dispatches the initial prompt.
+// Send is fire-and-forget (see Send), so this returns once the SSE
+// listener is up and the prompt goroutine has been scheduled.
 func (b *OpenCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
 	if err := b.Open(ctx); err != nil {
 		return err
 	}
-	return b.sendAsync(opts)
+	return b.Send(ctx, opts)
 }
 
-// Send dispatches a prompt to an already-Open session. Blocks until the
-// SDK's Session.Prompt call completes (full LLM turn).
+// Send dispatches a prompt to an already-Open session. Fire-and-forget:
+// Session.Prompt is dispatched on b.ctx (not the caller's ctx) in a
+// background goroutine so the prompt survives the HTTP request lifetime
+// (it is cancelled by Stop()). Errors surface as EventError +
+// StatusError, mirroring the Claude backend's structurally async Query.
 func (b *OpenCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
-	if b.sessionID == "" {
+	if b.SessionID() == "" {
 		return fmt.Errorf("session not open")
 	}
 
-	// Mark as busy BEFORE sending, so the TUI shows the correct status.
-	b.setStatus(StatusBusy)
-
-	params := b.buildPromptParams(opts)
-	_, err := b.client.Session.Prompt(ctx, b.sessionID, params)
-	if err != nil && isConnectionError(err) && b.resolver != nil {
-		if _, resolveErr := b.refreshServerURL(); resolveErr == nil {
-			_, err = b.client.Session.Prompt(ctx, b.sessionID, params)
-		}
-	}
-	if err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("send prompt: %w", err)
-	}
-	return nil
-}
-
-// sendAsync schedules Session.Prompt in a background goroutine using
-// b.ctx (not the caller's ctx) so the prompt survives the /open-and-send
-// HTTP request lifetime; it is cancelled by Stop(). Returning early
-// lets the hub observe SessionID() immediately and persist ExternalID,
-// which closes the race window where a concurrent discover would create
-// a duplicate session row. See TestDiscoverWhileSessionPromptInflight.
-func (b *OpenCodeBackend) sendAsync(opts SendMessageOpts) error {
 	b.setStatus(StatusBusy)
 	params := b.buildPromptParams(opts)
-	sid := b.sessionID
+	sid := b.SessionID()
 	go b.runPrompt(sid, params)
 	return nil
 }
@@ -175,8 +153,8 @@ func (b *OpenCodeBackend) buildPromptParams(opts SendMessageOpts) opencode.Sessi
 }
 
 // runPrompt dispatches Session.Prompt and translates errors into a status
-// transition + EventError. Used by Start to keep the prompt async without
-// losing failure visibility.
+// transition + EventError. Used by Send to keep the prompt fire-and-forget
+// without losing failure visibility.
 func (b *OpenCodeBackend) runPrompt(sid string, params opencode.SessionPromptParams) {
 	_, err := b.client.Session.Prompt(b.ctx, sid, params)
 	if err != nil && isConnectionError(err) && b.resolver != nil {
