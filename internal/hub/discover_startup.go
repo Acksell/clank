@@ -78,9 +78,7 @@ func (s *Service) runStartupDiscover(ctx context.Context) {
 					s.log.Printf("startup-discover: discover %s on %s (seed=%q): %v", bi.Name, hostname, seedDir, err)
 					continue
 				}
-				s.log.Printf("DEBUG startup-discover: host=%s backend=%s seed=%q → %d snapshots", hostname, bi.Name, seedDir, len(snaps))
 				for _, snap := range snaps {
-					s.log.Printf("DEBUG startup-discover snap: ext_id=%s backend=%q dir=%q title=%q", snap.ID, snap.Backend, snap.Directory, snap.Title)
 					if snap.ID == "" {
 						continue
 					}
