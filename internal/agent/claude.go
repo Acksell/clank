@@ -182,6 +182,13 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 // when creating the session, so emitting one here would duplicate it in
 // the TUI history. Follow-up prompts go through Send and DO emit the
 // user message because there's no other place that records them.
+//
+// Query is dispatched on b.ctx (not the caller's ctx) so the prompt is
+// tied to backend lifetime, not request lifetime, mirroring OpenCode's
+// Send. The actual LLM response streams via receiveLoop on b.ctx, so
+// honoring the caller's ctx for the synchronous handoff would only
+// surface "cancel mid-enqueue" as a spurious StatusError without
+// stopping the work that has already started.
 func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
 	// Mark Busy before Open so Open's "Starting → Idle" conditional
 	// is bypassed on the create path; we go directly Starting → Busy.
@@ -205,7 +212,8 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 	return nil
 }
 
-// Send dispatches a prompt to an already-Open session.
+// Send dispatches a prompt to an already-Open session. Query runs on
+// b.ctx (not the caller's ctx) — see OpenAndSend's doc for the rationale.
 func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
 	client := b.client
