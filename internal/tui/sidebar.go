@@ -350,7 +350,13 @@ func (m *SidebarModel) View() string {
 		w = sidebarWidth
 	}
 
-	// Content width is sidebar width minus border (2) minus padding (2).
+	// Inner content width available after the border. lipgloss v2 treats
+	// the style's Width as the total rendered width (border included), so
+	// we subtract 2 here and pass the full `w` as the outer Width below.
+	// A further -2 buffer is kept so lines never render exactly up to the
+	// right edge — that margin is what prevents wrap from tiny rounding or
+	// emoji-width mismatches (the ⚙ in the footer can be double-width in
+	// some fonts).
 	contentWidth := w - 4
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -426,7 +432,7 @@ func (m *SidebarModel) View() string {
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Width(contentWidth).
+		Width(w - 2).
 		Height(m.listHeight())
 
 	return style.Render(content)

@@ -72,7 +72,7 @@ type settingsView struct {
 func newSettingsView(currentColorScheme string) settingsView {
 	display := currentColorScheme
 	if display == "" {
-		display = "default"
+		display = builtInSchemes[0].Name
 	}
 	return settingsView{
 		entries: []settingsEntry{
@@ -102,7 +102,7 @@ func (s *settingsView) SetFocused(f bool) {
 // sync without rebuilding the view.
 func (s *settingsView) SetColorSchemeValue(name string) {
 	if name == "" {
-		name = "default"
+		name = builtInSchemes[0].Name
 	}
 	for i := range s.entries {
 		if s.entries[i].kind == settingsEntryColorScheme {

@@ -30,7 +30,7 @@ func TestThemePicker_StartsOnCurrentScheme(t *testing.T) {
 func TestThemePicker_DownArrowAppliesPreview(t *testing.T) {
 	t.Cleanup(func() { applyColorScheme(builtInSchemes[0]) })
 
-	p := newThemePicker("default") // starts at index 0
+	p := newThemePicker(builtInSchemes[0].Name) // starts at index 0
 	// After open the default scheme is applied.
 
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -46,7 +46,7 @@ func TestThemePicker_DownArrowAppliesPreview(t *testing.T) {
 func TestThemePicker_EnterReturnsResult(t *testing.T) {
 	t.Cleanup(func() { applyColorScheme(builtInSchemes[0]) })
 
-	p := newThemePicker("default")
+	p := newThemePicker(builtInSchemes[0].Name)
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	hovered := builtInSchemes[p.cursor].Name
 

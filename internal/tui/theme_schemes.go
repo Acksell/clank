@@ -9,16 +9,16 @@ package tui
 
 var builtInSchemes = []ColorScheme{
 	{
-		Name:      "default",
-		Primary:   "#7C3AED", // violet-600
-		Secondary: "#06B6D4", // cyan-500
-		Success:   "#10B981", // emerald-500
-		Warning:   "#F59E0B", // amber-500
-		Danger:    "#EF4444", // red-500
-		Muted:     "#6B7280", // gray-500
-		Text:      "#F9FAFB", // gray-50
-		Dim:       "#9CA3AF", // gray-400
-		Draft:     "#EC4899", // pink-500
+		Name:      "gruvbox-dark",
+		Primary:   "#D3869B", // purple
+		Secondary: "#83A598", // aqua
+		Success:   "#B8BB26", // green
+		Warning:   "#FABD2F", // yellow
+		Danger:    "#FB4934", // red
+		Muted:     "#7C6F64", // gray
+		Text:      "#EBDBB2", // fg
+		Dim:       "#A89984", // gray-light
+		Draft:     "#FE8019", // orange
 	},
 	{
 		Name:      "tokyo-night",
@@ -57,16 +57,16 @@ var builtInSchemes = []ColorScheme{
 		Draft:     "#FF79C6", // pink
 	},
 	{
-		Name:      "gruvbox-dark",
-		Primary:   "#D3869B", // purple
-		Secondary: "#83A598", // aqua
-		Success:   "#B8BB26", // green
-		Warning:   "#FABD2F", // yellow
-		Danger:    "#FB4934", // red
-		Muted:     "#7C6F64", // gray
-		Text:      "#EBDBB2", // fg
-		Dim:       "#A89984", // gray-light
-		Draft:     "#FE8019", // orange
+		Name:      "violet",
+		Primary:   "#7C3AED", // violet-600
+		Secondary: "#06B6D4", // cyan-500
+		Success:   "#10B981", // emerald-500
+		Warning:   "#F59E0B", // amber-500
+		Danger:    "#EF4444", // red-500
+		Muted:     "#6B7280", // gray-500
+		Text:      "#F9FAFB", // gray-50
+		Dim:       "#9CA3AF", // gray-400
+		Draft:     "#EC4899", // pink-500
 	},
 }
 

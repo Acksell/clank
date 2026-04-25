@@ -142,34 +142,43 @@ func (m themePickerModel) View() string {
 	for i := m.scroll; i < end; i++ {
 		s := m.items[i]
 
-		swatch := renderSwatch(s)
-		name := s.Name
-		indicator := ""
-		if s.Name == m.currentName {
-			indicator = "  ●"
+		// Cursor marker: always visible, independent of background color.
+		// Live-preview swaps primaryColor to match the hovered scheme, so a
+		// background-only highlight can vanish when primary ≈ text. The
+		// leading "> " in secondaryColor keeps the cursor position obvious
+		// in every scheme.
+		cursorMark := "  "
+		if i == m.cursor {
+			cursorMark = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("> ")
 		}
 
-		// Swatch is 5 colored blocks (10 cells) + a trailing space.
-		// Reserve room for swatch + indicator; the rest is the name.
+		// Persisted-scheme marker (the one saved in preferences). Shown in
+		// successColor so it stands out even when primary shifts during
+		// preview.
+		indicator := "   "
+		if s.Name == m.currentName {
+			indicator = " " + lipgloss.NewStyle().Foreground(successColor).Bold(true).Render("* ")
+		}
+
+		swatch := renderSwatch(s)
+		name := s.Name
+
 		swatchW := lipgloss.Width(swatch)
-		gap := innerWidth - swatchW - lipgloss.Width(name) - lipgloss.Width(indicator) - 1
+		gap := innerWidth - 2 /*cursorMark*/ - swatchW - lipgloss.Width(name) - 3 /*indicator*/ - 1
 		if gap < 1 {
 			gap = 1
 		}
-		row := swatch + " " + name + strings.Repeat(" ", gap) + indicator
+		row := cursorMark + swatch + " " + name + strings.Repeat(" ", gap) + indicator
 
 		if i == m.cursor {
 			line := lipgloss.NewStyle().
-				Background(primaryColor).
 				Foreground(textColor).
 				Bold(true).
-				Width(innerWidth).
 				Render(row)
 			sb.WriteString(line)
 		} else {
 			line := lipgloss.NewStyle().
 				Foreground(textColor).
-				Width(innerWidth).
 				Render(row)
 			sb.WriteString(line)
 		}

@@ -82,8 +82,18 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the sidebar handler. This is how the user navigates back from the
 	// settings page (they pressed left to focus the sidebar, then can
 	// move the cursor or press right to re-enter the settings page).
+	//
+	// If the sidebar cursor moves off the "⚙ Settings" row while the
+	// settings screen is still showing, drop back to the inbox list —
+	// otherwise the page lingers behind a hovered branch and the user
+	// has to jump into the right pane and press esc to dismiss it.
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
-		return m.handleSidebarKey(keyMsg)
+		tm, cmd := m.handleSidebarKey(keyMsg)
+		if m.screen == screenSettings && !m.sidebar.CursorOnSettings() {
+			m.screen = screenInbox
+			m.settings.SetFocused(false)
+		}
+		return tm, cmd
 	}
 
 	// Otherwise delegate to the settings view itself.

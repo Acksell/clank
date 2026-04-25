@@ -128,8 +128,8 @@ func TestSchemeNames_IncludesAllBuiltIns(t *testing.T) {
 func TestBuiltInSchemes_DefaultFirst(t *testing.T) {
 	t.Parallel()
 
-	if builtInSchemes[0].Name != "default" {
-		t.Errorf("builtInSchemes[0] must be named 'default', got %q", builtInSchemes[0].Name)
+	if builtInSchemes[0].Name != "gruvbox-dark" {
+		t.Errorf("builtInSchemes[0] must be named 'gruvbox-dark', got %q", builtInSchemes[0].Name)
 	}
 }
 
