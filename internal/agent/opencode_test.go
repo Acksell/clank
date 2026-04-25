@@ -273,6 +273,7 @@ func (m *mockOpenCodeServer) waitForPrompts(n int, timeout time.Duration) []mock
 // mock server blocking inside handlePrompt, Start() must still return promptly
 // with SessionID() populated.
 func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -318,6 +319,7 @@ func TestOpenCodeBackend_StartReturnsBeforePromptCompletes(t *testing.T) {
 }
 
 func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -362,6 +364,7 @@ func TestOpenCodeBackendStartCreatesSession(t *testing.T) {
 }
 
 func TestOpenCodeBackendStartResumesSession(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -397,6 +400,7 @@ func TestOpenCodeBackendStartResumesSession(t *testing.T) {
 }
 
 func TestOpenCodeBackendSendMessage(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -433,6 +437,7 @@ func TestOpenCodeBackendSendMessage(t *testing.T) {
 }
 
 func TestOpenCodeBackendSendMessageBeforeStart(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -446,6 +451,7 @@ func TestOpenCodeBackendSendMessageBeforeStart(t *testing.T) {
 }
 
 func TestOpenCodeBackendAbort(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -475,6 +481,7 @@ func TestOpenCodeBackendAbort(t *testing.T) {
 }
 
 func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -488,6 +495,7 @@ func TestOpenCodeBackendAbortBeforeStart(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -547,6 +555,7 @@ func TestOpenCodeBackendSSESessionIdle(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -646,6 +655,7 @@ func TestOpenCodeBackendSSEMessagePartUpdated(t *testing.T) {
 }
 
 func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
+	t.Parallel()
 	mock := newMockOpenCodeServer()
 	defer mock.Close()
 
@@ -701,6 +711,7 @@ func TestOpenCodeBackendSSEFiltersOtherSessions(t *testing.T) {
 // TestOpenCodeBackendSSEEventTypes verifies that various SSE event types
 // from the OpenCode server are correctly translated into agent events.
 func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
+	t.Parallel()
 	type sseEvent struct {
 		eventType  string
 		properties func(sessionID string) interface{}
@@ -1022,6 +1033,7 @@ func TestOpenCodeBackendSSEEventTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			mock := newMockOpenCodeServer()
 			defer mock.Close()
 
