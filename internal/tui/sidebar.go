@@ -172,6 +172,22 @@ func (m *SidebarModel) cursorSection() (sidebarSection, int) {
 	return sectionWorktrees, m.cursor
 }
 
+// sectionBreakpoints returns the cursor positions that shift+up/shift+down
+// snap between. Breakpoints, in order:
+//
+//   - 0                       — top of worktrees ("All")
+//   - len(branches)           — last worktree row (omitted when there are
+//     no branches, since it would coincide with "All")
+//   - settingsCursorIndex()   — Settings footer
+func (m *SidebarModel) sectionBreakpoints() []int {
+	bp := []int{0}
+	if last := len(m.branches); last > 0 {
+		bp = append(bp, last)
+	}
+	bp = append(bp, m.settingsCursorIndex())
+	return bp
+}
+
 // SelectedBranch returns the currently selected branch name. Empty
 // string means "All" or the settings row is selected.
 func (m *SidebarModel) SelectedBranch() string {
@@ -296,6 +312,12 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			m.cursor++
 			m.ensureVisible()
 		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+up"))):
+		m.cursor = prevBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.ensureVisible()
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+down"))):
+		m.cursor = nextBreakpoint(m.sectionBreakpoints(), m.cursor)
+		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))):
 		m.cursor = 0
 		m.ensureVisible()
@@ -421,18 +443,10 @@ func (m *SidebarModel) View() string {
 
 	content := strings.Join(lines, "\n")
 
-	// Wrap in a border. Focused: visible rounded border. Unfocused: hidden
-	// border (same spacing, no visible line) to avoid visual clutter.
-	border := lipgloss.HiddenBorder()
-	borderColor := mutedColor
-	if m.focused {
-		border = lipgloss.RoundedBorder()
-		borderColor = primaryColor
-	}
-	style := lipgloss.NewStyle().
-		Border(border).
-		BorderForeground(borderColor).
-		Width(w - 2).
+	// Wrap in a focus-aware pane border (shared with the right pane so
+	// both panes use one source of truth for focus-vs-unfocused styling).
+	style := paneBorderStyle(m.focused).
+		Width(w - paneBorderInset).
 		Height(m.listHeight())
 
 	return style.Render(content)

@@ -466,11 +466,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
 				prevBranch := m.sidebar.SelectedBranch()
 				if m.pane == paneSessions {
-					m.pane = paneSidebar
-					m.sidebar.SetFocused(true)
+					m.setPane(paneSidebar)
 				} else {
-					m.pane = paneSessions
-					m.sidebar.SetFocused(false)
+					m.setPane(paneSessions)
 				}
 				if m.sidebar.SelectedBranch() != prevBranch {
 					m.applyFiltersAndRebuild()
@@ -480,11 +478,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) {
 				prevBranch := m.sidebar.SelectedBranch()
 				if m.pane == paneSidebar {
-					m.pane = paneSessions
-					m.sidebar.SetFocused(false)
+					m.setPane(paneSessions)
 				} else {
-					m.pane = paneSidebar
-					m.sidebar.SetFocused(true)
+					m.setPane(paneSidebar)
 				}
 				if m.sidebar.SelectedBranch() != prevBranch {
 					m.applyFiltersAndRebuild()
@@ -990,8 +986,7 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Left arrow navigates to the sidebar when it's visible.
 		if m.showTwoPanes() {
 			prevBranch := m.sidebar.SelectedBranch()
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 			if m.sidebar.SelectedBranch() != prevBranch {
 				m.applyFiltersAndRebuild()
 			}
@@ -1000,11 +995,9 @@ func (m *InboxModel) handleInboxKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("w"))):
 		m.sidebarHidden = !m.sidebarHidden
 		if m.sidebarHidden {
-			m.pane = paneSessions
-			m.sidebar.SetFocused(false)
+			m.setPane(paneSessions)
 		} else {
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
 		m.showHelp = true
@@ -1316,7 +1309,11 @@ func (m *InboxModel) View() tea.View {
 
 	if m.showTwoPanes() {
 		sidebarView := m.sidebar.View()
-		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", sessionContent)
+		// Wrap the right pane in a focus-aware border via the shared
+		// helper so View()'s no-wrap invariant is testable in isolation
+		// (see rightPaneBorder).
+		rightPane := m.rightPaneBorder().Render(sessionContent)
+		content = lipgloss.JoinHorizontal(lipgloss.Top, sidebarView, " ", rightPane)
 	} else {
 		content = sessionContent
 	}
@@ -1447,10 +1444,23 @@ func (m *InboxModel) renderSessionPane() string {
 // Below this, only the session pane is shown.
 const minTwoPaneWidth = 80
 
+// sidebarGap is the number of blank columns between the sidebar and the
+// session pane in two-pane layout.
+const sidebarGap = 1
+
 // showTwoPanes returns true when the terminal is wide enough and the user
 // hasn't manually hidden the sidebar with 'w'.
 func (m *InboxModel) showTwoPanes() bool {
 	return m.width >= minTwoPaneWidth && !m.sidebarHidden
+}
+
+// setPane is the single point of truth for which top-level pane has
+// keyboard focus. It keeps SidebarModel.focused in sync with m.pane so
+// callers can't drift the two flags apart (which would silently break
+// the focus border on either pane).
+func (m *InboxModel) setPane(p inboxPane) {
+	m.pane = p
+	m.sidebar.SetFocused(p == paneSidebar)
 }
 
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).
@@ -1458,12 +1468,28 @@ func (m *InboxModel) sidebarRenderWidth() int {
 	return sidebarWidth
 }
 
-// sessionPaneWidth returns the width available for the session list pane.
+// sessionPaneWidth returns the inner content width of the session pane
+// (excluding its focus border and a small wrap-safety buffer in two-pane
+// mode). Callers that build content lines must use this value; the
+// bordered Style's Width adds paneWrapBuffer back so the visible bordered
+// area fills the allocated space.
 func (m *InboxModel) sessionPaneWidth() int {
 	if m.showTwoPanes() {
-		return m.width - m.sidebarRenderWidth() - 1 // 1 for gap
+		return m.width - m.sidebarRenderWidth() - sidebarGap - paneBorderInset - paneWrapBuffer
 	}
 	return m.width
+}
+
+// rightPaneBorder returns the bordered Style used by View() to wrap the
+// right pane in two-pane mode. The Style's Width is sessionPaneWidth() +
+// paneWrapBuffer — strictly greater than what renderRow produces, so
+// lipgloss does not wrap content lines at the boundary. Exposed as a
+// method (rather than inlined in View()) so tests can verify the
+// no-wrap invariant against the same code path the UI uses.
+func (m *InboxModel) rightPaneBorder() lipgloss.Style {
+	return paneBorderStyle(m.pane == paneSessions).
+		Width(m.sessionPaneWidth() + paneWrapBuffer).
+		Height(m.height - paneBorderInset)
 }
 
 // updateBranchSessionCounts computes per-branch session status summaries
@@ -1527,11 +1553,9 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		m.sidebarHidden = !m.sidebarHidden
 		if m.sidebarHidden {
-			m.pane = paneSessions
-			m.sidebar.SetFocused(false)
+			m.setPane(paneSessions)
 		} else {
-			m.pane = paneSidebar
-			m.sidebar.SetFocused(true)
+			m.setPane(paneSidebar)
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("?"))):
@@ -1562,8 +1586,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			return m, nil
 		}
 		prevBranch := m.sidebar.SelectedBranch()
-		m.pane = paneSessions
-		m.sidebar.SetFocused(false)
+		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
 			m.applyFiltersAndRebuild()
 		}
@@ -1582,8 +1605,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()
-		m.pane = paneSessions
-		m.sidebar.SetFocused(false)
+		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
 			m.applyFiltersAndRebuild()
 		}
@@ -1878,6 +1900,9 @@ func (m *InboxModel) viewportHeight() int {
 	if m.err != nil {
 		reserved += 2
 	}
+	if m.showTwoPanes() {
+		reserved += paneBorderInset // top/bottom border lines around the pane
+	}
 	h := m.height - reserved
 	if h < 3 {
 		h = 3
@@ -1951,28 +1976,6 @@ func (m *InboxModel) buildBreakpoints() []int {
 		}
 	}
 	return bp
-}
-
-// nextBreakpoint returns the smallest breakpoint strictly greater than cursor.
-// If cursor is already at or past the last breakpoint, it returns the last one.
-func nextBreakpoint(bp []int, cursor int) int {
-	for _, b := range bp {
-		if b > cursor {
-			return b
-		}
-	}
-	return bp[len(bp)-1]
-}
-
-// prevBreakpoint returns the largest breakpoint strictly less than cursor.
-// If cursor is already at or before the first breakpoint, it returns the first one.
-func prevBreakpoint(bp []int, cursor int) int {
-	for i := len(bp) - 1; i >= 0; i-- {
-		if bp[i] < cursor {
-			return bp[i]
-		}
-	}
-	return bp[0]
 }
 
 func (m *InboxModel) ensureCursorVisible() {

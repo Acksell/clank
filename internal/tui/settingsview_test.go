@@ -23,8 +23,8 @@ func TestSettingsView_NewEmptySchemeDisplaysDefault(t *testing.T) {
 	t.Parallel()
 
 	s := newSettingsView("")
-	if s.entries[0].value != "default" {
-		t.Errorf("empty scheme name should display 'default', got %q", s.entries[0].value)
+	if got, want := s.entries[0].value, builtInSchemes[0].Name; got != want {
+		t.Errorf("empty scheme name should resolve to %q, got %q", want, got)
 	}
 }
 
@@ -85,10 +85,10 @@ func TestSettingsView_SetColorSchemeValueUpdatesEntry(t *testing.T) {
 		t.Errorf("entry value: got %q, want tokyo-night", got)
 	}
 
-	// Empty name falls back to "default" so the column never renders blank.
+	// Empty name resolves to the default built-in scheme.
 	s.SetColorSchemeValue("")
-	if got := s.entries[0].value; got != "default" {
-		t.Errorf("empty name should display 'default', got %q", got)
+	if got, want := s.entries[0].value, builtInSchemes[0].Name; got != want {
+		t.Errorf("empty name should resolve to %q, got %q", want, got)
 	}
 }
 

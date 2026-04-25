@@ -70,17 +70,13 @@ type settingsView struct {
 // newSettingsView builds a settings page with the current preference
 // values baked in so they render in the "value" column.
 func newSettingsView(currentColorScheme string) settingsView {
-	display := currentColorScheme
-	if display == "" {
-		display = builtInSchemes[0].Name
-	}
 	return settingsView{
 		entries: []settingsEntry{
 			{
 				kind:        settingsEntryColorScheme,
 				label:       "Change color scheme",
 				description: "Pick the TUI palette (live preview on hover).",
-				value:       display,
+				value:       resolveColorSchemeName(currentColorScheme),
 			},
 		},
 	}
@@ -101,15 +97,22 @@ func (s *settingsView) SetFocused(f bool) {
 // scheme entry. Called after the picker returns so the column stays in
 // sync without rebuilding the view.
 func (s *settingsView) SetColorSchemeValue(name string) {
-	if name == "" {
-		name = builtInSchemes[0].Name
-	}
+	display := resolveColorSchemeName(name)
 	for i := range s.entries {
 		if s.entries[i].kind == settingsEntryColorScheme {
-			s.entries[i].value = name
+			s.entries[i].value = display
 			return
 		}
 	}
+}
+
+// resolveColorSchemeName returns the scheme name to display, falling back
+// to the first built-in (the default) when no preference is set.
+func resolveColorSchemeName(name string) string {
+	if name == "" {
+		return builtInSchemes[0].Name
+	}
+	return name
 }
 
 func (s settingsView) Update(msg tea.Msg) (settingsView, tea.Cmd) {

@@ -27,16 +27,14 @@ func (m *InboxModel) showSettings() {
 func (m *InboxModel) openSettings() {
 	m.showSettings()
 	m.settings.SetFocused(true)
-	m.pane = paneSessions
-	m.sidebar.SetFocused(false)
+	m.setPane(paneSessions)
 }
 
 // closeSettings returns from the Settings screen back to the inbox list.
 // Focus goes back to the sidebar so the user lands where they came from.
 func (m *InboxModel) closeSettings() {
 	m.screen = screenInbox
-	m.pane = paneSidebar
-	m.sidebar.SetFocused(true)
+	m.setPane(paneSidebar)
 	m.settings.SetFocused(false)
 }
 
@@ -74,8 +72,7 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settingsFocusSidebarMsg:
 		// Move focus to the sidebar without leaving the settings screen,
 		// so the user can scroll branches and come back to settings.
-		m.pane = paneSidebar
-		m.sidebar.SetFocused(true)
+		m.setPane(paneSidebar)
 		m.settings.SetFocused(false)
 		return m, nil
 
