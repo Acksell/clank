@@ -128,6 +128,18 @@ func (s *settingsView) SetDefaultBackendValue(name string) {
 	}
 }
 
+// DefaultBackendValue returns the currently displayed default-backend
+// name. Authoritative for cycle decisions: persistence is async, so
+// reading from disk would lag behind rapid Enter presses.
+func (s *settingsView) DefaultBackendValue() string {
+	for _, e := range s.entries {
+		if e.kind == settingsEntryDefaultBackend {
+			return e.value
+		}
+	}
+	return ""
+}
+
 // resolveColorSchemeName returns the scheme name to display, falling back
 // to the first built-in (the default) when no preference is set.
 func resolveColorSchemeName(name string) string {

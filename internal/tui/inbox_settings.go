@@ -43,19 +43,23 @@ func (m *InboxModel) closeSettings() {
 // Overlay messages (theme picker) are routed here too when the overlay
 // is showing, so the picker can intercept keys before the page sees them.
 func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Resize must always update layout, even with the theme picker open —
+	// otherwise the picker swallows the WindowSizeMsg and the panes stay at
+	// the pre-resize size until the picker closes.
+	if wMsg, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = wMsg.Width
+		m.height = wMsg.Height
+		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+		m.settings.SetSize(m.sessionPaneWidth(), m.height)
+		return m, nil
+	}
+
 	// Theme picker overlay takes precedence: eat all keys while it's open.
 	if m.showThemePicker {
 		return m.updateThemePicker(msg)
 	}
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
-		m.settings.SetSize(m.sessionPaneWidth(), m.height)
-		return m, nil
-
 	case branchLoadedMsg, branchWorktreeCreatedMsg:
 		cmd := m.sidebar.Update(msg)
 		return m, cmd
@@ -71,9 +75,11 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cycle to the next backend in agent.AllBackends. Only two
 			// backends today, but the cycle generalises if a third is
 			// added. Persist asynchronously to keep the UI snappy.
-			next := nextDefaultBackend()
-			go persistDefaultBackend(next)
+			// Derive "next" from the in-memory value, not disk: rapid
+			// toggles would otherwise read stale prefs and repeat.
+			next := nextDefaultBackend(m.settings.DefaultBackendValue())
 			m.settings.SetDefaultBackendValue(string(next))
+			go persistDefaultBackend(next)
 			return m, nil
 		}
 		return m, nil
@@ -142,17 +148,18 @@ func (m *InboxModel) updateThemePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 // applied in-memory, and a failed write only means the scheme won't
 // persist across restarts (surfaced to the user indirectly on next launch).
 func persistColorScheme(name string) {
-	prefs, _ := config.LoadPreferences()
-	prefs.ColorScheme = name
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		p.ColorScheme = name
+	})
 }
 
-// nextDefaultBackend reads the currently-saved default backend and
-// returns the next one in agent.AllBackends. Wraps around at the end.
-// Errors loading prefs are treated as "no preference" → first backend.
-func nextDefaultBackend() agent.BackendType {
-	prefs, _ := config.LoadPreferences()
-	current, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
+// nextDefaultBackend returns the backend after currentName in
+// agent.AllBackends, wrapping at the end. Takes the current value as a
+// parameter (rather than reading prefs) so it stays in sync with the
+// in-memory settings view while persistence runs asynchronously. Empty
+// or unknown input resolves to agent.DefaultBackend before cycling.
+func nextDefaultBackend(currentName string) agent.BackendType {
+	current, _ := agent.ResolveBackendPreference(currentName)
 	for i, b := range agent.AllBackends {
 		if b == current {
 			return agent.AllBackends[(i+1)%len(agent.AllBackends)]
@@ -165,7 +172,7 @@ func nextDefaultBackend() agent.BackendType {
 // persistDefaultBackend writes the user's chosen default backend to
 // preferences.json. See persistColorScheme for the error-handling rationale.
 func persistDefaultBackend(bt agent.BackendType) {
-	prefs, _ := config.LoadPreferences()
-	prefs.DefaultBackend = string(bt)
-	_ = config.SavePreferences(prefs)
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		p.DefaultBackend = string(bt)
+	})
 }

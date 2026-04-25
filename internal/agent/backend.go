@@ -29,7 +29,7 @@ func ParseBackend(s string) (BackendType, error) {
 	case "":
 		return "", fmt.Errorf("backend name is empty")
 	default:
-		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude)", s)
+		return "", fmt.Errorf("unknown backend: %s (valid: opencode, claude, claude-code)", s)
 	}
 }
 

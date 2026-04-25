@@ -5,7 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+// prefsMu serializes load-modify-save updates to the preferences file so
+// concurrent callers (e.g. background goroutines persisting different
+// settings at once) don't clobber each other by writing back stale data.
+var prefsMu sync.Mutex
 
 // Dir returns the path to the clank configuration directory (~/.clank).
 func Dir() (string, error) {
@@ -69,6 +75,22 @@ func LoadPreferences() (Preferences, error) {
 		return Preferences{}, fmt.Errorf("parse preferences: %w", err)
 	}
 	return prefs, nil
+}
+
+// UpdatePreferences serializes a load-modify-save against the preferences
+// file. mutate is called with the most recently saved Preferences and may
+// modify any subset of fields; the merged value is then written back. This
+// is the safe way to change a single field from a goroutine — calling
+// LoadPreferences/SavePreferences directly races other concurrent updaters.
+func UpdatePreferences(mutate func(*Preferences)) error {
+	prefsMu.Lock()
+	defer prefsMu.Unlock()
+	prefs, err := LoadPreferences()
+	if err != nil {
+		return err
+	}
+	mutate(&prefs)
+	return SavePreferences(prefs)
 }
 
 // SavePreferences writes preferences to disk, creating the config directory
