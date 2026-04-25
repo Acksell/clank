@@ -59,6 +59,15 @@ const (
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
 
+	// EventSessionIDLearned is emitted by a backend the moment it learns
+	// its native (external) session ID — typically mid-Start, before the
+	// blocking Start() call returns. Subscribers (the host SSE relay's
+	// httpSessionBackend cache, and the hub's runBackend persistence
+	// loop) use this to capture the ExternalID immediately, so that a
+	// daemon crash mid-LLM-response cannot lose the binding between the
+	// hub session row and the backend's on-disk transcript.
+	EventSessionIDLearned EventType = "session.id_learned"
+
 	// Voice events — emitted by the voice agent running on the daemon.
 	EventVoiceTranscript EventType = "voice.transcript" // Model's spoken response as text
 	EventVoiceStatus     EventType = "voice.status"     // Voice state changes (listening, thinking, speaking, idle)
@@ -152,6 +161,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d ReconnectedData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal ReconnectedData: %w", err)
+		}
+		e.Data = d
+	case EventSessionIDLearned:
+		var d SessionIDLearnedData
+		if err := json.Unmarshal(raw.Data, &d); err != nil {
+			return fmt.Errorf("unmarshal SessionIDLearnedData: %w", err)
 		}
 		e.Data = d
 	case EventVoiceTranscript:
@@ -282,6 +297,15 @@ type ReconnectingData struct {
 type ReconnectedData struct {
 	Attempts   int  `json:"attempts"`    // How many attempts it took
 	URLChanged bool `json:"url_changed"` // Whether the server URL changed (new port)
+}
+
+// SessionIDLearnedData is the payload for EventSessionIDLearned.
+//
+// Carried as an event so the hub can persist the binding the moment the
+// backend learns its ID — see comment on EventSessionIDLearned for the
+// crash-recovery rationale.
+type SessionIDLearnedData struct {
+	ExternalID string `json:"external_id"`
 }
 
 // VoiceTranscriptData is the payload for EventVoiceTranscript.
@@ -436,15 +460,25 @@ type ProjectInfo struct {
 	Worktree string `json:"worktree"`
 }
 
-// SessionSnapshot is a lightweight session summary from the OpenCode API,
-// used during discovery to populate the daemon's session list.
+// SessionSnapshot is a lightweight session summary returned by a backend
+// manager's DiscoverSessions, used to populate the daemon's session list.
+//
+// Backend identifies which backend produced the snapshot. The hub aggregates
+// snapshots from multiple backends in a single slice, so without this field
+// it is impossible to attribute a snapshot to its source backend at the
+// registration site. Persisting the wrong Backend on a discovered session
+// causes activateBackend (after a daemon restart) to route the reopen
+// through the wrong backend manager, which manifests as a permanent
+// "Waiting for agent output..." hang for Claude sessions that were
+// mis-tagged as opencode.
 type SessionSnapshot struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	Directory       string    `json:"directory"`
-	RevertMessageID string    `json:"revert_message_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string      `json:"id"`
+	Backend         BackendType `json:"backend"`
+	Title           string      `json:"title"`
+	Directory       string      `json:"directory"`
+	RevertMessageID string      `json:"revert_message_id,omitempty"`
+	CreatedAt       time.Time   `json:"created_at"`
+	UpdatedAt       time.Time   `json:"updated_at"`
 }
 
 // Unread returns true if the session has activity the user hasn't seen.
@@ -589,6 +623,23 @@ type ModelLister interface {
 // implement to discover historical sessions from the underlying backend.
 type SessionDiscoverer interface {
 	DiscoverSessions(ctx context.Context, seedDir string) ([]SessionSnapshot, error)
+}
+
+// AllSessionDiscoverer is an optional interface for BackendManagers whose
+// underlying storage allows enumerating every historical session globally
+// (across all known projects) without first naming a seed directory.
+//
+// Used by the hub's startup-discover pass to heal mis-tagged info.Backend
+// rows: after a corrupted persistence (Backend=opencode for what is really
+// a Claude session), the hub does not know which project dir to query, so
+// the per-seedDir DiscoverSessions path can't find it. AllSessionDiscoverer
+// lets the hub enumerate every snapshot the backend knows about, regardless
+// of the persisted (and potentially wrong) GitRef.LocalPath.
+//
+// Backends whose discovery model is per-project (e.g. opencode, which boots
+// one HTTP server per project worktree) deliberately do NOT implement this.
+type AllSessionDiscoverer interface {
+	DiscoverAllSessions(ctx context.Context) ([]SessionSnapshot, error)
 }
 
 // ServerInfo is a snapshot of a running backend server process (e.g. an

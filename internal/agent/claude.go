@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,8 @@ type activeToolBlock struct {
 //   - Multi-turn: Query() sends follow-up prompts over the same connection.
 //   - Abort uses the SDK's control protocol (Interrupt), not raw SIGINT.
 //   - receiveLoop maps SDK messages → clank Event types.
-//
-// Future: When the SDK adds list_sessions() and get_session_messages()
-// (see https://github.com/severity1/claude-agent-sdk-go/issues/107),
-// Messages() can retrieve full history from Claude's native storage
-// instead of relying on in-memory accumulation.
+//   - Messages() reads the full history from Claude's on-disk JSONL transcript
+//     via the SDK's GetSessionMessages, so history survives daemon restarts.
 type ClaudeCodeBackend struct {
 	mu         sync.Mutex
 	status     SessionStatus
@@ -66,10 +64,6 @@ type ClaudeCodeBackend struct {
 	// Only accessed from receiveLoop goroutine — no lock required.
 	activeToolBlocks map[int]activeToolBlock
 
-	// messages accumulates MessageData from the stream for Messages() retrieval.
-	// Lost on daemon restart; future: persist to SQLite or use SDK session history.
-	messages []MessageData
-
 	// ClientFactory builds a claudecode.Client for a given set of options.
 	// Tests inject a factory that returns a client backed by a mock transport.
 	// If nil, the default claudecode.NewClient is used.
@@ -80,10 +74,20 @@ type ClaudeCodeBackend struct {
 // the host-resolved working directory (worktree or repo root) the
 // claude CLI will be launched in.
 func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
+	return NewClaudeCodeBackendForSession(workDir, "")
+}
+
+// NewClaudeCodeBackendForSession is the resume variant. It pre-seeds the
+// SDK session ID so that Messages() can read the on-disk JSONL transcript
+// before Start runs (or without Start at all — the activateBackend path
+// for reopening historical sessions only calls Watch, which is a no-op
+// for Claude). resumeSessionID may be empty for fresh sessions.
+func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
 		projectDir:       workDir,
+		sessionID:        resumeSessionID,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]activeToolBlock),
 		ctx:              ctx,
@@ -172,13 +176,6 @@ func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpt
 		},
 	})
 
-	b.mu.Lock()
-	b.messages = append(b.messages, MessageData{
-		Role:    "user",
-		Content: opts.Text,
-	})
-	b.mu.Unlock()
-
 	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
@@ -241,23 +238,46 @@ func (b *ClaudeCodeBackend) SessionID() string {
 	return b.sessionID
 }
 
-// Messages returns the conversation history accumulated during this session.
-// Each assistant turn and user follow-up is recorded as the stream is processed.
+// Messages returns the conversation history for this session by reading
+// Claude Code's on-disk JSONL transcript via the SDK's GetSessionMessages.
+// History therefore survives daemon restarts and matches what `claude --resume`
+// would replay.
 //
-// Future: When the SDK adds list_sessions() / get_session_messages()
-// (https://github.com/severity1/claude-agent-sdk-go/issues/107),
-// this can retrieve full history from Claude's native session storage
-// instead of relying on in-memory accumulation.
+// Returns nil, nil before the SDK has assigned a session ID (i.e. before the
+// first ResultMessage / system init has landed). The caller can call this
+// again once a session ID is available.
 func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.messages == nil {
+	sessionID := b.sessionID
+	workDir := b.projectDir
+	b.mu.Unlock()
+
+	if sessionID == "" {
+		log.Printf("[claude] DEBUG Messages: empty sessionID workDir=%q → returning nil", workDir)
 		return nil, nil
 	}
-	// Return a copy to avoid races.
-	msgs := make([]MessageData, len(b.messages))
-	copy(msgs, b.messages)
-	return msgs, nil
+
+	opts := []claudecode.SessionOption{}
+	if workDir != "" {
+		opts = append(opts, claudecode.WithSessionDirectory(workDir))
+	}
+
+	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
+	if err != nil {
+		log.Printf("[claude] DEBUG Messages: GetSessionMessages err sessionID=%s workDir=%q: %v", sessionID, workDir, err)
+		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
+	}
+	log.Printf("[claude] DEBUG Messages: sessionID=%s workDir=%q got %d sdk messages", sessionID, workDir, len(sdkMsgs))
+
+	out := make([]MessageData, 0, len(sdkMsgs))
+	for _, m := range sdkMsgs {
+		md, ok := sessionMessageToData(m)
+		if !ok {
+			continue
+		}
+		out = append(out, md)
+	}
+	return out, nil
 }
 
 func (b *ClaudeCodeBackend) Revert(ctx context.Context, messageID string) error {
@@ -352,35 +372,27 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 			b.mu.Lock()
 			b.sessionID = sid
 			b.mu.Unlock()
+			// Emit so subscribers (host SSE relay → hub persistence)
+			// can capture ExternalID immediately, not when Start()
+			// returns. See comment on EventSessionIDLearned.
+			b.emit(Event{
+				Type:      EventSessionIDLearned,
+				Timestamp: time.Now(),
+				Data:      SessionIDLearnedData{ExternalID: sid},
+			})
 		}
 	}
 }
 
 func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudecode.AssistantMessage) {
-	// Build parts from the SDK's typed content blocks for Messages() accumulation.
-	// IDs use currentMsgID matching the streaming path so that seenParts dedup
-	// (populated from Messages() between turns) correctly matches streaming IDs.
-	var parts []Part
-	for i, block := range m.Content {
-		if p, ok := contentBlockToPart(block, b.currentMsgID, i); ok {
-			parts = append(parts, p)
-		}
-	}
-
-	// Accumulate for Messages().
-	md := MessageData{
-		Role:  "assistant",
-		Parts: parts,
-	}
-	b.mu.Lock()
-	b.messages = append(b.messages, md)
-	b.mu.Unlock()
-
 	// Emit a content-less shell — matching the OpenCode pattern.
 	// The TUI ignores EventMessage content after history loads, and new
 	// content arrives exclusively via EventPartUpdate from streaming deltas
 	// (handleContentBlockStart/Delta). Emitting parts here would duplicate
 	// what the streaming path already delivered.
+	//
+	// Full message content (including parts) is reconstructed on demand by
+	// Messages() reading the on-disk JSONL transcript via the SDK.
 	b.emit(Event{
 		Type:      EventMessage,
 		Timestamp: time.Now(),
@@ -394,8 +406,16 @@ func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
 	// The result carries the authoritative CLI session UUID.
 	if m.SessionID != "" {
 		b.mu.Lock()
+		changed := b.sessionID != m.SessionID
 		b.sessionID = m.SessionID
 		b.mu.Unlock()
+		if changed {
+			b.emit(Event{
+				Type:      EventSessionIDLearned,
+				Timestamp: time.Now(),
+				Data:      SessionIDLearnedData{ExternalID: m.SessionID},
+			})
+		}
 	}
 
 	if m.IsError {
@@ -597,45 +617,130 @@ func (b *ClaudeCodeBackend) handleContentBlockStop(event map[string]any) {
 
 // --- Type mapping helpers ---
 
-// contentBlockToPart maps an SDK ContentBlock to a clank Part.
-// The msgID and index parameters produce a message-scoped ID ("{msgID}-{index}")
-// matching the IDs emitted by the streaming handlers.
-func contentBlockToPart(block claudecode.ContentBlock, msgID string, index int) (Part, bool) {
-	id := fmt.Sprintf("%s-%d", msgID, index)
-	switch b := block.(type) {
-	case *claudecode.TextBlock:
+// sessionMessageToData converts an SDK SessionMessage (parsed from the on-disk
+// JSONL transcript) into a clank MessageData. Returns ok=false for messages
+// that should be skipped (meta/system/unknown types, no content).
+//
+// Part IDs are scoped to mirror what the streaming handlers emit so that a
+// future TUI dedup pass between live deltas and reloaded history can match
+// them up:
+//   - For tool_use / tool_result blocks the ID is the tool_use_id (same as
+//     handleContentBlockStart and handleContentBlockStop).
+//   - For text / thinking blocks the ID is "{apiMsgID}-{blockIdx}", where
+//     apiMsgID is the Anthropic API message ID stored under msg.message.id
+//     (matches blockID()). Falls back to the JSONL-level UUID when absent.
+func sessionMessageToData(m claudecode.SessionMessage) (MessageData, bool) {
+	if m.IsMeta {
+		return MessageData{}, false
+	}
+
+	var role string
+	switch m.Type {
+	case "user":
+		role = "user"
+	case "assistant":
+		role = "assistant"
+	default:
+		return MessageData{}, false
+	}
+
+	// Anthropic API message ID lives inside the nested "message" object;
+	// fall back to the transcript-level UUID when missing (e.g. for user
+	// messages which have no API id).
+	msgID, _ := m.RawMessage["id"].(string)
+	if msgID == "" {
+		msgID = m.UUID
+	}
+
+	md := MessageData{
+		ID:   msgID,
+		Role: role,
+	}
+
+	if model, ok := m.RawMessage["model"].(string); ok {
+		md.ModelID = model
+	}
+
+	if m.Content == nil {
+		return md, true
+	}
+
+	switch m.Content.Kind {
+	case claudecode.SessionContentTypeString:
+		md.Content = m.Content.String
+	case claudecode.SessionContentTypeBlocks:
+		for i, block := range m.Content.Blocks {
+			if p, ok := sessionBlockToPart(block, msgID, i); ok {
+				md.Parts = append(md.Parts, p)
+			}
+		}
+	}
+	return md, true
+}
+
+// sessionBlockToPart converts an SDK session ContentBlock to a clank Part.
+// The msgID/index pair scopes text/thinking IDs to match the streaming path.
+func sessionBlockToPart(block claudecode.SessionContentBlock, msgID string, index int) (Part, bool) {
+	switch block.Type {
+	case claudecode.SessionBlockTypeText:
 		return Part{
-			ID:   id,
+			ID:   fmt.Sprintf("%s-%d", msgID, index),
 			Type: PartText,
-			Text: b.Text,
+			Text: block.Text,
 		}, true
-	case *claudecode.ToolUseBlock:
+	case claudecode.SessionBlockTypeThinking:
 		return Part{
-			ID:     b.ToolUseID,
-			Type:   PartToolCall,
-			Tool:   b.Name,
-			Status: PartCompleted,
-			Input:  b.Input,
+			ID:   fmt.Sprintf("%s-%d", msgID, index),
+			Type: PartThinking,
+			Text: block.Thinking,
 		}, true
-	case *claudecode.ToolResultBlock:
-		var output string
-		if s, ok := b.Content.(string); ok {
-			output = s
+	case claudecode.SessionBlockTypeToolUse, claudecode.SessionBlockTypeServerToolUse:
+		return Part{
+			ID:     block.ID,
+			Type:   PartToolCall,
+			Tool:   block.Name,
+			Status: PartCompleted,
+			Input:  block.Input,
+		}, true
+	case claudecode.SessionBlockTypeToolResult:
+		status := PartCompleted
+		if block.IsError != nil && *block.IsError {
+			status = PartFailed
 		}
 		return Part{
-			ID:     b.ToolUseID,
+			ID:     block.ToolUseID,
 			Type:   PartToolResult,
-			Status: PartCompleted,
-			Output: output,
-		}, true
-	case *claudecode.ThinkingBlock:
-		return Part{
-			ID:   id,
-			Type: PartThinking,
-			Text: b.Thinking,
+			Status: status,
+			Output: toolResultOutput(block.Content),
 		}, true
 	default:
 		return Part{}, false
+	}
+}
+
+// toolResultOutput extracts the human-readable text from a tool_result's
+// content field. The SDK leaves it as `any` because the JSONL format admits
+// either a string or an array of nested blocks (typically text blocks).
+func toolResultOutput(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := m["type"].(string); t == claudecode.SessionBlockTypeText {
+				if s, ok := m["text"].(string); ok {
+					parts = append(parts, s)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
 	}
 }
 

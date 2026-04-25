@@ -236,6 +236,21 @@ func (b *httpSessionBackend) streamEvents() {
 				b.mu.Unlock()
 			}
 		}
+		// Cache the backend's native session ID the moment it's
+		// learned. SessionID() is otherwise only refreshed when
+		// Start() returns; for backends that learn their ID mid-Start
+		// (Claude: SystemMessage init), the hub's per-event
+		// runBackend persistence loop must observe the updated cache
+		// before Start() completes — otherwise a daemon crash
+		// mid-LLM-response leaves the row at ExternalID="" and the
+		// session can never be resumed.
+		if ev.Type == agent.EventSessionIDLearned {
+			if d, ok := ev.Data.(agent.SessionIDLearnedData); ok && d.ExternalID != "" {
+				b.mu.Lock()
+				b.externalID = d.ExternalID
+				b.mu.Unlock()
+			}
+		}
 		b.eventsCh <- ev
 	})
 }

@@ -67,8 +67,16 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 	added := 0
 	matchedExt := 0
 	matchedSID := 0
+	healed := 0
 	s.mu.Lock()
 	for _, snap := range snapshots {
+		// Fast-fail rather than silently mis-tagging the session. A snapshot
+		// without a Backend is a backend-manager bug; persisting it would
+		// break activateBackend on restart (wrong manager dispatch).
+		if snap.Backend == "" {
+			s.log.Printf("discover: WARN snapshot extID=%s has empty Backend; skipping", snap.ID)
+			continue
+		}
 		var existingMS *managedSession
 		var matchKind string
 		for _, existing := range s.sessions {
@@ -90,6 +98,17 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 				matchedSID++
 			}
 			s.log.Printf("discover: snap extID=%s matched existing hub_id=%s via %s", snap.ID, existingMS.info.ID, matchKind)
+			// Heal a mis-tagged backend (regression: prior versions of
+			// discoverSessions hardcoded BackendOpenCode for every snapshot
+			// regardless of source, leaving Claude sessions persisted as
+			// opencode in sqlite. On reopen the host would dispatch to the
+			// wrong backend manager and hang). Trust the snapshot — it came
+			// straight from the backend that owns the session.
+			if existingMS.info.Backend != snap.Backend {
+				s.log.Printf("discover: HEAL hub_id=%s backend %s → %s (extID=%s)", existingMS.info.ID, existingMS.info.Backend, snap.Backend, snap.ID)
+				existingMS.info.Backend = snap.Backend
+				healed++
+			}
 			existingMS.info.Title = snap.Title
 			existingMS.info.CreatedAt = snap.CreatedAt
 			existingMS.info.UpdatedAt = snap.UpdatedAt
@@ -124,7 +143,7 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		info := agent.SessionInfo{
 			ID:              id,
 			ExternalID:      snap.ID,
-			Backend:         agent.BackendOpenCode,
+			Backend:         snap.Backend,
 			Status:          agent.StatusIdle,
 			GitRef:          gitRef,
 			Title:           snap.Title,
@@ -135,12 +154,12 @@ func (s *Service) discoverSessions(ctx context.Context, projectDir string) (Disc
 		}
 		s.sessions[id] = &managedSession{info: info, backend: nil}
 		s.persistSession(s.sessions[id])
-		s.log.Printf("discover: snap extID=%s NEW → hub_id=%s dir=%s", snap.ID, id, snap.Directory)
+		s.log.Printf("discover: snap extID=%s NEW → hub_id=%s backend=%s dir=%s", snap.ID, id, snap.Backend, snap.Directory)
 		added++
 	}
 	s.mu.Unlock()
 
-	s.log.Printf("discover: %d snapshots, %d matched (extID=%d, backendSID=%d), %d added", len(snapshots), matchedExt+matchedSID, matchedExt, matchedSID, added)
+	s.log.Printf("discover: %d snapshots, %d matched (extID=%d, backendSID=%d), %d added, %d healed", len(snapshots), matchedExt+matchedSID, matchedExt, matchedSID, added, healed)
 
 	return DiscoverResult{Discovered: added, Total: len(snapshots)}, nil
 }
@@ -405,6 +424,24 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 		for evt := range events {
 			evt.SessionID = id
 			s.broadcast(evt)
+
+			// Capture ExternalID the moment the backend learns it,
+			// not when Start() returns. Backends learn their native
+			// session ID mid-Start (Claude: SystemMessage init;
+			// OpenCode: synchronously in the manager's CreateBackend).
+			// If we wait until after Start() to persist, a daemon
+			// restart while Start() is still streaming an LLM
+			// response loses the in-memory sessionID forever — the
+			// row stays at ExternalID="" and Messages() can never
+			// resume it. Cheap: a string compare per event.
+			if extID := ms.backend.SessionID(); extID != "" {
+				s.mu.Lock()
+				if ms2, ok := s.sessions[id]; ok && ms2.info.ExternalID != extID {
+					ms2.info.ExternalID = extID
+					s.persistSession(ms2)
+				}
+				s.mu.Unlock()
+			}
 
 			if evt.Type == agent.EventStatusChange {
 				if data, ok := evt.Data.(agent.StatusChangeData); ok {
