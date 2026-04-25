@@ -228,6 +228,7 @@ func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) erro
 	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
+		b.setStatus(StatusError)
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
