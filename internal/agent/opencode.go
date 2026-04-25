@@ -36,6 +36,7 @@ type ServerResolver func(ctx context.Context) (string, error)
 //     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
+	openMu       sync.Mutex     // serializes Open() so check-and-create is atomic
 	status       SessionStatus
 	sessionID    string         // OpenCode's session ID (assigned by server)
 	serverURL    string         // e.g. "http://127.0.0.1:4123"
@@ -81,8 +82,13 @@ func NewOpenCodeBackend(serverURL string, sessionID string, resolver ServerResol
 // the SSE event stream. If the constructor was given a sessionID, that
 // existing session is reattached; otherwise a new session is created via
 // Session.New(). Idempotent — repeat calls are no-ops once the SSE
-// listener is running.
+// listener is running. openMu serializes the check-and-create so two
+// concurrent callers can't both observe an empty sessionID and create
+// duplicate remote sessions.
 func (b *OpenCodeBackend) Open(ctx context.Context) error {
+	b.openMu.Lock()
+	defer b.openMu.Unlock()
+
 	if b.SessionID() == "" {
 		// Create new session via SDK.
 		session, err := b.client.Session.New(ctx, opencode.SessionNewParams{})
