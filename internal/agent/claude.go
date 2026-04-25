@@ -315,6 +315,13 @@ func (b *ClaudeCodeBackend) setStatus(s SessionStatus) {
 func (b *ClaudeCodeBackend) emit(evt Event) {
 	b.mu.Lock()
 	stopped := b.stopped
+	// Stamp the backend's native session ID on every event so the
+	// host→hub HTTP boundary can propagate it without bespoke signalling.
+	// Empty until the first SystemMessage{init} arrives; once set it
+	// rides every subsequent event for free.
+	if evt.ExternalID == "" {
+		evt.ExternalID = b.sessionID
+	}
 	b.mu.Unlock()
 
 	if stopped {
@@ -367,19 +374,13 @@ func (b *ClaudeCodeBackend) receiveLoop() {
 
 func (b *ClaudeCodeBackend) handleSystemMessage(m *claudecode.SystemMessage) {
 	// The init message carries the session ID in SystemMessage.Data.
+	// Once stored, every subsequent emit() stamps it onto Event.ExternalID
+	// so the hub captures it the moment any event flows.
 	if m.Subtype == "init" {
 		if sid, ok := m.Data["session_id"].(string); ok && sid != "" {
 			b.mu.Lock()
 			b.sessionID = sid
 			b.mu.Unlock()
-			// Emit so subscribers (host SSE relay → hub persistence)
-			// can capture ExternalID immediately, not when Start()
-			// returns. See comment on EventSessionIDLearned.
-			b.emit(Event{
-				Type:      EventSessionIDLearned,
-				Timestamp: time.Now(),
-				Data:      SessionIDLearnedData{ExternalID: sid},
-			})
 		}
 	}
 }
@@ -406,16 +407,8 @@ func (b *ClaudeCodeBackend) handleResult(m *claudecode.ResultMessage) {
 	// The result carries the authoritative CLI session UUID.
 	if m.SessionID != "" {
 		b.mu.Lock()
-		changed := b.sessionID != m.SessionID
 		b.sessionID = m.SessionID
 		b.mu.Unlock()
-		if changed {
-			b.emit(Event{
-				Type:      EventSessionIDLearned,
-				Timestamp: time.Now(),
-				Data:      SessionIDLearnedData{ExternalID: m.SessionID},
-			})
-		}
 	}
 
 	if m.IsError {

@@ -59,15 +59,6 @@ const (
 	EventSessionCreate EventType = "session.create"
 	EventSessionDelete EventType = "session.delete"
 
-	// EventSessionIDLearned is emitted by a backend the moment it learns
-	// its native (external) session ID — typically mid-Start, before the
-	// blocking Start() call returns. Subscribers (the host SSE relay's
-	// httpSessionBackend cache, and the hub's runBackend persistence
-	// loop) use this to capture the ExternalID immediately, so that a
-	// daemon crash mid-LLM-response cannot lose the binding between the
-	// hub session row and the backend's on-disk transcript.
-	EventSessionIDLearned EventType = "session.id_learned"
-
 	// Voice events — emitted by the voice agent running on the daemon.
 	EventVoiceTranscript EventType = "voice.transcript" // Model's spoken response as text
 	EventVoiceStatus     EventType = "voice.status"     // Voice state changes (listening, thinking, speaking, idle)
@@ -77,10 +68,12 @@ const (
 // Event is the unified event type emitted by all backends and forwarded
 // through the daemon to connected TUI clients.
 type Event struct {
-	Type      EventType   `json:"type"`
-	SessionID string      `json:"session_id"`
-	Timestamp time.Time   `json:"timestamp"`
-	Data      interface{} `json:"data"`
+	Type      EventType `json:"type"`
+	SessionID string    `json:"session_id"` // hub session id (set by hub relay)
+	// ExternalID carries the session-backend's native session ID. TODO rename
+	ExternalID string      `json:"external_id,omitempty"`
+	Timestamp  time.Time   `json:"timestamp"`
+	Data       interface{} `json:"data"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for Event.
@@ -89,10 +82,11 @@ type Event struct {
 func (e *Event) UnmarshalJSON(b []byte) error {
 	// First, decode into a raw structure to inspect the type field.
 	var raw struct {
-		Type      EventType       `json:"type"`
-		SessionID string          `json:"session_id"`
-		Timestamp time.Time       `json:"timestamp"`
-		Data      json.RawMessage `json:"data"`
+		Type       EventType       `json:"type"`
+		SessionID  string          `json:"session_id"`
+		ExternalID string          `json:"external_id"`
+		Timestamp  time.Time       `json:"timestamp"`
+		Data       json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
@@ -100,6 +94,7 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 
 	e.Type = raw.Type
 	e.SessionID = raw.SessionID
+	e.ExternalID = raw.ExternalID
 	e.Timestamp = raw.Timestamp
 
 	// If no data payload, leave Data as nil.
@@ -161,12 +156,6 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		var d ReconnectedData
 		if err := json.Unmarshal(raw.Data, &d); err != nil {
 			return fmt.Errorf("unmarshal ReconnectedData: %w", err)
-		}
-		e.Data = d
-	case EventSessionIDLearned:
-		var d SessionIDLearnedData
-		if err := json.Unmarshal(raw.Data, &d); err != nil {
-			return fmt.Errorf("unmarshal SessionIDLearnedData: %w", err)
 		}
 		e.Data = d
 	case EventVoiceTranscript:
@@ -297,15 +286,6 @@ type ReconnectingData struct {
 type ReconnectedData struct {
 	Attempts   int  `json:"attempts"`    // How many attempts it took
 	URLChanged bool `json:"url_changed"` // Whether the server URL changed (new port)
-}
-
-// SessionIDLearnedData is the payload for EventSessionIDLearned.
-//
-// Carried as an event so the hub can persist the binding the moment the
-// backend learns its ID — see comment on EventSessionIDLearned for the
-// crash-recovery rationale.
-type SessionIDLearnedData struct {
-	ExternalID string `json:"external_id"`
 }
 
 // VoiceTranscriptData is the payload for EventVoiceTranscript.
@@ -507,50 +487,85 @@ type SendMessageOpts struct {
 
 // SessionBackend is the interface that each agent backend must implement.
 // The daemon creates one SessionBackend instance per session.
+//
+// Lifecycle:
+//
+//	NewBackend → Start (or Watch) → SendMessage* → Abort? → Stop
+//
+// Concurrency: all methods must be safe to call concurrently from
+// multiple goroutines.
+//
+// Event timing: backends emit events asynchronously via the Events()
+// channel. Methods below describe what their *return* signals, NOT when
+// the agent has finished work. The hub observes completion via events
+// (StatusChange to Idle) and via SessionID stamping (Event.ExternalID).
 type SessionBackend interface {
-	// Start launches the agent with the given request.
-	// It blocks for the duration of the LLM turn; events stream via Events().
+	// Start dispatches the initial prompt to the agent and returns once
+	// the request has been handed off (e.g. HTTP call accepted, or stdin
+	// write completed). It does NOT block for the LLM turn — observe
+	// completion via Events().
+	//
+	// The backend's native session ID may not be known when Start
+	// returns (e.g. Claude learns it asynchronously from the CLI's
+	// SystemMessage{init}). Callers MUST NOT poll SessionID() after
+	// Start; instead, read Event.ExternalID from the Events() stream,
+	// which the backend stamps as soon as the ID is learned.
 	Start(ctx context.Context, req StartRequest) error
 
-	// Watch starts listening for events on this session without sending a
-	// prompt. Use this to observe a session that may already be active
-	// (e.g. a discovered/historical session). Backends that don't support
-	// passive observation (like Claude CLI) should return nil (no-op).
-	// The Events channel must produce events after Watch returns.
+	// Watch attaches to a session that may already exist (e.g. a
+	// discovered/historical session) without sending a prompt. It must
+	// be idempotent and safe to call on an already-attached session.
+	// Backends that cannot replay or passively observe (Claude CLI)
+	// MUST return nil (no-op) rather than erroring — Messages() will
+	// still serve transcript reads from disk.
 	Watch(ctx context.Context) error
 
-	// SendMessage sends a follow-up message to the running agent.
+	// SendMessage dispatches a follow-up prompt. Returns once the
+	// request has been handed off, NOT when the LLM finishes.
 	SendMessage(ctx context.Context, opts SendMessageOpts) error
 
-	// Abort interrupts the currently running agent task.
+	// Abort signals the agent to interrupt the current turn. Best-effort:
+	// returns once the signal has been delivered, not when the agent has
+	// actually stopped. Observe StatusChange events for completion.
 	Abort(ctx context.Context) error
 
-	// Stop gracefully shuts down the backend and cleans up resources.
+	// Stop performs a graceful shutdown: closes the event channel,
+	// terminates child processes, and releases resources. Blocks until
+	// teardown completes. Safe to call multiple times.
 	Stop() error
 
-	// Events returns a channel that receives all events from this backend.
-	// The channel is closed when the backend stops.
+	// Events returns the event stream for this backend. The channel is
+	// closed when the backend stops. All events for a session flow
+	// through this channel; the hub stamps SessionID and persists
+	// ExternalID from any event whose ExternalID field is non-empty.
 	Events() <-chan Event
 
-	// Status returns the current session status.
+	// Status returns the current session status snapshot. May change
+	// concurrently; treat as a hint, not authoritative.
 	Status() SessionStatus
 
-	// SessionID returns the agent-assigned session ID (may differ from the daemon's ID).
+	// SessionID returns the agent-assigned native session ID, or "" if
+	// not yet known. Used by HTTP handlers to serialize ExternalID and
+	// by discover for deduplication. Hub code MUST NOT poll this after
+	// Start to persist the ID — use Event.ExternalID instead, which is
+	// the single source of truth that survives daemon restarts.
 	SessionID() string
 
-	// Messages returns the full message history for this session.
-	// Each MessageData includes role, content, and parts.
-	// Returns nil, nil if the backend does not support history retrieval.
+	// Messages returns the on-disk transcript for this session. Reads
+	// fresh from the backend's storage on each call (no in-memory
+	// accumulation fallback). Returns (nil, nil) if no transcript
+	// exists yet (e.g. session ID not learned, or backend doesn't
+	// support history retrieval).
 	Messages(ctx context.Context) ([]MessageData, error)
 
-	// Revert reverts the session to the specified message, removing all
-	// subsequent messages. Returns an error if the backend does not support
-	// reverting (e.g. Claude Code).
+	// Revert removes the specified message and all subsequent messages.
+	// Returns an error if the backend does not support reverting
+	// (e.g. Claude Code).
 	Revert(ctx context.Context, messageID string) error
 
-	// Fork creates a new session forked from the given message.
-	// Returns the new session's external ID and title.
-	// Returns an error if the backend does not support forking.
+	// Fork creates a new session branched from the given message.
+	// Returns the new session's external ID and title. Returns an error
+	// if the backend does not support forking.
 	Fork(ctx context.Context, messageID string) (ForkResult, error)
 
 	// RespondPermission replies to a pending permission prompt.

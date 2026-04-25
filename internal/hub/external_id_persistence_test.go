@@ -59,16 +59,17 @@ func TestPersistence_ExternalIDPersistedWhileStartStillRunning(t *testing.T) {
 				b.mu.Lock()
 				b.sessionID = "real-backend-session-id-123"
 				b.mu.Unlock()
-				t.Log("DEBUG mock set sessionID, emitting EventSessionIDLearned")
-				// Backends MUST emit EventSessionIDLearned the moment
-				// they learn their native ID — this is the contract
-				// the host SSE relay and hub persistence rely on.
+				t.Log("DEBUG mock set sessionID, emitting content event with ExternalID stamped")
+				// Backends stamp Event.ExternalID on every emit once
+				// they know it (see Event.ExternalID docstring). The
+				// hub captures it from the next event that flows.
 				b.events <- agent.Event{
-					Type:      agent.EventSessionIDLearned,
-					Timestamp: time.Now(),
-					Data:      agent.SessionIDLearnedData{ExternalID: "real-backend-session-id-123"},
+					Type:       agent.EventMessage,
+					ExternalID: "real-backend-session-id-123",
+					Timestamp:  time.Now(),
+					Data:       agent.MessageData{Role: "assistant"},
 				}
-				t.Log("DEBUG mock EventSessionIDLearned sent")
+				t.Log("DEBUG mock event sent")
 			}()
 			<-startReturned // never returns during the test body
 			return nil

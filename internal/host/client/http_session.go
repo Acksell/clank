@@ -227,30 +227,20 @@ func (b *httpSessionBackend) streamEvents() {
 		if err := json.Unmarshal(data, &ev); err != nil {
 			return
 		}
-		// Cache status updates so Status() reflects the latest known
-		// state without a separate HTTP fetch.
-		if ev.Type == agent.EventStatusChange {
-			if d, ok := ev.Data.(agent.StatusChangeData); ok {
-				b.mu.Lock()
-				b.status = d.NewStatus
-				b.mu.Unlock()
-			}
+		// Cache backend-stamped fields so SessionID()/Status() reflect
+		// the latest known state without a separate HTTP fetch. The
+		// ExternalID arrives stamped on whatever event flows after the
+		// backend learns it (see Event.ExternalID docstring) — this is
+		// what lets the hub persist it before Start() returns, so a
+		// daemon crash mid-LLM-response doesn't lose the binding.
+		b.mu.Lock()
+		if ev.ExternalID != "" {
+			b.externalID = ev.ExternalID
 		}
-		// Cache the backend's native session ID the moment it's
-		// learned. SessionID() is otherwise only refreshed when
-		// Start() returns; for backends that learn their ID mid-Start
-		// (Claude: SystemMessage init), the hub's per-event
-		// runBackend persistence loop must observe the updated cache
-		// before Start() completes — otherwise a daemon crash
-		// mid-LLM-response leaves the row at ExternalID="" and the
-		// session can never be resumed.
-		if ev.Type == agent.EventSessionIDLearned {
-			if d, ok := ev.Data.(agent.SessionIDLearnedData); ok && d.ExternalID != "" {
-				b.mu.Lock()
-				b.externalID = d.ExternalID
-				b.mu.Unlock()
-			}
+		if d, ok := ev.Data.(agent.StatusChangeData); ok {
+			b.status = d.NewStatus
 		}
+		b.mu.Unlock()
 		b.eventsCh <- ev
 	})
 }

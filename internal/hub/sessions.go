@@ -425,19 +425,18 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 			evt.SessionID = id
 			s.broadcast(evt)
 
-			// Capture ExternalID the moment the backend learns it,
-			// not when Start() returns. Backends learn their native
-			// session ID mid-Start (Claude: SystemMessage init;
-			// OpenCode: synchronously in the manager's CreateBackend).
-			// If we wait until after Start() to persist, a daemon
-			// restart while Start() is still streaming an LLM
+			// Persist ExternalID the moment the backend learns it,
+			// not when Start() returns. Backends stamp Event.ExternalID
+			// in their emit() helper as soon as they know it (e.g.
+			// Claude: SystemMessage init mid-Start). Without this, a
+			// daemon restart while Start() is still streaming an LLM
 			// response loses the in-memory sessionID forever — the
 			// row stays at ExternalID="" and Messages() can never
-			// resume it. Cheap: a string compare per event.
-			if extID := ms.backend.SessionID(); extID != "" {
+			// resume it.
+			if evt.ExternalID != "" {
 				s.mu.Lock()
-				if ms2, ok := s.sessions[id]; ok && ms2.info.ExternalID != extID {
-					ms2.info.ExternalID = extID
+				if ms2, ok := s.sessions[id]; ok && ms2.info.ExternalID != evt.ExternalID {
+					ms2.info.ExternalID = evt.ExternalID
 					s.persistSession(ms2)
 				}
 				s.mu.Unlock()
@@ -481,17 +480,14 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 		return
 	}
 
-	// After Start() returns, capture the backend's native session ID so
-	// future discover calls can deduplicate against it.
-	extID := ms.backend.SessionID()
-	if extID != "" {
-		s.mu.Lock()
-		if ms2, ok := s.sessions[id]; ok {
-			ms2.info.ExternalID = extID
-			s.persistSession(ms2)
-		}
-		s.mu.Unlock()
-	}
+	// Note: ExternalID is no longer captured here. Backends learn their
+	// native session ID at different times (OpenCode synchronously inside
+	// Start; Claude asynchronously when the CLI emits SystemMessage{init};
+	// future backends might only learn it after the first turn). The
+	// single source of truth is the event-relay loop above, which observes
+	// Event.ExternalID stamped by the backend's emit() and persists it the
+	// moment it arrives. This is what survives a daemon restart between
+	// Start completing and the backend learning its ID.
 
 	// Backend event channel closed — mark as dead if still busy.
 	s.mu.RLock()

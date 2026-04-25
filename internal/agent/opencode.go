@@ -391,6 +391,12 @@ func (b *OpenCodeBackend) emit(evt Event) {
 
 	b.mu.Lock()
 	closed := b.eventsClosed
+	// Stamp the backend's native session ID on every event so the
+	// host→hub HTTP boundary can propagate it without bespoke signalling.
+	// See Event.ExternalID docstring.
+	if evt.ExternalID == "" {
+		evt.ExternalID = b.sessionID
+	}
 	b.mu.Unlock()
 	if closed {
 		return
