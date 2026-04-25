@@ -35,6 +35,7 @@ type activeToolBlock struct {
 //     via the SDK's GetSessionMessages, so history survives daemon restarts.
 type ClaudeCodeBackend struct {
 	mu         sync.Mutex
+	openMu     sync.Mutex // serializes Open() so check-and-create is atomic
 	status     SessionStatus
 	sessionID  string // Claude's CLI session UUID (from ResultMessage)
 	projectDir string
@@ -99,8 +100,13 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 // receiveLoop. If the constructor was given a resumeSessionID, the CLI
 // is launched with --resume so the JSONL transcript is reattached.
 //
-// Idempotent: a second call while already connected returns nil.
+// Idempotent: a second call while already connected returns nil. openMu
+// serializes the check-and-create so concurrent callers can't both spawn
+// a CLI subprocess and orphan one of them.
 func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
+	b.openMu.Lock()
+	defer b.openMu.Unlock()
+
 	b.mu.Lock()
 	if b.client != nil {
 		b.mu.Unlock()
@@ -108,6 +114,7 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	}
 	workDir := b.projectDir
 	resumeID := b.sessionID
+	factory := b.ClientFactory
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -130,24 +137,22 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 
 	// Build the client — use the test factory if provided.
 	var client claudecode.Client
-	b.mu.Lock()
-	factory := b.ClientFactory
-	b.mu.Unlock()
-
 	if factory != nil {
 		client = factory(opts...)
 	} else {
 		client = claudecode.NewClient(opts...)
 	}
 
-	b.mu.Lock()
-	b.client = client
-	b.mu.Unlock()
-
-	if err := b.client.Connect(b.ctx); err != nil {
+	// Only commit b.client after a successful Connect, so a failed Open
+	// leaves the backend retryable instead of stuck in a half-open state.
+	if err := client.Connect(b.ctx); err != nil {
 		b.setStatus(StatusError)
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
+
+	b.mu.Lock()
+	b.client = client
+	b.mu.Unlock()
 
 	// Connection established. Transition out of StatusStarting so the
 	// TUI's spinner clears for re-attached sessions (those that only
