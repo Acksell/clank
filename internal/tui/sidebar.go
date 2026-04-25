@@ -270,6 +270,13 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 		} else {
 			m.branches = msg.branches
 			m.err = nil
+			// Clamp the cursor: if the branch list shrank, the prior
+			// cursor may now exceed settingsCursorIndex(), leaving
+			// CursorOnSettings() (strict equality) and cursorSection()
+			// (>=) disagreeing about where the cursor is.
+			if max := m.settingsCursorIndex(); m.cursor > max {
+				m.cursor = max
+			}
 		}
 		return nil
 

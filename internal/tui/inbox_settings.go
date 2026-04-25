@@ -74,12 +74,14 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case settingsEntryDefaultBackend:
 			// Cycle to the next backend in agent.AllBackends. Only two
 			// backends today, but the cycle generalises if a third is
-			// added. Persist asynchronously to keep the UI snappy.
-			// Derive "next" from the in-memory value, not disk: rapid
-			// toggles would otherwise read stale prefs and repeat.
+			// added. Derive "next" from the in-memory value, not disk:
+			// rapid toggles would otherwise read stale prefs and repeat.
+			// Persist synchronously so a new compose session opened
+			// immediately after the toggle (which loads the backend from
+			// preferences.json) sees the updated value.
 			next := nextDefaultBackend(m.settings.DefaultBackendValue())
 			m.settings.SetDefaultBackendValue(string(next))
-			go persistDefaultBackend(next)
+			persistDefaultBackend(next)
 			return m, nil
 		}
 		return m, nil
