@@ -295,9 +295,6 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		return nil, "", err
 	}
 
-	log.Printf("[host] DEBUG CreateSession: hub_id=%s backend=%s workDir=%q resume_ext_id=%q git_local=%q git_remote=%q",
-		sessionID, req.Backend, workDir, req.SessionID, req.GitRef.LocalPath, req.GitRef.RemoteURL)
-
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: req.SessionID,
