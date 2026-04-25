@@ -10,17 +10,23 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// openSettings switches the inbox into the Settings screen. The sidebar
-// stays visible on the left; the settings page renders on the right.
-// Focus goes to the settings page so the user can start navigating
-// entries immediately; pressing left returns focus to the sidebar.
-func (m *InboxModel) openSettings() {
+// showSettings renders the Settings page in the right pane without
+// shifting focus away from the sidebar. Used for "hover preview" when
+// the sidebar cursor lands on the ⚙ Settings footer row, so the right
+// pane reflects the cursor position the same way it does for branches.
+func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
 	m.settings = newSettingsView(prefs.ColorScheme)
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
-	m.settings.SetFocused(true)
-
 	m.screen = screenSettings
+}
+
+// openSettings switches the inbox into the Settings screen and moves
+// focus to the settings page so the user can start navigating entries
+// immediately; pressing left returns focus to the sidebar.
+func (m *InboxModel) openSettings() {
+	m.showSettings()
+	m.settings.SetFocused(true)
 	m.pane = paneSessions
 	m.sidebar.SetFocused(false)
 }

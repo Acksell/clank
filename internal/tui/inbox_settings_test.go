@@ -99,6 +99,45 @@ func TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen(t *testing.T) {
 	}
 }
 
+// TestInbox_HoveringSettingsRow_ShowsSettingsScreen verifies the symmetric
+// counterpart to TestInbox_NavigatingOffSettingsRow_ClosesSettingsScreen:
+// when the sidebar cursor lands on the ⚙ Settings footer (e.g. via j/down
+// from a branch row), the right pane should auto-render the settings page
+// — mirroring how hovering a branch updates the session list. Focus must
+// stay on the sidebar so the user can keep navigating with j/k.
+func TestInbox_HoveringSettingsRow_ShowsSettingsScreen(t *testing.T) {
+	t.Parallel()
+
+	m := &InboxModel{
+		width:  120,
+		height: 40,
+		screen: screenInbox,
+		pane:   paneSidebar,
+		sidebar: SidebarModel{
+			projectDir: "/tmp/test",
+			focused:    true,
+			branches:   []host.BranchInfo{{Name: "main"}},
+		},
+	}
+	// Start one row above settings so a single 'down' lands on it.
+	m.sidebar.cursor = m.sidebar.settingsCursorIndex() - 1
+
+	m.handleSidebarKey(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	if !m.sidebar.CursorOnSettings() {
+		t.Fatalf("precondition: cursor should be on settings row")
+	}
+	if m.screen != screenSettings {
+		t.Errorf("expected screenSettings after hovering settings row, got %v", m.screen)
+	}
+	if !m.sidebar.Focused() {
+		t.Error("expected sidebar to retain focus on hover (no focus shift)")
+	}
+	if m.pane != paneSidebar {
+		t.Errorf("expected pane to remain paneSidebar on hover, got %v", m.pane)
+	}
+}
+
 // TestInbox_CloseSettingsReturnsToInbox verifies esc from the settings page
 // lands the user back on the inbox screen with sidebar focused (parity
 // with the rest of the two-pane navigation).

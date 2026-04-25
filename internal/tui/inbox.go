@@ -1596,6 +1596,15 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	if m.sidebar.SelectedBranch() != prevBranch {
 		m.applyFiltersAndRebuild()
 	}
+	// Mirror the branch-hover behaviour for the ⚙ Settings footer: if
+	// the cursor lands on it, render the settings page in the right pane
+	// without stealing focus from the sidebar. The reverse transition
+	// (cursor moves off Settings → revert to inbox) is handled in
+	// updateSettings, since at that point the screen is screenSettings
+	// and key routing has already moved over there.
+	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
+		m.showSettings()
+	}
 	return m, cmd
 }
 
