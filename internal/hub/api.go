@@ -94,19 +94,14 @@ func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.Messa
 		return nil, ErrSessionNotFound
 	}
 	if ms.backend == nil {
-		s.log.Printf("DEBUG SessionMessages: activating backend for hub_id=%s ext_id=%q backend=%q hostname=%q git_local=%q git_remote=%q",
-			id, ms.info.ExternalID, ms.info.Backend, ms.info.Hostname, ms.info.GitRef.LocalPath, ms.info.GitRef.RemoteURL)
 		if err := s.activateBackend(id, ms); err != nil {
-			s.log.Printf("DEBUG SessionMessages: activateBackend failed: %v", err)
 			return nil, err
 		}
 	}
 	msgs, err := ms.backend.Messages(ctx)
 	if err != nil {
-		s.log.Printf("DEBUG SessionMessages: backend.Messages err for hub_id=%s: %v", id, err)
 		return nil, err
 	}
-	s.log.Printf("DEBUG SessionMessages: hub_id=%s returned %d messages (nil=%v)", id, len(msgs), msgs == nil)
 	if msgs == nil {
 		msgs = []agent.MessageData{}
 	}
