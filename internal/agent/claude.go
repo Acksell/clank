@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -305,7 +304,6 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 	b.mu.Unlock()
 
 	if sessionID == "" {
-		log.Printf("[claude] DEBUG Messages: empty sessionID workDir=%q → returning nil", workDir)
 		return nil, nil
 	}
 
@@ -316,10 +314,8 @@ func (b *ClaudeCodeBackend) Messages(ctx context.Context) ([]MessageData, error)
 
 	sdkMsgs, err := claudecode.GetSessionMessages(sessionID, opts...)
 	if err != nil {
-		log.Printf("[claude] DEBUG Messages: GetSessionMessages err sessionID=%s workDir=%q: %v", sessionID, workDir, err)
 		return nil, fmt.Errorf("read claude session %s: %w", sessionID, err)
 	}
-	log.Printf("[claude] DEBUG Messages: sessionID=%s workDir=%q got %d sdk messages", sessionID, workDir, len(sdkMsgs))
 
 	out := make([]MessageData, 0, len(sdkMsgs))
 	for _, m := range sdkMsgs {
