@@ -79,9 +79,9 @@ func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 
 // NewClaudeCodeBackendForSession is the resume variant. It pre-seeds the
 // SDK session ID so that Messages() can read the on-disk JSONL transcript
-// before Start runs (or without Start at all — the activateBackend path
-// for reopening historical sessions only calls Watch, which is a no-op
-// for Claude). resumeSessionID may be empty for fresh sessions.
+// immediately, and so that Open() launches the CLI with --resume to
+// reattach the persistent subprocess for the existing conversation.
+// resumeSessionID may be empty for fresh sessions.
 func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ClaudeCodeBackend{
@@ -149,6 +149,19 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
 
+	// Connection established. Transition out of StatusStarting so the
+	// TUI's spinner clears for re-attached sessions (those that only
+	// call Open without a follow-up Send/OpenAndSend). For the create
+	// path, OpenAndSend has already flipped status to Busy before
+	// calling us, so this conditional leaves it alone.
+	b.mu.Lock()
+	if b.status == StatusStarting {
+		b.mu.Unlock()
+		b.setStatus(StatusIdle)
+	} else {
+		b.mu.Unlock()
+	}
+
 	// Start receiving messages from the SDK in the background.
 	go b.receiveLoop()
 	return nil
@@ -165,6 +178,10 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 // the TUI history. Follow-up prompts go through Send and DO emit the
 // user message because there's no other place that records them.
 func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
+	// Mark Busy before Open so Open's "Starting → Idle" conditional
+	// is bypassed on the create path; we go directly Starting → Busy.
+	b.setStatus(StatusBusy)
+
 	if err := b.Open(ctx); err != nil {
 		return err
 	}
@@ -175,8 +192,6 @@ func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpt
 	if client == nil {
 		return fmt.Errorf("session not open after Open")
 	}
-
-	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
 		b.setStatus(StatusError)

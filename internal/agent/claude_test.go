@@ -784,6 +784,41 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendOpenOnlyTransitionsToIdle is a regression test for
+// the stuck-spinner bug on re-attached sessions. activateBackend (hub) calls
+// Open() without a follow-up Send/OpenAndSend when reopening the chat view
+// for an existing session. Open must transition out of StatusStarting on
+// successful Connect, otherwise the TUI shows a spinner forever (status
+// previously only flipped inside handleResult, which only fires after a Query).
+func TestClaudeCodeBackendOpenOnlyTransitionsToIdle(t *testing.T) {
+	t.Parallel()
+
+	transport := newMockTransport(nil)
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.Open(context.Background()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt, ok := <-b.Events():
+			if !ok {
+				t.Fatal("events channel closed before reaching Idle")
+			}
+			if evt.Type == agent.EventStatusChange {
+				if data, ok := evt.Data.(agent.StatusChangeData); ok && data.NewStatus == agent.StatusIdle {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for StatusIdle after Open; current status=%s", b.Status())
+		}
+	}
+}
+
 func TestClaudeCodeBackendSendMessageBeforeStart(t *testing.T) {
 	t.Parallel()
 	b := agent.NewClaudeCodeBackend(t.TempDir())
