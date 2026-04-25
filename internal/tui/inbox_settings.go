@@ -7,6 +7,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 )
 
@@ -16,7 +17,7 @@ import (
 // pane reflects the cursor position the same way it does for branches.
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
-	m.settings = newSettingsView(prefs.ColorScheme)
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend)
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -66,6 +67,14 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.themePicker = newThemePicker(prefs.ColorScheme)
 			m.showThemePicker = true
 			return m, m.themePicker.Init()
+		case settingsEntryDefaultBackend:
+			// Cycle to the next backend in agent.AllBackends. Only two
+			// backends today, but the cycle generalises if a third is
+			// added. Persist asynchronously to keep the UI snappy.
+			next := nextDefaultBackend()
+			go persistDefaultBackend(next)
+			m.settings.SetDefaultBackendValue(string(next))
+			return m, nil
 		}
 		return m, nil
 
@@ -135,5 +144,28 @@ func (m *InboxModel) updateThemePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 func persistColorScheme(name string) {
 	prefs, _ := config.LoadPreferences()
 	prefs.ColorScheme = name
+	_ = config.SavePreferences(prefs)
+}
+
+// nextDefaultBackend reads the currently-saved default backend and
+// returns the next one in agent.AllBackends. Wraps around at the end.
+// Errors loading prefs are treated as "no preference" → first backend.
+func nextDefaultBackend() agent.BackendType {
+	prefs, _ := config.LoadPreferences()
+	current, _ := agent.ResolveBackendPreference(prefs.DefaultBackend)
+	for i, b := range agent.AllBackends {
+		if b == current {
+			return agent.AllBackends[(i+1)%len(agent.AllBackends)]
+		}
+	}
+	// Current backend not in the list (shouldn't happen) — restart cycle.
+	return agent.AllBackends[0]
+}
+
+// persistDefaultBackend writes the user's chosen default backend to
+// preferences.json. See persistColorScheme for the error-handling rationale.
+func persistDefaultBackend(bt agent.BackendType) {
+	prefs, _ := config.LoadPreferences()
+	prefs.DefaultBackend = string(bt)
 	_ = config.SavePreferences(prefs)
 }

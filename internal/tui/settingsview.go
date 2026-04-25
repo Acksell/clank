@@ -22,6 +22,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // settingsEntryKind identifies which editor to open for a given row.
@@ -29,6 +31,7 @@ type settingsEntryKind int
 
 const (
 	settingsEntryColorScheme settingsEntryKind = iota
+	settingsEntryDefaultBackend
 )
 
 // settingsEntry is one row on the settings page.
@@ -69,7 +72,7 @@ type settingsView struct {
 
 // newSettingsView builds a settings page with the current preference
 // values baked in so they render in the "value" column.
-func newSettingsView(currentColorScheme string) settingsView {
+func newSettingsView(currentColorScheme, currentDefaultBackend string) settingsView {
 	return settingsView{
 		entries: []settingsEntry{
 			{
@@ -77,6 +80,12 @@ func newSettingsView(currentColorScheme string) settingsView {
 				label:       "Change color scheme",
 				description: "Pick the TUI palette (live preview on hover).",
 				value:       resolveColorSchemeName(currentColorScheme),
+			},
+			{
+				kind:        settingsEntryDefaultBackend,
+				label:       "Default agent backend",
+				description: "Backend used for new sessions when no override is given. Press enter to cycle.",
+				value:       resolveDefaultBackendName(currentDefaultBackend),
 			},
 		},
 	}
@@ -106,6 +115,19 @@ func (s *settingsView) SetColorSchemeValue(name string) {
 	}
 }
 
+// SetDefaultBackendValue updates the "current value" text for the
+// default-backend entry. Called after the user cycles the value so the
+// column reflects the new selection without rebuilding the view.
+func (s *settingsView) SetDefaultBackendValue(name string) {
+	display := resolveDefaultBackendName(name)
+	for i := range s.entries {
+		if s.entries[i].kind == settingsEntryDefaultBackend {
+			s.entries[i].value = display
+			return
+		}
+	}
+}
+
 // resolveColorSchemeName returns the scheme name to display, falling back
 // to the first built-in (the default) when no preference is set.
 func resolveColorSchemeName(name string) string {
@@ -113,6 +135,15 @@ func resolveColorSchemeName(name string) string {
 		return builtInSchemes[0].Name
 	}
 	return name
+}
+
+// resolveDefaultBackendName returns the backend name to display, falling
+// back to the package-level default when no preference is set or the
+// stored value is unknown. Unknown values are treated as "default" so
+// the settings UI never displays a string that the runtime would reject.
+func resolveDefaultBackendName(name string) string {
+	bt, _ := agent.ResolveBackendPreference(name)
+	return string(bt)
 }
 
 func (s settingsView) Update(msg tea.Msg) (settingsView, tea.Cmd) {

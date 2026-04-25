@@ -20,7 +20,8 @@ func TestPreferences_RoundTrip(t *testing.T) {
 			ModelID:    "claude-opus-4",
 			ProviderID: "anthropic",
 		},
-		ColorScheme: "tokyo-night",
+		ColorScheme:    "tokyo-night",
+		DefaultBackend: "claude-code",
 	}
 	if err := SavePreferences(want); err != nil {
 		t.Fatalf("SavePreferences: %v", err)
@@ -33,6 +34,9 @@ func TestPreferences_RoundTrip(t *testing.T) {
 
 	if got.ColorScheme != want.ColorScheme {
 		t.Errorf("ColorScheme: got %q, want %q", got.ColorScheme, want.ColorScheme)
+	}
+	if got.DefaultBackend != want.DefaultBackend {
+		t.Errorf("DefaultBackend: got %q, want %q", got.DefaultBackend, want.DefaultBackend)
 	}
 	if got.Model == nil || got.Model.ModelID != want.Model.ModelID {
 		t.Errorf("Model: got %+v, want %+v", got.Model, want.Model)
@@ -102,6 +106,9 @@ func TestPreferences_OmitEmpty(t *testing.T) {
 	s := string(data)
 	if strings.Contains(s, "color_scheme") {
 		t.Errorf("color_scheme should be omitted when empty, got: %s", s)
+	}
+	if strings.Contains(s, "default_backend") {
+		t.Errorf("default_backend should be omitted when empty, got: %s", s)
 	}
 	if strings.Contains(s, "model") {
 		t.Errorf("model should be omitted when nil, got: %s", s)

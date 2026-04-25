@@ -5,12 +5,14 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 func TestSettingsView_NewShowsCurrentScheme(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("dracula")
+	s := newSettingsView("dracula", "")
 	if s.entries[0].kind != settingsEntryColorScheme {
 		t.Fatalf("expected first entry to be color scheme, got %v", s.entries[0].kind)
 	}
@@ -19,10 +21,54 @@ func TestSettingsView_NewShowsCurrentScheme(t *testing.T) {
 	}
 }
 
+// TestSettingsView_NewShowsCurrentDefaultBackend pins the default-backend
+// row's wiring — adding/reordering entries should be a deliberate change.
+func TestSettingsView_NewShowsCurrentDefaultBackend(t *testing.T) {
+	t.Parallel()
+
+	s := newSettingsView("", "claude-code")
+	if s.entries[1].kind != settingsEntryDefaultBackend {
+		t.Fatalf("expected second entry to be default backend, got %v", s.entries[1].kind)
+	}
+	if s.entries[1].value != "claude-code" {
+		t.Errorf("expected value 'claude-code', got %q", s.entries[1].value)
+	}
+}
+
+// TestSettingsView_DefaultBackend_EmptyShowsBuiltInDefault verifies an
+// unset preference renders as the built-in default backend.
+func TestSettingsView_DefaultBackend_EmptyShowsBuiltInDefault(t *testing.T) {
+	t.Parallel()
+
+	s := newSettingsView("", "")
+	if got, want := s.entries[1].value, string(agent.DefaultBackend); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestSettingsView_SetDefaultBackendValueUpdatesEntry verifies the value
+// column refreshes after the inbox cycles the backend, without rebuilding
+// the whole settings view.
+func TestSettingsView_SetDefaultBackendValueUpdatesEntry(t *testing.T) {
+	t.Parallel()
+
+	s := newSettingsView("", "opencode")
+	s.SetDefaultBackendValue("claude-code")
+	if got := s.entries[1].value; got != "claude-code" {
+		t.Errorf("entry value: got %q, want claude-code", got)
+	}
+
+	// Empty resolves to the built-in default.
+	s.SetDefaultBackendValue("")
+	if got, want := s.entries[1].value, string(agent.DefaultBackend); got != want {
+		t.Errorf("empty should resolve to %q, got %q", want, got)
+	}
+}
+
 func TestSettingsView_NewEmptySchemeDisplaysDefault(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("")
+	s := newSettingsView("", "")
 	if got, want := s.entries[0].value, builtInSchemes[0].Name; got != want {
 		t.Errorf("empty scheme name should resolve to %q, got %q", want, got)
 	}
@@ -34,7 +80,7 @@ func TestSettingsView_NewEmptySchemeDisplaysDefault(t *testing.T) {
 func TestSettingsView_EnterEmitsActivatedMsg(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("")
+	s := newSettingsView("", "")
 	s, cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected Update to return a cmd on Enter")
@@ -53,7 +99,7 @@ func TestSettingsView_EnterEmitsActivatedMsg(t *testing.T) {
 func TestSettingsView_EscEmitsCloseMsg(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("")
+	s := newSettingsView("", "")
 	_, cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if cmd == nil {
 		t.Fatal("expected cmd on esc")
@@ -66,7 +112,7 @@ func TestSettingsView_EscEmitsCloseMsg(t *testing.T) {
 func TestSettingsView_LeftEmitsFocusSidebarMsg(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("")
+	s := newSettingsView("", "")
 	_, cmd := s.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
 	if cmd == nil {
 		t.Fatal("expected cmd on left")
@@ -79,7 +125,7 @@ func TestSettingsView_LeftEmitsFocusSidebarMsg(t *testing.T) {
 func TestSettingsView_SetColorSchemeValueUpdatesEntry(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("default")
+	s := newSettingsView("default", "")
 	s.SetColorSchemeValue("tokyo-night")
 	if got := s.entries[0].value; got != "tokyo-night" {
 		t.Errorf("entry value: got %q, want tokyo-night", got)
@@ -95,7 +141,7 @@ func TestSettingsView_SetColorSchemeValueUpdatesEntry(t *testing.T) {
 func TestSettingsView_ViewContainsLabelAndValue(t *testing.T) {
 	t.Parallel()
 
-	s := newSettingsView("gruvbox-dark")
+	s := newSettingsView("gruvbox-dark", "")
 	s.SetSize(80, 30)
 	s.SetFocused(true)
 	out := s.View()

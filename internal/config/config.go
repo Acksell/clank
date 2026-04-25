@@ -30,6 +30,15 @@ type Preferences struct {
 	// ColorScheme is the TUI color scheme name (e.g. "tokyo-night").
 	// Empty string means "use the default scheme".
 	ColorScheme string `json:"color_scheme,omitempty"`
+	// DefaultBackend is the user's preferred coding agent backend
+	// (e.g. "opencode", "claude-code"). Used when neither the CLI
+	// `--backend` flag nor an explicit TUI selection overrides it.
+	// Empty string means "use the built-in default" (agent.DefaultBackend).
+	//
+	// Stored as a plain string rather than agent.BackendType to avoid
+	// pulling internal/agent into the config package's dependency graph.
+	// Validate at the boundary via agent.ResolveBackendPreference.
+	DefaultBackend string `json:"default_backend,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.
