@@ -9,11 +9,11 @@ import (
 )
 
 // TestSidebar_SectionBreakpoints verifies the breakpoint list adapts to the
-// number of branches:
+// number of branches. With the Clank header at index 0 the layout is:
 //
-//   - 0 branches: [0 (All), 1 (Settings)]   — no separate "end of worktrees"
-//   - 1 branch:   [0, 1, 2]
-//   - 3 branches: [0, 3, 4]
+//   - 0 branches: [0 Clank, 1 All, 2 Settings]
+//   - 1 branch:   [0, 1, 2, 3]
+//   - 3 branches: [0, 1, 4, 5]
 func TestSidebar_SectionBreakpoints(t *testing.T) {
 	t.Parallel()
 
@@ -22,9 +22,9 @@ func TestSidebar_SectionBreakpoints(t *testing.T) {
 		branches int
 		want     []int
 	}{
-		{"no branches", 0, []int{0, 1}},
-		{"one branch", 1, []int{0, 1, 2}},
-		{"three branches", 3, []int{0, 3, 4}},
+		{"no branches", 0, []int{0, 1, 2}},
+		{"one branch", 1, []int{0, 1, 2, 3}},
+		{"three branches", 3, []int{0, 1, 4, 5}},
 	}
 
 	for _, tc := range cases {
@@ -42,6 +42,8 @@ func TestSidebar_SectionBreakpoints(t *testing.T) {
 
 // TestSidebar_ShiftArrowNavigation exercises shift+up / shift+down via
 // handleKey so we cover binding wiring as well as the breakpoint math.
+//
+// Layout reminder: [0 Clank][1 All][2..N+1 branches][N+2 Settings].
 func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 	t.Parallel()
 
@@ -52,23 +54,27 @@ func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 branches → breakpoints [0, 3, 4]
-		{"3b: shift+down from All -> end of worktrees", 3, 0, shiftDownKey(), 3},
-		{"3b: shift+down from middle -> end of worktrees", 3, 2, shiftDownKey(), 3},
-		{"3b: shift+down from end of worktrees -> Settings", 3, 3, shiftDownKey(), 4},
-		{"3b: shift+down from Settings clamps", 3, 4, shiftDownKey(), 4},
-		{"3b: shift+up from Settings -> end of worktrees", 3, 4, shiftUpKey(), 3},
-		{"3b: shift+up from end of worktrees -> All", 3, 3, shiftUpKey(), 0},
-		{"3b: shift+up from middle -> All", 3, 1, shiftUpKey(), 0},
-		{"3b: shift+up from All clamps", 3, 0, shiftUpKey(), 0},
+		// 3 branches → breakpoints [0, 1, 4, 5]
+		{"3b: shift+down from Clank -> All", 3, 0, shiftDownKey(), 1},
+		{"3b: shift+down from All -> end of worktrees", 3, 1, shiftDownKey(), 4},
+		{"3b: shift+down from middle -> end of worktrees", 3, 3, shiftDownKey(), 4},
+		{"3b: shift+down from end of worktrees -> Settings", 3, 4, shiftDownKey(), 5},
+		{"3b: shift+down from Settings clamps", 3, 5, shiftDownKey(), 5},
+		{"3b: shift+up from Settings -> end of worktrees", 3, 5, shiftUpKey(), 4},
+		{"3b: shift+up from end of worktrees -> All", 3, 4, shiftUpKey(), 1},
+		{"3b: shift+up from middle -> All", 3, 2, shiftUpKey(), 1},
+		{"3b: shift+up from All -> Clank", 3, 1, shiftUpKey(), 0},
+		{"3b: shift+up from Clank clamps", 3, 0, shiftUpKey(), 0},
 
-		// 0 branches → breakpoints [0, 1]
-		{"0b: shift+down from All -> Settings", 0, 0, shiftDownKey(), 1},
-		{"0b: shift+up from Settings -> All", 0, 1, shiftUpKey(), 0},
+		// 0 branches → breakpoints [0, 1, 2]
+		{"0b: shift+down from Clank -> All", 0, 0, shiftDownKey(), 1},
+		{"0b: shift+down from All -> Settings", 0, 1, shiftDownKey(), 2},
+		{"0b: shift+up from Settings -> All", 0, 2, shiftUpKey(), 1},
+		{"0b: shift+up from All -> Clank", 0, 1, shiftUpKey(), 0},
 
-		// 1 branch → breakpoints [0, 1, 2]
-		{"1b: shift+down from All -> branch", 1, 0, shiftDownKey(), 1},
-		{"1b: shift+down from branch -> Settings", 1, 1, shiftDownKey(), 2},
+		// 1 branch → breakpoints [0, 1, 2, 3]
+		{"1b: shift+down from All -> branch", 1, 1, shiftDownKey(), 2},
+		{"1b: shift+down from branch -> Settings", 1, 2, shiftDownKey(), 3},
 	}
 
 	for _, tc := range cases {
@@ -97,13 +103,13 @@ func TestSidebar_ShiftDown_EnsuresVisible(t *testing.T) {
 
 	m := SidebarModel{
 		branches: makeBranches(20),
-		cursor:   0,
+		cursor:   1, // start at "All" so first shift+down lands on end-of-worktrees
 		focused:  true,
 		height:   8, // listHeight clamps small but viewport stays smaller than list
 	}
 	m.handleKey(shiftDownKey())
-	if m.cursor != 20 { // end of worktrees
-		t.Fatalf("cursor: got %d, want 20", m.cursor)
+	if m.cursor != 21 { // end of worktrees: All(1) + 20 branches → last branch at index 21
+		t.Fatalf("cursor: got %d, want 21", m.cursor)
 	}
 	if m.scroll == 0 {
 		t.Errorf("expected scroll to advance from 0 after shift+down jump, got 0")

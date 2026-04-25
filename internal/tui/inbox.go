@@ -30,6 +30,7 @@ const (
 	screenInbox    inboxScreen = iota
 	screenSession              // Viewing a specific session (or composing a new one)
 	screenSettings             // Viewing the settings page in the right pane
+	screenClank                // Viewing the Clank (orchestrator) page in the right pane
 )
 
 // inboxPane tracks which pane has keyboard focus in the two-pane layout.
@@ -125,6 +126,10 @@ type InboxModel struct {
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
 
+	// Clank page state (shown when screen == screenClank). Holds the
+	// voice transcript timeline + status indicator.
+	clank clankView
+
 	// Color-scheme picker overlay (modal). Rendered on top of whatever
 	// screen is currently active. Showing is independent of `screen` so
 	// the user can tweak theming from anywhere in the future.
@@ -136,6 +141,13 @@ type InboxModel struct {
 
 	// Voice state — persists across inbox/session navigation.
 	voice voiceState
+
+	// inboxSSECancel cancels the inbox-level SSE subscription started
+	// in Init() to deliver voice events independent of the session view.
+	// inboxSSEEvents is the channel itself, kept so each inboxSSEEventMsg
+	// can re-arm the next read.
+	inboxSSECancel context.CancelFunc
+	inboxSSEEvents <-chan agent.Event
 
 	// kittyKeyboard is true when the terminal supports the Kitty keyboard
 	// protocol (specifically ReportEventTypes, which delivers KeyReleaseMsg).
@@ -215,9 +227,12 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	// CreateSession that carries Dir / AllowClone (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
+	// Default landing screen is Clank — the orchestrator agent — so the
+	// user lands directly in the voice/orchestrator chat. Sidebar focus
+	// (paneSessions/paneSidebar) is still configurable from there.
 	return &InboxModel{
 		client:      client,
-		pane:        paneSessions,
+		pane:        paneSidebar,
 		sidebar:     bp,
 		spinner:     sp,
 		searchInput: ti,
@@ -225,6 +240,8 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		projectName: filepath.Base(cwd),
 		hostname:    hostname,
 		gitRef:      gitRef,
+		screen:      screenClank,
+		clank:       newClankView(),
 	}
 }
 
@@ -234,7 +251,7 @@ func (m *InboxModel) Init() tea.Cmd {
 	// calls in other TUIs/agents and produced duplicate inbox rows. Discover
 	// at daemon startup (hub/discover_startup.go) covers the cold-boot case;
 	// future explicit rediscover will be a keybind.
-	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init()}
+	cmds := []tea.Cmd{func() tea.Msg { return tea.RequestWindowSize }, m.loadDataCmd(), m.autoRefreshCmd(), m.spinner.Tick, m.sidebar.Init(), m.subscribeInboxEventsCmd(), m.fetchClankSnapshotCmd()}
 	if m.screen == screenSession && m.sessionView != nil {
 		cmds = append(cmds, m.sessionView.Init())
 	}
@@ -351,6 +368,33 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return model, cmd
 	}
 
+	// Inbox-level SSE plumbing — delivers voice events independent of
+	// any session view. Setup stores the channel + cancel; events feed
+	// handleVoiceEvent (which updates voice state and the Clank
+	// timeline). Closure terminates the loop silently.
+	switch msg := msg.(type) {
+	case inboxSSESetupMsg:
+		if msg.err != nil {
+			return m, nil
+		}
+		m.inboxSSECancel = msg.cancel
+		m.inboxSSEEvents = msg.events
+		return m, waitForInboxEvent(msg.events)
+	case inboxSSEEventMsg:
+		m.handleVoiceEvent(msg.event)
+		// Re-arm via a fresh subscription read from the same channel
+		// requires the channel itself, which we only get from setup.
+		// Stash on the model so we can keep waiting.
+		if m.inboxSSEEvents != nil {
+			return m, waitForInboxEvent(m.inboxSSEEvents)
+		}
+		return m, nil
+	case inboxSSEClosedMsg:
+		m.inboxSSECancel = nil
+		m.inboxSSEEvents = nil
+		return m, nil
+	}
+
 	// Dismiss the Kitty keyboard warning popup on any key press.
 	if m.showKittyWarning {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -394,6 +438,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSettings(msg)
 	}
 
+	// If we're on the Clank page, delegate there.
+	if m.screen == screenClank {
+		return m.updateClank(msg)
+	}
+
 	// If help overlay is open, dismiss on any key press.
 	if m.showHelp {
 		if _, ok := msg.(tea.KeyPressMsg); ok {
@@ -428,6 +477,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.searchInput.SetWidth(m.sessionPaneWidth())
 		m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+		m.clank.SetSize(m.sessionPaneWidth(), m.height)
 		if m.showMerge {
 			m.mergeOverlay.SetSize(m.width, m.height)
 		}
@@ -1305,6 +1355,10 @@ func (m *InboxModel) View() tea.View {
 	if m.screen == screenSettings {
 		sessionContent = m.settings.View()
 	}
+	// Clank page swaps the right pane the same way the Settings page does.
+	if m.screen == screenClank {
+		sessionContent = m.clank.View()
+	}
 	var content string
 
 	if m.showTwoPanes() {
@@ -1585,6 +1639,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.openSettings()
 			return m, nil
 		}
+		// Same for the Clank header row at the top of the sidebar.
+		if m.sidebar.CursorOnClank() {
+			return m, m.openClank()
+		}
 		prevBranch := m.sidebar.SelectedBranch()
 		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
@@ -1602,6 +1660,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
 			return m, nil
+		}
+		// Enter on the Clank header opens the orchestrator page.
+		if m.sidebar.CursorOnClank() {
+			return m, m.openClank()
 		}
 		// Enter on a branch selects it and switches focus to session pane.
 		prevBranch := m.sidebar.SelectedBranch()
@@ -1626,6 +1688,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	// and key routing has already moved over there.
 	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
 		m.showSettings()
+	}
+	// Same hover behaviour for the Clank header row at the top.
+	if m.screen == screenInbox && m.sidebar.CursorOnClank() {
+		m.showClank()
 	}
 	return m, cmd
 }

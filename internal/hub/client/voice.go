@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/acksell/clank/internal/voice"
 	"github.com/coder/websocket"
 )
 
@@ -21,4 +22,21 @@ func (c *Client) VoiceAudioStream(ctx context.Context) (*websocket.Conn, error) 
 	}
 	conn.SetReadLimit(256 * 1024)
 	return conn, nil
+}
+
+// VoiceTranscriptsResponse mirrors the daemon's /voice/transcripts
+// JSON shape.
+type VoiceTranscriptsResponse struct {
+	Active  bool          `json:"active"`
+	Entries []voice.Entry `json:"entries"`
+}
+
+// VoiceTranscripts fetches a snapshot of the daemon's voice activity
+// log so a cold-starting TUI can replay the conversation.
+func (c *Client) VoiceTranscripts(ctx context.Context) (*VoiceTranscriptsResponse, error) {
+	var resp VoiceTranscriptsResponse
+	if err := c.get(ctx, "/voice/transcripts", &resp); err != nil {
+		return nil, fmt.Errorf("voice transcripts: %w", err)
+	}
+	return &resp, nil
 }

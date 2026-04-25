@@ -2,21 +2,24 @@ package tui
 
 // SidebarModel is the navigation sidebar of the inbox layout.
 //
-// It contains two sections, selectable with one cursor:
+// It contains three sections, selectable with one cursor:
 //
-//   - Worktrees (top): "All" plus every git branch in the active repo.
+//   - Clank (top): the orchestrator agent — same agent that's reachable
+//     via voice. Activating it opens the Clank view in the right pane.
+//   - Worktrees (middle): "All" plus every git branch in the active repo.
 //   - Settings (footer): the "⚙ Settings" entry, anchored to the
 //     bottom of the sidebar; activating it opens the settings page
 //     in the right pane.
 //
-// Cursor model: linear `cursor int` across both sections. Layout:
+// Cursor model: linear `cursor int` across all sections. Layout:
 //
-//	[0]                 → "All" worktrees
-//	[1 .. M]            → branches (M rows)
-//	[M+1]               → "⚙ Settings" footer
+//	[0]                 → "Clank" (top)
+//	[1]                 → "All" worktrees
+//	[2 .. M+1]          → branches (M rows)
+//	[M+2]               → "⚙ Settings" footer
 //
-// Section boundaries are computed at use-time (cursorSection /
-// settingsCursorIndex) so adding rows doesn't require renumbering.
+// Section boundaries are computed at use-time so adding rows doesn't
+// require renumbering.
 
 import (
 	"context"
@@ -43,7 +46,8 @@ const sidebarWidth = 30
 type sidebarSection int
 
 const (
-	sectionWorktrees sidebarSection = iota
+	sectionClank sidebarSection = iota
+	sectionWorktrees
 	sectionSettings
 )
 
@@ -63,6 +67,11 @@ type branchWorktreeCreatedMsg struct {
 // "⚙ Settings" footer entry in the sidebar. It's defined here (rather than
 // in inbox.go) so sidebar consumers can react without importing inbox types.
 type SettingsRequestedMsg struct{}
+
+// ClankRequestedMsg is emitted by the inbox when the user activates the
+// "Clank" header entry in the sidebar. Mirrors SettingsRequestedMsg so
+// inbox consumers can route the request to the Clank view.
+type ClankRequestedMsg struct{}
 
 // branchSessionStatus summarises session states for a single worktree branch.
 type branchSessionStatus struct {
@@ -143,17 +152,34 @@ func (m *SidebarModel) Init() tea.Cmd {
 }
 
 // --- Cursor / section helpers ---
+//
+// Layout indices:
+//   - clankCursorIndex()       == 0
+//   - allCursorIndex()         == 1
+//   - branches[i] cursor       == 2+i
+//   - settingsCursorIndex()    == totalRows()-1
 
-// totalRows is the number of selectable rows across both sections.
-// Layout: [1 "All"][len(branches) branches][1 settings].
+// clankCursorIndex is the cursor value of the "Clank" header row.
+func (m *SidebarModel) clankCursorIndex() int { return 0 }
+
+// allCursorIndex is the cursor value of the "All" worktrees row.
+func (m *SidebarModel) allCursorIndex() int { return 1 }
+
+// totalRows is the number of selectable rows across all sections.
+// Layout: [1 Clank][1 "All"][len(branches) branches][1 settings].
 func (m *SidebarModel) totalRows() int {
-	return 1 + len(m.branches) + 1
+	return 2 + len(m.branches) + 1
 }
 
 // settingsCursorIndex returns the cursor value of the "⚙ Settings"
 // footer row. Always the last row in the sidebar.
 func (m *SidebarModel) settingsCursorIndex() int {
 	return m.totalRows() - 1
+}
+
+// CursorOnClank reports whether the cursor is on the Clank header row.
+func (m *SidebarModel) CursorOnClank() bool {
+	return m.cursor == m.clankCursorIndex()
 }
 
 // CursorOnSettings reports whether the cursor is on the settings row.
@@ -163,39 +189,43 @@ func (m *SidebarModel) CursorOnSettings() bool {
 
 // cursorSection returns which section the cursor is in and the
 // section-local index. For sectionWorktrees, idx==0 means the "All"
-// row; idx>=1 means branches[idx-1]. For sectionSettings, idx is
-// always 0 (single row).
+// row; idx>=1 means branches[idx-1]. For sectionClank and
+// sectionSettings, idx is always 0 (single row each).
 func (m *SidebarModel) cursorSection() (sidebarSection, int) {
-	if m.cursor >= m.settingsCursorIndex() {
+	switch {
+	case m.cursor == m.clankCursorIndex():
+		return sectionClank, 0
+	case m.cursor >= m.settingsCursorIndex():
 		return sectionSettings, 0
+	default:
+		// cursor in [1, settingsCursorIndex()-1], section-local index
+		// is cursor-1 so "All" maps to 0 and branches[i] to i+1.
+		return sectionWorktrees, m.cursor - m.allCursorIndex()
 	}
-	return sectionWorktrees, m.cursor
 }
 
 // sectionBreakpoints returns the cursor positions that shift+up/shift+down
 // snap between. Breakpoints, in order:
 //
-//   - 0                       — top of worktrees ("All")
-//   - len(branches)           — last worktree row (omitted when there are
-//     no branches, since it would coincide with "All")
-//   - settingsCursorIndex()   — Settings footer
+//   - clankCursorIndex()       — Clank header
+//   - allCursorIndex()         — top of worktrees ("All")
+//   - last branch row          — omitted when there are no branches,
+//     since it would coincide with "All"
+//   - settingsCursorIndex()    — Settings footer
 func (m *SidebarModel) sectionBreakpoints() []int {
-	bp := []int{0}
-	if last := len(m.branches); last > 0 {
-		bp = append(bp, last)
+	bp := []int{m.clankCursorIndex(), m.allCursorIndex()}
+	if n := len(m.branches); n > 0 {
+		bp = append(bp, m.allCursorIndex()+n)
 	}
 	bp = append(bp, m.settingsCursorIndex())
 	return bp
 }
 
 // SelectedBranch returns the currently selected branch name. Empty
-// string means "All" or the settings row is selected.
+// string means Clank, "All", or the settings row is selected.
 func (m *SidebarModel) SelectedBranch() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
-		return ""
-	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
+	idx := m.cursor - m.allCursorIndex() - 1
+	if idx < 0 || idx >= len(m.branches) {
 		return ""
 	}
 	return m.branches[idx].Name
@@ -204,24 +234,18 @@ func (m *SidebarModel) SelectedBranch() string {
 // SelectedWorktreeDir returns the worktree directory path for the currently
 // selected entry. Empty string means "all worktrees" (no filter).
 func (m *SidebarModel) SelectedWorktreeDir() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
-		return ""
-	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
+	idx := m.cursor - m.allCursorIndex() - 1
+	if idx < 0 || idx >= len(m.branches) {
 		return ""
 	}
 	return m.branches[idx].WorktreeDir
 }
 
 // SelectedBranchInfo returns the full BranchInfo for the currently selected
-// entry, or nil if "All" is selected.
+// entry, or nil if Clank, "All", or settings is selected.
 func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
-	if m.cursor == 0 || len(m.branches) == 0 {
-		return nil
-	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
+	idx := m.cursor - m.allCursorIndex() - 1
+	if idx < 0 || idx >= len(m.branches) {
 		return nil
 	}
 	return &m.branches[idx]
@@ -393,7 +417,11 @@ func (m *SidebarModel) View() string {
 
 	var lines []string
 
-	// Header.
+	// Clank header row — top section, the orchestrator agent.
+	lines = append(lines, m.renderClankRow())
+	lines = append(lines, "")
+
+	// Worktrees section header.
 	header := lipgloss.NewStyle().
 		Foreground(primaryColor).
 		Bold(true).
@@ -402,11 +430,12 @@ func (m *SidebarModel) View() string {
 	lines = append(lines, "")
 
 	// "All" entry (no filter).
+	allIdx := m.allCursorIndex()
 	allLabel := "  All"
-	if m.cursor == 0 && m.focused {
+	if m.cursor == allIdx && m.focused {
 		allLabel = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ") +
 			lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("All")
-	} else if m.cursor == 0 {
+	} else if m.cursor == allIdx {
 		allLabel = lipgloss.NewStyle().Foreground(textColor).Render("  All")
 	} else {
 		allLabel = lipgloss.NewStyle().Foreground(dimColor).Render("  All")
@@ -415,7 +444,7 @@ func (m *SidebarModel) View() string {
 
 	// Branch entries.
 	for i, b := range m.branches {
-		idx := i + 1 // cursor index (0 = All)
+		idx := allIdx + 1 + i // cursor index of this branch row
 		lines = append(lines, m.renderBranch(b, idx, contentWidth))
 	}
 
@@ -535,6 +564,22 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 	line += lipgloss.NewStyle().Foreground(badgeColor).Render(countBadge)
 
 	return line
+}
+
+// renderClankRow renders the top "Clank" header entry — the
+// orchestrator agent reachable both via voice and via this row.
+func (m *SidebarModel) renderClankRow() string {
+	label := "Clank"
+	selected := m.CursorOnClank() && m.focused
+	if selected {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		name := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render(label)
+		return prefix + name
+	}
+	if m.CursorOnClank() {
+		return lipgloss.NewStyle().Foreground(primaryColor).Render("  " + label)
+	}
+	return lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
 }
 
 // renderFooter renders the bottom-anchored block of the sidebar. Today

@@ -115,8 +115,15 @@ func (m *InboxModel) voiceUnlisten() tea.Cmd {
 }
 
 // cleanupVoice synchronously releases all voice resources. Safe to call
-// multiple times or when voice is not active.
+// multiple times or when voice is not active. Also cancels the
+// inbox-level SSE subscription so the daemon stops broadcasting to a
+// dead client on quit.
 func (m *InboxModel) cleanupVoice() {
+	if m.inboxSSECancel != nil {
+		m.inboxSSECancel()
+		m.inboxSSECancel = nil
+		m.inboxSSEEvents = nil
+	}
 	if !m.voice.active {
 		return
 	}
@@ -127,7 +134,10 @@ func (m *InboxModel) cleanupVoice() {
 }
 
 // handleVoiceEvent updates voice state from SSE events. Called from the
-// event handling path in both inbox and session views.
+// event handling path in both inbox and session views. Also feeds the
+// Clank page's transcript timeline so it shows live activity even when
+// the user isn't on the Clank screen (and history is preserved when
+// they navigate back).
 func (m *InboxModel) handleVoiceEvent(evt agent.Event) {
 	switch evt.Type {
 	case agent.EventVoiceStatus:
@@ -142,11 +152,16 @@ func (m *InboxModel) handleVoiceEvent(evt agent.Event) {
 			case agent.VoiceStatusIdle:
 				m.voice.speaking = false
 			}
+			m.clank.SetStatus(data.Status)
 		}
-	// EventVoiceTranscript and EventVoiceToolCall are intentionally
-	// ignored for now — no transcript UX yet.
 	case agent.EventVoiceTranscript:
+		if data, ok := evt.Data.(agent.VoiceTranscriptData); ok {
+			m.clank.AppendTranscript(data.Text, data.Done)
+		}
 	case agent.EventVoiceToolCall:
+		if data, ok := evt.Data.(agent.VoiceToolCallData); ok {
+			m.clank.AppendToolCall(data.Name, data.Args)
+		}
 	}
 }
 
@@ -453,17 +468,65 @@ func (m *InboxModel) passVoiceState() {
 	}
 }
 
-// ensureVoiceEventSubscription makes sure voice SSE events reach the
-// inbox model. When on the session screen, the session view's SSE
-// subscription already delivers all events (including voice). When on
-// the inbox screen, we rely on voice events being handled when the
-// session view forwards them via sessionEventMsg, or when the inbox
-// has its own subscription (if we add one in the future).
-//
-// For now, voice events piggyback on the session view's SSE channel.
-// This means voice indicators won't update on the inbox screen unless
-// a session is open. This is acceptable for v1 since voice is most
-// useful while viewing a session.
+// ensureVoiceEventSubscription is a deprecated placeholder retained for
+// API compatibility. The inbox now subscribes to its own SSE stream via
+// subscribeInboxEventsCmd to deliver voice events regardless of which
+// screen is active.
 func ensureVoiceEventSubscription(_ *hubclient.Client) {
-	// Placeholder for future inbox-level SSE subscription.
+	// No-op.
+}
+
+// inboxSSESetupMsg carries the inbox-level SSE channel. Kept separate
+// from the session view's sseSetupMsg so the two channels can co-exist
+// without crossing wires.
+type inboxSSESetupMsg struct {
+	events <-chan agent.Event
+	cancel context.CancelFunc
+	err    error
+}
+
+// inboxSSEEventMsg wraps an event delivered on the inbox-level SSE
+// channel. Routed to handleVoiceEvent so voice state and the Clank
+// timeline update even when no session is open.
+type inboxSSEEventMsg struct {
+	event agent.Event
+}
+
+// inboxSSEClosedMsg is sent when the inbox-level SSE channel closes.
+type inboxSSEClosedMsg struct{}
+
+// subscribeInboxEventsCmd starts the inbox-level SSE subscription. The
+// daemon broadcasts every event to every subscriber, so this peacefully
+// coexists with the session view's own subscription. We only act on
+// voice events; everything else falls through.
+func (m *InboxModel) subscribeInboxEventsCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		events, err := m.client.Sessions().Subscribe(ctx)
+		if err != nil {
+			cancel()
+			return inboxSSESetupMsg{err: err}
+		}
+		return inboxSSESetupMsg{events: events, cancel: cancel}
+	}
+}
+
+// waitForInboxEvent reads the next event from the inbox-level SSE
+// channel. Voice events surface as inboxSSEEventMsg; non-voice events
+// are dropped here to keep the message bus quiet (the session view has
+// its own subscription that handles them).
+func waitForInboxEvent(events <-chan agent.Event) tea.Cmd {
+	return func() tea.Msg {
+		for {
+			evt, ok := <-events
+			if !ok {
+				return inboxSSEClosedMsg{}
+			}
+			if isVoiceEvent(evt) {
+				return inboxSSEEventMsg{event: evt}
+			}
+			// Non-voice — keep looping so we don't spin a goroutine
+			// per discarded event.
+		}
+	}
 }

@@ -89,6 +89,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// only delegates.
 	mx.HandleFunc("GET /voice/audio", m.svc.HandleVoiceAudio)
 	mx.HandleFunc("GET /voice/status", m.handleVoiceStatus)
+	mx.HandleFunc("GET /voice/transcripts", m.handleVoiceTranscripts)
 }
 
 // --- helpers ---

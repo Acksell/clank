@@ -18,6 +18,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/internal/voice"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -621,4 +622,17 @@ func (s *Service) VoiceStatus() (active bool, status agent.VoiceStatus) {
 		return false, agent.VoiceStatusIdle
 	}
 	return true, sess.Status()
+}
+
+// VoiceTranscripts returns a snapshot of the in-memory voice activity
+// log (transcripts, tool calls, status changes). Returns nil when no
+// session is active. The buffer is lost on daemon restart by design.
+func (s *Service) VoiceTranscripts() []voice.Entry {
+	s.mu.RLock()
+	sess := s.voice
+	s.mu.RUnlock()
+	if sess == nil {
+		return nil
+	}
+	return sess.Transcripts()
 }

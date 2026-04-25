@@ -65,6 +65,11 @@ type Session struct {
 	// broadcast sends events to the daemon's SSE subscribers.
 	broadcast func(agent.Event)
 
+	// transcripts is an in-memory record of voice activity (transcripts,
+	// tool calls, status changes) so cold-starting clients can replay
+	// the conversation. Lost on daemon restart by design.
+	transcripts *TranscriptBuffer
+
 	log *log.Logger
 }
 
@@ -122,9 +127,10 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 	}
 
 	s := &Session{
-		status:    agent.VoiceStatusIdle,
-		broadcast: cfg.Broadcast,
-		log:       logger,
+		status:      agent.VoiceStatusIdle,
+		broadcast:   cfg.Broadcast,
+		transcripts: NewTranscriptBuffer(),
+		log:         logger,
 	}
 
 	// Build tool registry.
@@ -150,9 +156,16 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 		Voice:        "coral",
 		Callbacks: mindmouth.Callbacks{
 			OnTranscript: func(text string, done bool) {
+				now := time.Now()
+				s.transcripts.Append(Entry{
+					Kind:      EntryKindTranscript,
+					Timestamp: now,
+					Text:      text,
+					Done:      done,
+				})
 				s.broadcast(agent.Event{
 					Type:      agent.EventVoiceTranscript,
-					Timestamp: time.Now(),
+					Timestamp: now,
 					Data: agent.VoiceTranscriptData{
 						Text: text,
 						Done: done,
@@ -165,9 +178,16 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 			OnText: func(text string, done bool) {
 				// Text-only model responses (e.g. after tool calls).
 				// Surface them as transcripts so the client displays them.
+				now := time.Now()
+				s.transcripts.Append(Entry{
+					Kind:      EntryKindTranscript,
+					Timestamp: now,
+					Text:      text,
+					Done:      done,
+				})
 				s.broadcast(agent.Event{
 					Type:      agent.EventVoiceTranscript,
-					Timestamp: time.Now(),
+					Timestamp: now,
 					Data: agent.VoiceTranscriptData{
 						Text: text,
 						Done: done,
@@ -178,9 +198,16 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 				}
 			},
 			OnToolCall: func(name string, args string) {
+				now := time.Now()
+				s.transcripts.Append(Entry{
+					Kind:      EntryKindToolCall,
+					Timestamp: now,
+					ToolName:  name,
+					ToolArgs:  args,
+				})
 				s.broadcast(agent.Event{
 					Type:      agent.EventVoiceToolCall,
-					Timestamp: time.Now(),
+					Timestamp: now,
 					Data: agent.VoiceToolCallData{
 						Name: name,
 						Args: args,
@@ -227,6 +254,12 @@ func (s *Session) Status() agent.VoiceStatus {
 	return s.status
 }
 
+// Transcripts returns a snapshot of the in-memory transcript buffer
+// for cold-starting clients.
+func (s *Session) Transcripts() []Entry {
+	return s.transcripts.Snapshot()
+}
+
 // Wait blocks until the voice session ends.
 func (s *Session) Wait() error {
 	return s.agent.Wait()
@@ -254,9 +287,16 @@ func (s *Session) setStatus(status agent.VoiceStatus) {
 		return
 	}
 
+	now := time.Now()
+	s.transcripts.Append(Entry{
+		Kind:      EntryKindStatus,
+		Timestamp: now,
+		Status:    status,
+	})
+
 	s.broadcast(agent.Event{
 		Type:      agent.EventVoiceStatus,
-		Timestamp: time.Now(),
+		Timestamp: now,
 		Data:      agent.VoiceStatusData{Status: status},
 	})
 }
