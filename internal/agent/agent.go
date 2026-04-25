@@ -485,44 +485,34 @@ type SendMessageOpts struct {
 	Model *ModelOverride `json:"model,omitempty"` // Per-message model override; nil = use default
 }
 
-// SessionBackend is the interface that each agent backend must implement.
-// The daemon creates one SessionBackend instance per session.
-//
-// Lifecycle:
-//
-//	NewBackend → Start (or Watch) → SendMessage* → Abort? → Stop
+// Lifecycle: NewBackend → Open (or OpenAndSend) → Send* → Abort? → Stop
 //
 // Concurrency: all methods must be safe to call concurrently from
 // multiple goroutines.
 //
-// Event timing: backends emit events asynchronously via the Events()
-// channel. Methods below describe what their *return* signals, NOT when
-// the agent has finished work. The hub observes completion via events
-// (StatusChange to Idle) and via SessionID stamping (Event.ExternalID).
+// Event timing: backends emit events asynchronously via Events(). Method
+// returns describe what their *return* signals — typically "request
+// dispatched" — NOT when the agent has finished work. Observe completion
+// via Events() (StatusChange to Idle) and ExternalID via Event.ExternalID.
+//
+// Session-scoped configuration (workDir, resume external ID, host/server
+// selection) is supplied to the constructor, not to these methods. The
+// methods below carry only per-prompt data.
 type SessionBackend interface {
-	// Start dispatches the initial prompt to the agent and returns once
-	// the request has been handed off (e.g. HTTP call accepted, or stdin
-	// write completed). It does NOT block for the LLM turn — observe
-	// completion via Events().
-	//
-	// The backend's native session ID may not be known when Start
-	// returns (e.g. Claude learns it asynchronously from the CLI's
-	// SystemMessage{init}). Callers MUST NOT poll SessionID() after
-	// Start; instead, read Event.ExternalID from the Events() stream,
-	// which the backend stamps as soon as the ID is learned.
-	Start(ctx context.Context, req StartRequest) error
+	// Open establishes (or re-attaches to) the session and begins event
+	// production into Events(). Idempotent — safe to call on an
+	// already-open session.
+	Open(ctx context.Context) error
 
-	// Watch attaches to a session that may already exist (e.g. a
-	// discovered/historical session) without sending a prompt. It must
-	// be idempotent and safe to call on an already-attached session.
-	// Backends that cannot replay or passively observe (Claude CLI)
-	// MUST return nil (no-op) rather than erroring — Messages() will
-	// still serve transcript reads from disk.
-	Watch(ctx context.Context) error
+	// Send dispatches a prompt to an Open session. Fast-fails if the
+	// session is not open. Returns once the prompt is handed off to
+	// the agent runtime, NOT when the LLM finishes.
+	Send(ctx context.Context, opts SendMessageOpts) error
 
-	// SendMessage dispatches a follow-up prompt. Returns once the
-	// request has been handed off, NOT when the LLM finishes.
-	SendMessage(ctx context.Context, opts SendMessageOpts) error
+	// OpenAndSend is the new-session convenience: Open followed by Send.
+	// Backends MAY fuse the two operations when their runtime supports
+	// it (e.g. dispatching the prompt as part of session creation).
+	OpenAndSend(ctx context.Context, opts SendMessageOpts) error
 
 	// Abort signals the agent to interrupt the current turn. Best-effort:
 	// returns once the signal has been delivered, not when the agent has
@@ -536,8 +526,7 @@ type SessionBackend interface {
 
 	// Events returns the event stream for this backend. The channel is
 	// closed when the backend stops. All events for a session flow
-	// through this channel; the hub stamps SessionID and persists
-	// ExternalID from any event whose ExternalID field is non-empty.
+	// through this channel
 	Events() <-chan Event
 
 	// Status returns the current session status snapshot. May change
@@ -547,7 +536,7 @@ type SessionBackend interface {
 	// SessionID returns the agent-assigned native session ID, or "" if
 	// not yet known. Used by HTTP handlers to serialize ExternalID and
 	// by discover for deduplication. Hub code MUST NOT poll this after
-	// Start to persist the ID — use Event.ExternalID instead, which is
+	// Open to persist the ID — use Event.ExternalID instead, which is
 	// the single source of truth that survives daemon restarts.
 	SessionID() string
 

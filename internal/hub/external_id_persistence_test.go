@@ -20,15 +20,15 @@ import (
 //     nil because there's no session ID to resume → TUI hangs on
 //     "Waiting for agent output...".
 //
-// Root cause: runBackend persists ExternalID only AFTER backend.Start()
+// Root cause: runBackend persists ExternalID only AFTER backend.OpenAndSend()
 // returns (sessions.go ~line 466). For Claude, SessionID is learned
-// from the SystemMessage init event arriving DURING Start(). If Start
-// takes a long time (LLM still streaming) and the daemon is killed
-// before Start returns, the in-memory sessionID is lost — the row
+// from the SystemMessage init event arriving DURING OpenAndSend(). If
+// OpenAndSend takes a long time (LLM still streaming) and the daemon is
+// killed before it returns, the in-memory sessionID is lost — the row
 // stays at ExternalID="" forever.
 //
 // The fix: persist ExternalID as soon as the backend learns it (in the
-// event relay loop), not when Start returns.
+// event relay loop), not when OpenAndSend returns.
 func TestPersistence_ExternalIDPersistedWhileStartStillRunning(t *testing.T) {
 	t.Parallel()
 
@@ -40,15 +40,15 @@ func TestPersistence_ExternalIDPersistedWhileStartStillRunning(t *testing.T) {
 
 	// Override the backend manager: created backend learns its
 	// sessionID asynchronously (simulating the Claude init message),
-	// and Start() blocks until the test signals — simulating an LLM
-	// response that hasn't completed when the daemon dies.
+	// and OpenAndSend() blocks until the test signals — simulating an
+	// LLM response that hasn't completed when the daemon dies.
 	mgr := newMockBackendManager()
 	startReturned := make(chan struct{})
 	mgr.create = func(inv agent.BackendInvocation) *mockBackend {
 		b := newMockBackend()
 		b.sessionID = "" // not yet known
-		b.onStart = func(ctx context.Context, req agent.StartRequest) error {
-			t.Logf("DEBUG mock onStart entered for hub_id (req.SessionID=%q)", req.SessionID)
+		b.onOpenAndSend = func(ctx context.Context, opts agent.SendMessageOpts) error {
+			t.Logf("DEBUG mock onOpenAndSend entered (text=%q)", opts.Text)
 			// Simulate "init system message arrives ~20ms into Start()",
 			// followed by a content event (in real Claude, the init
 			// message is always followed by streaming content blocks
@@ -106,7 +106,7 @@ func TestPersistence_ExternalIDPersistedWhileStartStillRunning(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.ExternalID != "real-backend-session-id-123" {
-		t.Fatalf("in-memory ExternalID not populated while Start still blocking: got %q", got.ExternalID)
+		t.Fatalf("in-memory ExternalID not populated while OpenAndSend still blocking: got %q", got.ExternalID)
 	}
 
 	// Verify the STORE has the ExternalID — that's what survives a

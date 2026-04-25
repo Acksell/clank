@@ -35,10 +35,10 @@ func TestClaudeBackendManagerCreateBackend(t *testing.T) {
 		t.Fatal("expected non-nil backend")
 	}
 
-	// Watch should be a no-op for Claude.
-	if err := backend.Watch(context.Background()); err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
+	// Open is intentionally not invoked here: it spawns the Claude
+	// CLI subprocess, which would require the binary to be installed
+	// in the test environment. CreateBackend succeeding (above) is
+	// sufficient as a smoke test.
 }
 
 // TestClaudeBackendManagerDiscoverSessions verifies DiscoverSessions reads

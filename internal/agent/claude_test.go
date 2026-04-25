@@ -239,9 +239,8 @@ func TestClaudeCodeBackendBasicSession(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "Fix the bug",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Fix the bug",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -386,9 +385,8 @@ func TestClaudeCodeBackendToolUse(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "Read and fix",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Read and fix",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -440,9 +438,8 @@ func TestClaudeCodeBackendErrorResult(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -523,9 +520,8 @@ func TestClaudeCodeBackendStreamingDeltas(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -638,9 +634,8 @@ func TestClaudeCodeBackendThinking(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -677,9 +672,8 @@ func TestClaudeCodeBackendConnectionClosed(t *testing.T) {
 
 	b := newTestBackend(t, transport)
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -756,16 +750,17 @@ func TestClaudeCodeBackendResume(t *testing.T) {
 		},
 	})
 
-	b := newTestBackend(t, transport)
+	b := agent.NewClaudeCodeBackendForSession(t.TempDir(), "existing-session-id")
+	b.ClientFactory = func(opts ...claudecode.Option) claudecode.Client {
+		return claudecode.NewClientWithTransport(transport, opts...)
+	}
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend:   agent.BackendClaudeCode,
-		Prompt:    "Continue the work",
-		SessionID: "existing-session-id",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Continue the work",
 	})
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 
 	events := waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
@@ -794,7 +789,7 @@ func TestClaudeCodeBackendSendMessageBeforeStart(t *testing.T) {
 	b := agent.NewClaudeCodeBackend(t.TempDir())
 	defer b.Stop()
 
-	err := b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "hello"})
+	err := b.Send(context.Background(), agent.SendMessageOpts{Text: "hello"})
 	if err == nil {
 		t.Error("expected error sending message before Start")
 	}
@@ -852,9 +847,8 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "Fix the bug",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Fix the bug",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -909,7 +903,7 @@ func TestClaudeCodeBackendSendMessageFollowUp(t *testing.T) {
 	}
 
 	// Send follow-up.
-	err = b.SendMessage(context.Background(), agent.SendMessageOpts{Text: "What about the other bug?"})
+	err = b.Send(context.Background(), agent.SendMessageOpts{Text: "What about the other bug?"})
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -981,9 +975,8 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1023,9 +1016,8 @@ func TestClaudeCodeBackendStopClosesEvents(t *testing.T) {
 
 	b := newTestBackend(t, transport)
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1082,9 +1074,8 @@ func TestClaudeCodeBackendNoDuplicateResultMessage(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1159,9 +1150,8 @@ func TestClaudeCodeBackendNoDuplicateContent(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "test",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1366,9 +1356,8 @@ func TestClaudeCodeBackendMultiCyclePartIDs(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "Read the file",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Read the file",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1518,9 +1507,8 @@ func TestClaudeCodeBackendHistoryToolPartsNoJSON(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "run pwd",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "run pwd",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1654,9 +1642,8 @@ func TestClaudeCodeBackendToolCallSpinnerCompletion(t *testing.T) {
 	b := newTestBackend(t, transport)
 	defer b.Stop()
 
-	err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "Edit the file",
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "Edit the file",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

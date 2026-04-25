@@ -396,11 +396,10 @@ func newBackendForDir(t *testing.T, workDir, sessionID string) *agent.ClaudeCode
 		return claudecode.NewClientWithTransport(transport, opts...)
 	}
 
-	if err := b.Start(context.Background(), agent.StartRequest{
-		Backend: agent.BackendClaudeCode,
-		Prompt:  "hello",
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "hello",
 	}); err != nil {
-		t.Fatalf("Start: %v", err)
+		t.Fatalf("OpenAndSend: %v", err)
 	}
 	waitForStatus(t, b.Events(), agent.StatusIdle, 5*time.Second)
 	return b

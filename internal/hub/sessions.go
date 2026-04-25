@@ -185,9 +185,10 @@ func (s *Service) activateBackend(id string, ms *managedSession) error {
 		return fmt.Errorf("activate backend: %w", err)
 	}
 
-	// Start watching for events (SSE) without sending a prompt.
-	if err := backend.Watch(s.ctx); err != nil {
-		return fmt.Errorf("watch backend: %w", err)
+	// Open the backend without dispatching a prompt so SSE events
+	// (for OpenCode) start flowing for this re-attached session.
+	if err := backend.Open(s.ctx); err != nil {
+		return fmt.Errorf("open backend: %w", err)
 	}
 
 	s.mu.Lock()
@@ -425,14 +426,7 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 			evt.SessionID = id
 			s.broadcast(evt)
 
-			// Persist ExternalID the moment the backend learns it,
-			// not when Start() returns. Backends stamp Event.ExternalID
-			// in their emit() helper as soon as they know it (e.g.
-			// Claude: SystemMessage init mid-Start). Without this, a
-			// daemon restart while Start() is still streaming an LLM
-			// response loses the in-memory sessionID forever — the
-			// row stays at ExternalID="" and Messages() can never
-			// resume it.
+			// Persist ExternalID the moment the backend learns it
 			if evt.ExternalID != "" {
 				s.mu.Lock()
 				if ms2, ok := s.sessions[id]; ok && ms2.info.ExternalID != evt.ExternalID {
@@ -468,7 +462,12 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 	}()
 	defer func() { <-done }() // wait for relay goroutine to finish
 
-	if err := ms.backend.Start(s.ctx, req); err != nil {
+	sendOpts := agent.SendMessageOpts{
+		Text:  req.Prompt,
+		Agent: req.Agent,
+		Model: req.Model,
+	}
+	if err := ms.backend.OpenAndSend(s.ctx, sendOpts); err != nil {
 		s.log.Printf("session %s: backend start error: %v", id, err)
 		s.updateSessionStatus(id, agent.StatusError)
 		s.broadcast(agent.Event{
@@ -479,15 +478,6 @@ func (s *Service) runBackend(id string, ms *managedSession, req agent.StartReque
 		})
 		return
 	}
-
-	// Note: ExternalID is no longer captured here. Backends learn their
-	// native session ID at different times (OpenCode synchronously inside
-	// Start; Claude asynchronously when the CLI emits SystemMessage{init};
-	// future backends might only learn it after the first turn). The
-	// single source of truth is the event-relay loop above, which observes
-	// Event.ExternalID stamped by the backend's emit() and persists it the
-	// moment it arrives. This is what survives a daemon restart between
-	// Start completing and the backend learning its ID.
 
 	// Backend event channel closed — mark as dead if still busy.
 	s.mu.RLock()

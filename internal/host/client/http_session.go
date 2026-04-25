@@ -62,23 +62,23 @@ func (b *httpSessionBackend) path(suffix string) (string, error) {
 	return "/sessions/" + url.PathEscape(b.sessionID) + suffix, nil
 }
 
-func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) error {
-	// Host mux returns the post-Start SessionSnapshot. Decoding into a
-	// local struct avoids a dependency on hostmux from this package.
+func (b *httpSessionBackend) Open(ctx context.Context) error {
 	var snap struct {
 		SessionID  string              `json:"session_id"`
 		ExternalID string              `json:"external_id"`
 		Status     agent.SessionStatus `json:"status"`
 	}
-	p, err := b.path("/start")
+	p, err := b.path("/open")
 	if err != nil {
 		return err
 	}
-	if err := b.c.do(ctx, http.MethodPost, p, req, &snap); err != nil {
+	if err := b.c.do(ctx, http.MethodPost, p, nil, &snap); err != nil {
 		return err
 	}
 	b.mu.Lock()
-	b.externalID = snap.ExternalID
+	if snap.ExternalID != "" {
+		b.externalID = snap.ExternalID
+	}
 	if snap.Status != "" {
 		b.status = snap.Status
 	}
@@ -86,16 +86,34 @@ func (b *httpSessionBackend) Start(ctx context.Context, req agent.StartRequest) 
 	return nil
 }
 
-func (b *httpSessionBackend) Watch(ctx context.Context) error {
-	p, err := b.path("/watch")
+func (b *httpSessionBackend) OpenAndSend(ctx context.Context, opts agent.SendMessageOpts) error {
+	// Host mux returns the post-OpenAndSend SessionSnapshot. Decoding into a
+	// local struct avoids a dependency on hostmux from this package.
+	var snap struct {
+		SessionID  string              `json:"session_id"`
+		ExternalID string              `json:"external_id"`
+		Status     agent.SessionStatus `json:"status"`
+	}
+	p, err := b.path("/open-and-send")
 	if err != nil {
 		return err
 	}
-	return b.c.do(ctx, http.MethodPost, p, nil, nil)
+	if err := b.c.do(ctx, http.MethodPost, p, opts, &snap); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	if snap.ExternalID != "" {
+		b.externalID = snap.ExternalID
+	}
+	if snap.Status != "" {
+		b.status = snap.Status
+	}
+	b.mu.Unlock()
+	return nil
 }
 
-func (b *httpSessionBackend) SendMessage(ctx context.Context, opts agent.SendMessageOpts) error {
-	p, err := b.path("/message")
+func (b *httpSessionBackend) Send(ctx context.Context, opts agent.SendMessageOpts) error {
+	p, err := b.path("/send")
 	if err != nil {
 		return err
 	}

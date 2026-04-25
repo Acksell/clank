@@ -95,9 +95,19 @@ func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCode
 	}
 }
 
-func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
+// Open spawns the Claude CLI subprocess (via the SDK) and starts the
+// receiveLoop. If the constructor was given a resumeSessionID, the CLI
+// is launched with --resume so the JSONL transcript is reattached.
+//
+// Idempotent: a second call while already connected returns nil.
+func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	b.mu.Lock()
+	if b.client != nil {
+		b.mu.Unlock()
+		return nil
+	}
 	workDir := b.projectDir
+	resumeID := b.sessionID
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -114,12 +124,8 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		claudecode.WithPartialStreaming(),
 		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
 	}
-
-	if req.SessionID != "" {
-		opts = append(opts, claudecode.WithResume(req.SessionID))
-		b.mu.Lock()
-		b.sessionID = req.SessionID
-		b.mu.Unlock()
+	if resumeID != "" {
+		opts = append(opts, claudecode.WithResume(resumeID))
 	}
 
 	// Build the client — use the test factory if provided.
@@ -143,27 +149,50 @@ func (b *ClaudeCodeBackend) Start(ctx context.Context, req StartRequest) error {
 		return fmt.Errorf("connect to claude CLI: %w", err)
 	}
 
-	b.setStatus(StatusBusy)
-
 	// Start receiving messages from the SDK in the background.
 	go b.receiveLoop()
-
-	// Send the initial prompt.
-	if err := b.client.Query(b.ctx, req.Prompt); err != nil {
-		b.setStatus(StatusError)
-		return fmt.Errorf("send initial prompt: %w", err)
-	}
-
 	return nil
 }
 
-func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpts) error {
+// OpenAndSend opens the session and dispatches the initial prompt. The
+// CLI subprocess is connected before the prompt is queued so the
+// receiveLoop is in place to observe SystemMessage{init} (which carries
+// the external session ID).
+//
+// Unlike Send, OpenAndSend does NOT emit an EventMessage{Role:user} for
+// the prompt: the hub already persists the initial prompt out-of-band
+// when creating the session, so emitting one here would duplicate it in
+// the TUI history. Follow-up prompts go through Send and DO emit the
+// user message because there's no other place that records them.
+func (b *ClaudeCodeBackend) OpenAndSend(ctx context.Context, opts SendMessageOpts) error {
+	if err := b.Open(ctx); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("session not open after Open")
+	}
+
+	b.setStatus(StatusBusy)
+
+	if err := client.Query(b.ctx, opts.Text); err != nil {
+		b.setStatus(StatusError)
+		return fmt.Errorf("send initial prompt: %w", err)
+	}
+	return nil
+}
+
+// Send dispatches a prompt to an already-Open session.
+func (b *ClaudeCodeBackend) Send(ctx context.Context, opts SendMessageOpts) error {
 	b.mu.Lock()
 	client := b.client
 	b.mu.Unlock()
 
 	if client == nil {
-		return fmt.Errorf("session not started: client not connected")
+		return fmt.Errorf("session not open: client not connected")
 	}
 
 	// Emit user message event so the TUI sees it.
@@ -179,15 +208,9 @@ func (b *ClaudeCodeBackend) SendMessage(ctx context.Context, opts SendMessageOpt
 	b.setStatus(StatusBusy)
 
 	if err := client.Query(b.ctx, opts.Text); err != nil {
-		return fmt.Errorf("send follow-up: %w", err)
+		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	return nil
-}
-
-// Watch is a no-op for Claude Code. The CLI doesn't support passive
-// observation — events only flow while the subprocess is running.
-func (b *ClaudeCodeBackend) Watch(ctx context.Context) error {
 	return nil
 }
 
