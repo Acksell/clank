@@ -91,6 +91,12 @@ type Service struct {
 	// When nil (e.g. in tests), the daemon operates purely in-memory.
 	Store *store.Store
 
+	// launchers holds HostLaunchers keyed by provider name. Populated by
+	// SetHostLauncher; consulted in createSession when a request carries
+	// LaunchHost. Empty in laptop-hub mode (no provisioning needed there).
+	launchersMu sync.RWMutex
+	launchers   map[string]HostLauncher
+
 	// primaryAgentsRefreshMu guards primaryAgentsRefreshInFlight.
 	primaryAgentsRefreshMu       sync.Mutex
 	primaryAgentsRefreshInFlight map[string]bool // keyed by catalogKey (backend, hostname, gitRef)

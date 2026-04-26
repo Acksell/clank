@@ -250,7 +250,7 @@ func ensureDaemon() (*hubclient.Client, error) {
 
 	if !running {
 		fmt.Println("Starting daemon...")
-		if err := daemoncli.RunStart(false); err != nil {
+		if err := daemoncli.RunStart(false, daemoncli.ServerOptions{}); err != nil {
 			return nil, fmt.Errorf("start daemon: %w", err)
 		}
 	}

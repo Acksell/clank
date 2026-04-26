@@ -350,6 +350,26 @@ func parseTimeParam(s string) (time.Time, error) {
 // returns a per-session serverURL (empty for backends without an HTTP
 // server, e.g. Claude Code).
 func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, error) {
+	// LaunchHost (if set) provisions a fresh sandbox host before
+	// dispatching the session there. The launcher chooses the
+	// hostname; we register the resulting client and overwrite
+	// req.Hostname so the rest of the flow runs unchanged.
+	if req.LaunchHost != nil {
+		launcher, err := s.hostLauncher(req.LaunchHost.Provider)
+		if err != nil {
+			return nil, err
+		}
+		name, client, err := launcher.Launch(s.ctx, *req.LaunchHost)
+		if err != nil {
+			return nil, fmt.Errorf("launch host: %w", err)
+		}
+		if _, regErr := s.RegisterHost(name, client); regErr != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("register launched host: %w", regErr)
+		}
+		req.Hostname = string(name)
+	}
+
 	if req.Hostname == "" {
 		req.Hostname = string(host.HostLocal)
 	}

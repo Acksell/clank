@@ -13,8 +13,14 @@ import (
 // settings at once) don't clobber each other by writing back stale data.
 var prefsMu sync.Mutex
 
-// Dir returns the path to the clank configuration directory (~/.clank).
+// Dir returns the path to the clank configuration directory (default
+// ~/.clank). Can be overridden with the CLANK_DIR environment variable;
+// useful for running multiple clankd instances on the same machine
+// (e.g. laptop hub + remote hub for hub-to-hub sync development).
 func Dir() (string, error) {
+	if d := os.Getenv("CLANK_DIR"); d != "" {
+		return d, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
@@ -26,6 +32,27 @@ func Dir() (string, error) {
 type ModelPreference struct {
 	ModelID    string `json:"model_id"`
 	ProviderID string `json:"provider_id"`
+}
+
+// RemoteHubPreference configures hub-to-hub sync. Populated symmetrically
+// on both ends: the laptop hub sets URL+AuthToken to know where to push
+// synced git data; a TCP-listening hub uses AuthToken to validate inbound
+// bearer tokens. URL may be empty on a hub that only acts as a sync
+// receiver.
+type RemoteHubPreference struct {
+	URL       string `json:"url,omitempty"`
+	AuthToken string `json:"auth_token,omitempty"`
+}
+
+// DaytonaPreference configures the Daytona host launcher on a cloud
+// hub. APIKey enables the launcher; everything else is optional and
+// has sensible defaults. Forwarded into spawned sandboxes via env so
+// the agent backend has the credentials it needs.
+type DaytonaPreference struct {
+	APIKey   string            `json:"api_key,omitempty"`
+	Image    string            `json:"image,omitempty"`
+	BaseURL  string            `json:"base_url,omitempty"`
+	ExtraEnv map[string]string `json:"extra_env,omitempty"`
 }
 
 // Preferences stores user preferences that persist across sessions.
@@ -45,6 +72,19 @@ type Preferences struct {
 	// pulling internal/agent into the config package's dependency graph.
 	// Validate at the boundary via agent.ResolveBackendPreference.
 	DefaultBackend string `json:"default_backend,omitempty"`
+
+	// RemoteHub configures hub-to-hub sync. See RemoteHubPreference.
+	RemoteHub *RemoteHubPreference `json:"remote_hub,omitempty"`
+
+	// SyncedRepos lists git RemoteURLs that the laptop sync agent will
+	// push to RemoteHub. Repos not on this list are ignored — explicit
+	// opt-in avoids accidental data exfiltration.
+	SyncedRepos []string `json:"synced_repos,omitempty"`
+
+	// Daytona configures the cloud-hub-side Daytona launcher. Only
+	// effective on a TCP-listening hub. Empty = launcher disabled
+	// (sessions requesting launch_host.provider="daytona" will 4xx).
+	Daytona *DaytonaPreference `json:"daytona,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.

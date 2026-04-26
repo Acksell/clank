@@ -17,6 +17,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 
 	"github.com/acksell/clank/internal/config"
+	locallauncher "github.com/acksell/clank/internal/host/launcher/local"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	"github.com/acksell/clank/internal/store"
@@ -35,10 +36,17 @@ func Command() *cobra.Command {
 		Short: "Start the background daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			foreground, _ := cmd.Flags().GetBool("foreground")
-			return RunStart(foreground)
+			listen, _ := cmd.Flags().GetString("listen")
+			publicBaseURL, _ := cmd.Flags().GetString("public-base-url")
+			return RunStart(foreground, ServerOptions{
+				Listen:        listen,
+				PublicBaseURL: publicBaseURL,
+			})
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
+	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires preferences.remote_hub.auth_token to be set and authorizes inbound calls with that bearer token.")
+	startCmd.Flags().String("public-base-url", "", "Externally-reachable base URL of this hub. Used by TCP-mode hubs to tell sandboxes where to fetch git mirrors from.")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -60,9 +68,18 @@ func Command() *cobra.Command {
 	return cmd
 }
 
+// ServerOptions configures the listener for the clankd Hub. Empty Listen
+// means default Unix socket mode; "tcp://addr:port" enables TCP mode with
+// bearer-token auth. PublicBaseURL is the externally-reachable URL of
+// the hub, used in TCP mode to tell sandboxes where to fetch synced data.
+type ServerOptions struct {
+	Listen        string
+	PublicBaseURL string
+}
+
 // RunStart starts the daemon, either in foreground or as a background process.
 // Exported so that ensureDaemon in the clank binary can call it directly.
-func RunStart(foreground bool) error {
+func RunStart(foreground bool, opts ServerOptions) error {
 	running, pid, err := hubclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
@@ -117,7 +134,53 @@ func RunStart(foreground bool) error {
 
 		d.SetHostClient(hh.client)
 
-		return runHubServer(d)
+		// Start the laptop-side sync agent if the user has configured a
+		// remote hub. The agent owns its own goroutine; Stop() blocks
+		// until the loop exits, so we defer it before runHubServer takes
+		// over. Errors here are fatal: a misconfigured agent should not
+		// silently fail.
+		stopAgent, err := maybeStartSyncAgent(context.Background(), d.Store)
+		if err != nil {
+			return fmt.Errorf("start sync agent: %w", err)
+		}
+		if stopAgent != nil {
+			defer stopAgent()
+		}
+
+		// Register the in-process LocalLauncher under "local-stub". Cheap
+		// to wire up unconditionally — only consulted when a session
+		// request specifies launch_host.provider="local-stub". The
+		// Daytona launcher (Step 7) registers under "daytona" alongside.
+		//
+		// In TCP/cloud-hub mode we configure the launcher with the
+		// hub's own public URL + bearer token so the spawned clank-host
+		// (which simulates a Daytona sandbox) clones from the cloud
+		// mirror, exactly like a real sandbox would.
+		launcherOpts := locallauncher.Options{}
+		if opts.Listen != "" && opts.PublicBaseURL != "" {
+			launcherOpts.GitSyncSource = opts.PublicBaseURL
+			if prefs, perr := config.LoadPreferences(); perr == nil && prefs.RemoteHub != nil {
+				launcherOpts.GitSyncToken = prefs.RemoteHub.AuthToken
+			}
+		}
+		localLauncher := locallauncher.New(launcherOpts, nil)
+		d.SetHostLauncher("local-stub", localLauncher)
+		defer localLauncher.Stop()
+
+		// Daytona launcher: only active in cloud-hub mode (TCP) and only
+		// when preferences.daytona.api_key is configured. Misconfiguration
+		// is logged but non-fatal — the hub still serves sync, just can't
+		// provision sandboxes.
+		if opts.Listen != "" {
+			if dl, err := buildDaytonaLauncher(opts); err != nil {
+				log.Printf("daytona launcher: not registered: %v", err)
+			} else if dl != nil {
+				d.SetHostLauncher("daytona", dl)
+				defer dl.Stop()
+			}
+		}
+
+		return runHubServer(d, opts)
 	}
 
 	// Fork a background process. The forked process runs with
@@ -141,7 +204,14 @@ func RunStart(foreground bool) error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	bgCmd := exec.Command(exe, "start", "--foreground")
+	bgArgs := []string{"start", "--foreground"}
+	if opts.Listen != "" {
+		bgArgs = append(bgArgs, "--listen", opts.Listen)
+	}
+	if opts.PublicBaseURL != "" {
+		bgArgs = append(bgArgs, "--public-base-url", opts.PublicBaseURL)
+	}
+	bgCmd := exec.Command(exe, bgArgs...)
 	bgCmd.Stdout = logFile
 	bgCmd.Stderr = logFile
 	bgCmd.Stdin = nil
