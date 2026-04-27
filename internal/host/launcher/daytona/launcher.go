@@ -202,12 +202,50 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 	client := hostclient.NewHTTP(preview.URL, transport)
 
 	if err := l.waitForHostReady(ctx, client, sandbox.ID); err != nil {
+		// Pull the sandbox's entrypoint logs so the user sees *why*
+		// clank-host never came up (env-var crash, listen-address
+		// mismatch, image misbuild, ...). Best-effort: a stuck
+		// sandbox is still leakable, so we always tear it down.
+		if logs := l.fetchEntrypointLogs(sandbox); logs != "" {
+			err = fmt.Errorf("%w\n--- sandbox entrypoint logs ---\n%s\n--- end logs ---", err, logs)
+		}
 		_ = l.deleteBackground(sandbox)
 		return "", nil, fmt.Errorf("wait for clank-host: %w", err)
 	}
 
 	l.log.Printf("daytona launcher: sandbox %s ready at %s (host=%s)", sandbox.ID, preview.URL, hostname)
 	return hostname, client, nil
+}
+
+// fetchEntrypointLogs is best-effort: returns the empty string when
+// the toolbox isn't reachable or the call fails. A short timeout
+// keeps a hung sandbox from blocking the surrounding error path.
+//
+// Daytona's SessionCommandLogsResponse exposes Output (combined),
+// Stdout, and Stderr as plain strings. We prefer Stdout+Stderr when
+// non-empty (more readable), falling back to Output otherwise.
+func (l *Launcher) fetchEntrypointLogs(s *daytona.Sandbox) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := s.Process.GetEntrypointLogs(ctx)
+	if err != nil || resp == nil {
+		return ""
+	}
+	var b strings.Builder
+	if resp.Stdout != "" {
+		b.WriteString("[stdout]\n")
+		b.WriteString(resp.Stdout)
+		b.WriteString("\n")
+	}
+	if resp.Stderr != "" {
+		b.WriteString("[stderr]\n")
+		b.WriteString(resp.Stderr)
+		b.WriteString("\n")
+	}
+	if b.Len() == 0 && resp.Output != "" {
+		b.WriteString(resp.Output)
+	}
+	return b.String()
 }
 
 // waitForHostReady polls the spawned clank-host's /status until it

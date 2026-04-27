@@ -72,7 +72,14 @@ if [ "${SANDBOX_ENVIRONMENT:-}" = "development" ]; then
     fi
 fi
 
+# Bind on the IPv6 wildcard. On Linux this is dual-stack by default
+# (IPV6_V6ONLY=0), so the listener accepts both IPv4 and IPv6
+# connections. Daytona's toolbox proxy dials `[::1]:<port>` (IPv6
+# loopback) when forwarding preview-URL traffic into the sandbox; an
+# IPv4-only `0.0.0.0` bind would be unreachable and the proxy would
+# return 502s. Sticking to `[::]` here also keeps macOS happy (where
+# `0.0.0.0` and `::` behave nearly identically).
 exec /usr/local/bin/clank-host \
-  --listen "tcp://0.0.0.0:${CLANK_HOST_PORT}" \
+  --listen "tcp://[::]:${CLANK_HOST_PORT}" \
   --git-sync-source "${CLANK_HUB_URL}" \
   --git-sync-token "${CLANK_HUB_TOKEN}"
