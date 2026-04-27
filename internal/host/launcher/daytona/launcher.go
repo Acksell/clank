@@ -121,11 +121,9 @@ func New(opts Options, lg *log.Logger) (*Launcher, error) {
 // Steps:
 //  1. POST /sandbox to create — pass the image, env (HubBaseURL,
 //     HubAuthToken, agent credentials, optional command override).
-//  2. Poll the sandbox until State == "Running" or timeout.
-//  3. Fetch the preview URL + token for HostPort. (See getPreviewLink —
-//     this is the bit that needs a real Daytona account to verify; the
-//     API surface is documented but the exact endpoint path is best
-//     confirmed against Daytona's OpenAPI spec.)
+//  2. Poll the sandbox until state == "started" or timeout.
+//  3. Fetch the preview URL + token for HostPort via
+//     GET /sandbox/{id}/ports/{port}/preview-url.
 //  4. Build a *hostclient.HTTP whose transport injects the preview
 //     token on every request, and return it for catalog registration.
 func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hostname, *hostclient.HTTP, error) {
@@ -215,7 +213,13 @@ func (l *Launcher) createSandbox(ctx context.Context, env map[string]string) (*c
 	return &out, nil
 }
 
-// waitForRunning polls GET /sandbox/{id} until state == "Running".
+// waitForRunning polls GET /sandbox/{id} until state indicates the
+// sandbox is up.
+//
+// Daytona's documented states are lowercase ("started", "stopped",
+// "creating", "starting", "snapshotting", "resizing", plus error
+// states). We compare case-insensitively because the docs and the
+// API have drifted in the past — better to be lenient on read.
 func (l *Launcher) waitForRunning(ctx context.Context, id string) error {
 	deadline := time.NewTimer(l.opts.ProvisionTimeout)
 	defer deadline.Stop()
@@ -223,15 +227,19 @@ func (l *Launcher) waitForRunning(ctx context.Context, id string) error {
 	defer t.Stop()
 	for {
 		var got struct {
-			State string `json:"state"`
+			State       string `json:"state"`
+			ErrorReason string `json:"errorReason,omitempty"`
 		}
 		if err := l.doJSON(ctx, "GET", "/sandbox/"+id, nil, &got); err != nil {
 			return fmt.Errorf("poll sandbox: %w", err)
 		}
-		switch got.State {
-		case "Running", "Started":
+		switch strings.ToLower(got.State) {
+		case "started", "running":
 			return nil
-		case "Error", "Failed", "Stopped":
+		case "error", "failed", "build_failed", "stopped", "destroyed":
+			if got.ErrorReason != "" {
+				return fmt.Errorf("sandbox entered terminal state %q: %s", got.State, got.ErrorReason)
+			}
 			return fmt.Errorf("sandbox entered terminal state %q before becoming ready", got.State)
 		}
 		select {
@@ -245,7 +253,10 @@ func (l *Launcher) waitForRunning(ctx context.Context, id string) error {
 }
 
 // previewLink is the (URL, token) pair Daytona returns for a sandbox
-// port preview.
+// port preview. The URL has the shape
+// `https://{port}-{sandboxId}.{daytonaProxyDomain}` and the token must
+// be sent as `x-daytona-preview-token` on every request through the
+// preview proxy.
 type previewLink struct {
 	URL   string `json:"url"`
 	Token string `json:"token"`
@@ -254,25 +265,31 @@ type previewLink struct {
 // getPreviewLink fetches a fresh preview URL + token for the given
 // sandbox port.
 //
-// TODO(daytona-preview): verify the exact REST path. Daytona's docs
-// expose this via SDK methods (`sandbox.getPreviewLink(port)`); the
-// underlying REST shape is documented as available but the path
-// varies between docs sources. Confirm against
-// `GET /openapi.json` in the user's account before trusting in
-// production. The Sandbox URL/token pattern itself is stable:
-//
-//	https://{port}-{sandboxId}.preview.daytona.app
-//	x-daytona-preview-token: {token}
+// Endpoint: GET /sandbox/{id}/ports/{port}/preview-url — confirmed
+// against https://www.daytona.io/docs/en/preview/. The preview proxy
+// sometimes lags the sandbox state by a couple of seconds, so we
+// retry a few times on 404/5xx before giving up.
 func (l *Launcher) getPreviewLink(ctx context.Context, sandboxID string, port int) (*previewLink, error) {
-	path := fmt.Sprintf("/sandbox/%s/preview-link?port=%d", sandboxID, port)
-	var out previewLink
-	if err := l.doJSON(ctx, "GET", path, nil, &out); err != nil {
-		return nil, err
+	path := fmt.Sprintf("/sandbox/%s/ports/%d/preview-url", sandboxID, port)
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var out previewLink
+		err := l.doJSON(ctx, "GET", path, nil, &out)
+		if err == nil {
+			if out.URL == "" || out.Token == "" {
+				return nil, fmt.Errorf("preview link response missing url or token: %+v", out)
+			}
+			return &out, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Second):
+		}
 	}
-	if out.URL == "" || out.Token == "" {
-		return nil, fmt.Errorf("preview link response missing url or token: %+v", out)
-	}
-	return &out, nil
+	return nil, lastErr
 }
 
 // deleteSandbox DELETEs /sandbox/{id}. Best-effort: the caller logs

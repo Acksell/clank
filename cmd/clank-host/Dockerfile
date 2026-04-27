@@ -17,7 +17,7 @@
 #     ghcr.io/acksell/clank-host:dev
 
 # ---- builder ---------------------------------------------------------
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 RUN apk add --no-cache git ca-certificates
@@ -28,16 +28,48 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/clank-host ./cmd/clank-host
 
 # ---- runtime ---------------------------------------------------------
-FROM alpine:3.20
+# Use a glibc-based image. opencode ships a Bun-built single binary that
+# is *not* statically linked against musl, so it crashes on Alpine with
+# "Error relocating ... GLIBC_..." This is a known issue for Bun
+# binaries; the cheapest fix is to use Debian slim instead of Alpine.
+FROM debian:bookworm-slim
 
-# git: needed by host.workDirFor for clones from the cloud-hub mirror.
-# ca-certificates: needed for HTTPS clones (origin remote URLs and the
-#   cloud hub's preview URL).
-RUN apk add --no-cache git ca-certificates
+# git:             needed by host.workDirFor for clones from the cloud-hub mirror.
+# ca-certificates: needed for HTTPS clones.
+# curl, unzip:     needed by the bun installer.
+# libstdc++6:      runtime dep of bun-built binaries (opencode, claude-code).
+# iptables:        runtime dep of tailscaled (userspace mode still needs it).
+# nodejs:          opencode and @anthropic-ai/claude-code ship CLIs with a
+#                  `#!/usr/bin/env node` shebang, so a node interpreter must
+#                  be on PATH even though we install the packages via bun.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+        unzip \
+        libstdc++6 \
+        iptables \
+        nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
-# Default agent backends (opencode, claude-code) are installed on top
-# of this image by the layer the user actually runs. The base image
-# only ships clank-host itself.
+# Pre-install Tailscale into the image so dev sandboxes can reach the
+# user's laptop over the tailnet without paying install cost on every
+# cold start. The entrypoint only starts tailscaled when
+# SANDBOX_ENVIRONMENT=development AND TAILSCALE_AUTHKEY is set, so a
+# production sandbox image never touches the tailnet.
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
+# Install bun system-wide, then use it to install both agent CLIs.
+# bun global bins land in /root/.bun/bin — symlink them to /usr/local/bin
+# so they are on $PATH for any user Daytona runs the entrypoint as.
+RUN curl -fsSL https://bun.sh/install | bash \
+    && ln -s /root/.bun/bin/bun /usr/local/bin/bun
+
+RUN bun add -g opencode-ai @anthropic-ai/claude-code \
+    && ln -s /root/.bun/bin/opencode /usr/local/bin/opencode \
+    && ln -s /root/.bun/bin/claude   /usr/local/bin/claude \
+    && opencode --version \
+    && claude --version
 
 WORKDIR /workspace
 COPY --from=builder /out/clank-host /usr/local/bin/clank-host

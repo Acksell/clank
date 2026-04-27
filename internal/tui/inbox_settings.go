@@ -17,7 +17,11 @@ import (
 // pane reflects the cursor position the same way it does for branches.
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
-	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend)
+	remoteURL := ""
+	if prefs.RemoteHub != nil {
+		remoteURL = prefs.RemoteHub.URL
+	}
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL)
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -82,6 +86,23 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next := nextDefaultBackend(m.settings.DefaultBackendValue())
 			m.settings.SetDefaultBackendValue(string(next))
 			persistDefaultBackend(next)
+			return m, nil
+		case settingsEntryActiveHub:
+			// Toggle local <-> remote. We don't reconnect the running
+			// TUI's hub client here — swapping transports mid-flight
+			// would orphan the in-flight SSE stream and the cached
+			// session list. Persisting + telling the user to restart is
+			// the simplest correct behavior; if hot-swap becomes
+			// painful we can revisit. Re-read prefs to pick up
+			// remote_hub.url for the rendered label.
+			prefs, _ := config.LoadPreferences()
+			remoteURL := ""
+			if prefs.RemoteHub != nil {
+				remoteURL = prefs.RemoteHub.URL
+			}
+			next := nextActiveHub(prefs.ActiveHub)
+			m.settings.SetActiveHubValue(next, remoteURL)
+			persistActiveHub(next)
 			return m, nil
 		}
 		return m, nil
@@ -176,5 +197,23 @@ func nextDefaultBackend(currentName string) agent.BackendType {
 func persistDefaultBackend(bt agent.BackendType) {
 	_ = config.UpdatePreferences(func(p *config.Preferences) {
 		p.DefaultBackend = string(bt)
+	})
+}
+
+// nextActiveHub flips between "local" and "remote". Empty string is
+// treated as "local" (the implicit default) so the first toggle moves
+// to "remote".
+func nextActiveHub(current string) string {
+	if current == "remote" {
+		return "local"
+	}
+	return "remote"
+}
+
+// persistActiveHub writes the user's chosen active hub to
+// preferences.json. See persistColorScheme for error handling.
+func persistActiveHub(name string) {
+	_ = config.UpdatePreferences(func(p *config.Preferences) {
+		p.ActiveHub = name
 	})
 }

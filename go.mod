@@ -6,7 +6,7 @@ require (
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
-	github.com/acksell/mindmouth v0.0.0-00010101000000-000000000000
+	github.com/acksell/mindmouth v0.0.1
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.6
@@ -19,10 +19,7 @@ require (
 	modernc.org/sqlite v1.47.0
 )
 
-require (
-	github.com/gen2brain/malgo v0.11.24 // indirect
-	github.com/google/renameio/v2 v2.0.2 // indirect
-)
+require github.com/gen2brain/malgo v0.11.24 // indirect
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
@@ -71,6 +68,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/acksell/mindmouth => ../mindmouth
-
-replace github.com/severity1/claude-agent-sdk-go => /Users/axelengstrom/github.com/acksell/claude-agent-sdk-go
+replace github.com/severity1/claude-agent-sdk-go => github.com/Acksell/claude-agent-sdk-go v0.0.0-20260424151828-708a654d0bbe

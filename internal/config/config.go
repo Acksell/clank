@@ -17,15 +17,44 @@ var prefsMu sync.Mutex
 // ~/.clank). Can be overridden with the CLANK_DIR environment variable;
 // useful for running multiple clankd instances on the same machine
 // (e.g. laptop hub + remote hub for hub-to-hub sync development).
+//
+// A leading "~" or "~/..." in CLANK_DIR is expanded to the user's home
+// directory. Without this, a literal "~/.clank-cloud" gets created as
+// a relative directory in the cwd when CLANK_DIR is set by something
+// that doesn't perform shell-style tilde expansion (quoted shell
+// values, a launchd/systemd unit, a docker `-e`).
 func Dir() (string, error) {
 	if d := os.Getenv("CLANK_DIR"); d != "" {
-		return d, nil
+		return expandHome(d)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
 	return filepath.Join(home, ".clank"), nil
+}
+
+// expandHome resolves a leading "~" or "~/..." against the current
+// user's home directory. "~user" forms are intentionally not supported
+// — we'd need to consult /etc/passwd which adds platform-specific
+// behavior for marginal value.
+func expandHome(p string) (string, error) {
+	if p == "" || p[0] != '~' {
+		return p, nil
+	}
+	if len(p) > 1 && p[1] != '/' && p[1] != filepath.Separator {
+		// "~user/..." — leave unchanged so callers see the literal
+		// path and can decide what to do.
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand ~: %w", err)
+	}
+	if len(p) == 1 {
+		return home, nil
+	}
+	return filepath.Join(home, p[1:]), nil
 }
 
 // ModelPreference stores the user's preferred model selection.
@@ -75,6 +104,18 @@ type Preferences struct {
 
 	// RemoteHub configures hub-to-hub sync. See RemoteHubPreference.
 	RemoteHub *RemoteHubPreference `json:"remote_hub,omitempty"`
+
+	// ActiveHub picks which hub the local TUI/CLI talks to:
+	//
+	//   ""        — implicit "local"; the local Unix-socket daemon.
+	//   "local"   — explicit "local"; same behavior as "".
+	//   "remote"  — talk to RemoteHub.URL with RemoteHub.AuthToken
+	//               over TCP. Requires RemoteHub to be set.
+	//
+	// Used by hubclient.NewDefaultClient to pick the transport. Only
+	// affects clients (TUI, clankcli); the local clankd daemon always
+	// listens on its own socket regardless of this value.
+	ActiveHub string `json:"active_hub,omitempty"`
 
 	// SyncedRepos lists git RemoteURLs that the laptop sync agent will
 	// push to RemoteHub. Repos not on this list are ignored — explicit

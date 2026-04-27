@@ -225,8 +225,11 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	// Child process inherited the fd; close our copy.
 	logFile.Close()
 
-	// Wait briefly for the daemon to be reachable.
-	client, err := hubclient.NewDefaultClient()
+	// Wait briefly for the daemon to be reachable. Always probe the
+	// local socket here — we just spawned a local daemon. NewLocalClient
+	// (rather than NewDefaultClient) keeps this immune to ActiveHub
+	// flipping the user-facing transport to a remote hub.
+	client, err := hubclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -298,7 +301,10 @@ func runStatus() error {
 		return nil
 	}
 
-	client, err := hubclient.NewDefaultClient()
+	// `clankd status` reports on the local daemon — IsRunning already
+	// checked the local PID file, so the client must target the local
+	// socket too even when ActiveHub points at a remote hub.
+	client, err := hubclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}

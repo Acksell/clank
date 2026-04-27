@@ -55,14 +55,15 @@ func newFakeDaytona(t *testing.T, apiKey string, pendingPolls int) *fakeDaytona 
 		}
 		id := "sb-" + strings.ReplaceAll(time.Now().Format("150405.000"), ".", "")
 		f.mu.Lock()
-		f.sandboxes[id] = "Pending"
+		f.sandboxes[id] = "creating"
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(201)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": "Pending"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": "creating"})
 	})
 
-	// GET /sandbox/{id}
+	// GET /sandbox/{id} — Daytona returns lowercase state values
+	// per https://www.daytona.io/docs/en/typescript-sdk/sandbox/.
 	mux.HandleFunc("GET /sandbox/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
 			http.Error(w, "unauthorized", 401)
@@ -71,10 +72,11 @@ func newFakeDaytona(t *testing.T, apiKey string, pendingPolls int) *fakeDaytona 
 		id := r.PathValue("id")
 		f.mu.Lock()
 		state, ok := f.sandboxes[id]
-		// Flip to Running once we've served the configured number of pendings.
-		if ok && state == "Pending" && f.pollsBe4.Add(-1) <= 0 {
-			f.sandboxes[id] = "Running"
-			state = "Running"
+		// Flip to "started" once we've served the configured number of
+		// transitional polls.
+		if ok && state == "creating" && f.pollsBe4.Add(-1) <= 0 {
+			f.sandboxes[id] = "started"
+			state = "started"
 		}
 		f.mu.Unlock()
 		if !ok {
@@ -84,14 +86,15 @@ func newFakeDaytona(t *testing.T, apiKey string, pendingPolls int) *fakeDaytona 
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": state})
 	})
 
-	// GET /sandbox/{id}/preview-link?port=...
-	mux.HandleFunc("GET /sandbox/{id}/preview-link", func(w http.ResponseWriter, r *http.Request) {
+	// GET /sandbox/{id}/ports/{port}/preview-url — official Daytona
+	// path per https://www.daytona.io/docs/en/preview/.
+	mux.HandleFunc("GET /sandbox/{id}/ports/{port}/preview-url", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
 		id := r.PathValue("id")
-		port := r.URL.Query().Get("port")
+		port := r.PathValue("port")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"url":   "https://" + port + "-" + id + ".preview.daytona.app",
 			"token": "preview-tkn-" + id,

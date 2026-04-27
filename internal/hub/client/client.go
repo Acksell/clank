@@ -47,13 +47,29 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// Client communicates with clankd's Hub API over its Unix domain socket.
+// Client communicates with clankd's Hub API. Two transports are
+// supported, picked at construction time:
+//
+//   - Unix socket — historical default, used for the local laptop hub.
+//     sockPath is set; baseURL stays "http://daemon" (the URL hostname
+//     is irrelevant because the dialer always reaches the socket).
+//   - TCP + bearer token — used for talking to a remote hub. baseURL
+//     is the hub's externally-reachable URL ("http://host:port" or
+//     "https://...") and authToken populates Authorization on every
+//     outbound request.
+//
+// The two modes share the same wire protocol; only the transport and
+// the auth header differ. Once the connection is established the rest
+// of the client (sessions, hosts, sse) is mode-agnostic.
 type Client struct {
-	sockPath   string
+	sockPath   string // empty when in TCP mode
+	baseURL    string // "http://daemon" (Unix) or "http://host:port" (TCP)
+	authToken  string // empty when in Unix mode; bearer token in TCP mode
 	httpClient *http.Client
 }
 
-// NewClient creates a client that connects to clankd at the given socket path.
+// NewClient creates a client that connects to clankd at the given Unix
+// socket path. Use NewTCPClient to talk to a remote hub over TCP.
 //
 // The http.Client has no overall Timeout; long-poll, SSE, and websocket
 // upgrade endpoints rely on caller-supplied context for cancellation.
@@ -61,6 +77,7 @@ type Client struct {
 func NewClient(sockPath string) *Client {
 	return &Client{
 		sockPath: sockPath,
+		baseURL:  "http://daemon",
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -73,13 +90,116 @@ func NewClient(sockPath string) *Client {
 	}
 }
 
-// NewDefaultClient creates a client using the default socket path.
+// NewTCPClient creates a client that talks to a remote clankd over
+// TCP. baseURL must be the externally-reachable hub URL (no trailing
+// slash); authToken is sent as `Authorization: Bearer <token>` on
+// every request and must match the remote hub's
+// preferences.remote_hub.auth_token.
+func NewTCPClient(baseURL, authToken string) *Client {
+	return &Client{
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		authToken: authToken,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
+		},
+	}
+}
+
+// Override holds CLI-flag-level transport overrides. CLI commands
+// (e.g. `clank --hub-url ...`) populate this via SetOverride before
+// they construct any client; NewDefaultClient and IsRemoteActive
+// consult it ahead of preferences.json.
+//
+// Package-level state is the simplest way to thread CLI flags into
+// the many places clients are constructed without adding a context
+// arg to every call site. Tests reset it with t.Cleanup(ResetOverride).
+var (
+	overrideURL   string
+	overrideToken string
+)
+
+// SetOverride sets the CLI-flag-level hub transport override. Empty
+// url is a no-op (i.e. no override; preferences.json wins again).
+// Call from cobra PersistentPreRun or equivalent before any client
+// is constructed.
+func SetOverride(url, token string) {
+	overrideURL = url
+	overrideToken = token
+}
+
+// ResetOverride clears any active override. Tests use this with
+// t.Cleanup; production code rarely needs it.
+func ResetOverride() {
+	overrideURL = ""
+	overrideToken = ""
+}
+
+// NewDefaultClient creates a client using, in priority order:
+//  1. CLI-flag overrides (SetOverride) — wins over everything.
+//  2. preferences.ActiveHub == "remote" with a configured remote_hub URL.
+//  3. The local Unix socket.
+//
+// Use this for user-facing commands (TUI, send, subscribe). For
+// daemon-control commands (start/stop/status of the local daemon),
+// use NewLocalClient instead — those should always target the local
+// socket regardless of which hub the user is "viewing."
 func NewDefaultClient() (*Client, error) {
+	if strings.TrimSpace(overrideURL) != "" {
+		return NewTCPClient(overrideURL, overrideToken), nil
+	}
+	prefs, err := config.LoadPreferences()
+	if err == nil && prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+		return NewTCPClient(prefs.RemoteHub.URL, prefs.RemoteHub.AuthToken), nil
+	}
 	sockPath, err := SocketPath()
 	if err != nil {
 		return nil, err
 	}
 	return NewClient(sockPath), nil
+}
+
+// NewLocalClient always returns a Unix-socket client for the local
+// clankd, ignoring ActiveHub. Used by daemon-control commands —
+// `clankd start/stop/status` operate on this machine's daemon by
+// definition, even when the user has set ActiveHub=remote so their
+// TUI talks to a different hub.
+func NewLocalClient() (*Client, error) {
+	sockPath, err := SocketPath()
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(sockPath), nil
+}
+
+// IsRemoteActive reports whether NewDefaultClient would return a TCP
+// client targeting a remote hub (either via CLI override or via
+// preferences). Lets callers (e.g. the TUI bootstrap) skip
+// local-daemon-management logic that isn't applicable in remote mode.
+func IsRemoteActive() bool {
+	if strings.TrimSpace(overrideURL) != "" {
+		return true
+	}
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return false
+	}
+	return prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != ""
+}
+
+// ActiveHubLabel returns a short human-readable description of which
+// hub NewDefaultClient would target right now. Used by the TUI/CLI to
+// surface the active hub in headers and error messages.
+func ActiveHubLabel() string {
+	if u := strings.TrimSpace(overrideURL); u != "" {
+		return "override (" + u + ")"
+	}
+	prefs, err := config.LoadPreferences()
+	if err == nil && prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+		return "remote (" + prefs.RemoteHub.URL + ")"
+	}
+	return "local"
 }
 
 // SocketPath returns the Unix socket path for clankd's Hub API.
@@ -176,9 +296,12 @@ func IsRunning() (bool, int, error) {
 
 // Ping checks if clankd is reachable.
 func (c *Client) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://daemon/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/ping", nil)
 	if err != nil {
 		return err
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
