@@ -3,222 +3,144 @@ package daytona
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/internal/agent"
+	hostclient "github.com/acksell/clank/internal/host/client"
 )
 
-// fakeDaytona is a tiny in-memory stand-in for Daytona's control-plane
-// API. It tracks created/deleted sandbox IDs so tests can assert the
-// launcher's lifecycle behavior without hitting the real service.
-type fakeDaytona struct {
-	t        *testing.T
-	srv      *httptest.Server
-	apiKey   string
-	pollsBe4 atomic.Int32 // pretend the sandbox spends N polls in "Pending"
-
-	mu       sync.Mutex
-	sandboxes map[string]string // id -> state
-	deleted   []string
+// TestNew_FailsFastOnMissingOptions pins the construction guards.
+// Catching missing fields here matters because Launch is called from
+// session-create on a hot path; failing earlier (boot) is much
+// friendlier than failing per-session.
+func TestNew_FailsFastOnMissingOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+	}{
+		// SDKClient is nil + APIKey empty → SDK construction fails.
+		{"missing-api-key", Options{HubBaseURL: "http://h", HubAuthToken: "t"}},
+		{"missing-hub-url", Options{APIKey: "k", HubAuthToken: "t"}},
+		{"missing-hub-token", Options{APIKey: "k", HubBaseURL: "http://h"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := New(c.opts, nil); err == nil {
+				t.Errorf("New(%+v) returned nil error", c.opts)
+			}
+		})
+	}
 }
 
-func newFakeDaytona(t *testing.T, apiKey string, pendingPolls int) *fakeDaytona {
-	f := &fakeDaytona{t: t, apiKey: apiKey, sandboxes: map[string]string{}}
-	f.pollsBe4.Store(int32(pendingPolls))
-	mux := http.NewServeMux()
+// TestSafeHostnameSuffix locks the hostname-suffix shape so any future
+// schema drift in Daytona's sandbox IDs (length, separator) shows up
+// here rather than in mysterious "host not registered" errors.
+func TestSafeHostnameSuffix(t *testing.T) {
+	cases := map[string]string{
+		"sb-abc-123def456789":   "123def456789",
+		"sandbox-aaa":           "aaa",
+		"plain":                 "plain",
+		"long-tail-abcdefghijklmnop": "abcdefghijkl", // truncated to 12
+	}
+	for in, want := range cases {
+		if got := safeHostnameSuffix(in); got != want {
+			t.Errorf("safeHostnameSuffix(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
 
-	// POST /sandbox
-	mux.HandleFunc("POST /sandbox", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+apiKey {
-			http.Error(w, "unauthorized", 401)
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		// Minimal validation: image must be present, env must be a map.
-		if _, ok := body["image"].(string); !ok {
-			http.Error(w, "image required", 400)
-			return
-		}
-		if _, ok := body["env"].(map[string]any); !ok {
-			http.Error(w, "env required", 400)
-			return
-		}
-		id := "sb-" + strings.ReplaceAll(time.Now().Format("150405.000"), ".", "")
-		f.mu.Lock()
-		f.sandboxes[id] = "creating"
-		f.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(201)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": "creating"})
-	})
+// TestPreviewTokenInjector verifies the RoundTripper attaches the
+// `x-daytona-preview-token` header on every outbound request — that
+// header is what the Daytona preview proxy uses to authenticate the
+// hub-to-sandbox calls.
+func TestPreviewTokenInjector(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-daytona-preview-token")
+		w.WriteHeader(204)
+	}))
+	t.Cleanup(srv.Close)
 
-	// GET /sandbox/{id} — Daytona returns lowercase state values
-	// per https://www.daytona.io/docs/en/typescript-sdk/sandbox/.
-	mux.HandleFunc("GET /sandbox/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+apiKey {
-			http.Error(w, "unauthorized", 401)
-			return
-		}
-		id := r.PathValue("id")
-		f.mu.Lock()
-		state, ok := f.sandboxes[id]
-		// Flip to "started" once we've served the configured number of
-		// transitional polls.
-		if ok && state == "creating" && f.pollsBe4.Add(-1) <= 0 {
-			f.sandboxes[id] = "started"
-			state = "started"
-		}
-		f.mu.Unlock()
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "state": state})
-	})
+	cli := &http.Client{Transport: &previewTokenInjector{token: "tkn"}}
+	resp, err := cli.Get(srv.URL + "/anything")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if got != "tkn" {
+		t.Errorf("preview token header: got %q, want %q", got, "tkn")
+	}
+}
 
-	// GET /sandbox/{id}/ports/{port}/preview-url — official Daytona
-	// path per https://www.daytona.io/docs/en/preview/.
-	//
-	// We return the *fake server's own* URL as the preview URL so
-	// the post-provision host-readiness probe (waitForHostReady)
-	// can reach a real HTTP server in tests. The Daytona control
-	// plane and the host plane share path namespaces here only by
-	// convenience — `/status` happens to be a host-plane endpoint
-	// that's unique enough not to collide with Daytona's
-	// `/sandbox/...` routes.
-	mux.HandleFunc("GET /sandbox/{id}/ports/{port}/preview-url", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+apiKey {
-			http.Error(w, "unauthorized", 401)
+// TestWaitForHostReady_RetriesUntilStatusOK verifies the readiness
+// probe keeps polling /status until the sandbox starts answering, and
+// that it surfaces the underlying error (not just "deadline exceeded")
+// when it gives up — that's what makes a misconfigured sandbox
+// debuggable rather than mysterious.
+func TestWaitForHostReady_RetriesUntilStatusOK(t *testing.T) {
+	var hits atomic.Int32
+	var ready atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// First two attempts: 502 (proxy can't reach upstream).
+		// Third onwards: 200 with a minimal /status payload.
+		if !ready.Load() && hits.Load() < 3 {
+			http.Error(w, "Bad Gateway", 502)
 			return
 		}
-		id := r.PathValue("id")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"url":   f.srv.URL,
-			"token": "preview-tkn-" + id,
-		})
-	})
-
-	// GET /status — host-plane endpoint stubbed so waitForHostReady
-	// has a 200 to land on. Real clank-host inside a Daytona
-	// sandbox serves this; the fake serves a minimal payload that
-	// satisfies hostclient.HTTP.Status's JSON decode.
-	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		ready.Store(true)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"hostname":   "fake",
 			"version":    "test",
 			"started_at": time.Now(),
 			"sessions":   0,
 		})
-	})
+	}))
+	t.Cleanup(srv.Close)
 
-	// DELETE /sandbox/{id}
-	mux.HandleFunc("DELETE /sandbox/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+apiKey {
-			http.Error(w, "unauthorized", 401)
-			return
-		}
-		id := r.PathValue("id")
-		f.mu.Lock()
-		delete(f.sandboxes, id)
-		f.deleted = append(f.deleted, id)
-		f.mu.Unlock()
-		w.WriteHeader(204)
-	})
-
-	f.srv = httptest.NewServer(mux)
-	return f
-}
-
-func (f *fakeDaytona) Close() { f.srv.Close() }
-
-func TestDaytona_LaunchAndStop(t *testing.T) {
-	fake := newFakeDaytona(t, "test-key", 1) // 1 poll spent in Pending
-	t.Cleanup(fake.Close)
-
-	launcher, err := New(Options{
-		APIKey:           "test-key",
-		HubBaseURL:       "http://hub.example",
-		HubAuthToken:     "hub-tkn",
-		BaseURL:          fake.srv.URL,
-		Image:            "ghcr.io/test/image:latest",
-		ProvisionTimeout: 5 * time.Second,
-		ExtraEnv:         map[string]string{"ANTHROPIC_API_KEY": "key", "EMPTY": ""},
-	}, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	l := &Launcher{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	name, client, err := launcher.Launch(ctx, agent.LaunchHostSpec{Provider: "daytona"})
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
+	c := hostclient.NewHTTP(srv.URL, http.DefaultTransport)
+	if err := l.waitForHostReady(ctx, c, "sb-test"); err != nil {
+		t.Fatalf("waitForHostReady: %v", err)
 	}
-	if !strings.HasPrefix(string(name), "daytona-") {
-		t.Errorf("hostname should start with daytona-: %q", name)
-	}
-	if client == nil {
-		t.Fatal("client is nil")
-	}
-
-	// Stop deletes every created sandbox.
-	launcher.Stop()
-	fake.mu.Lock()
-	deleted := append([]string(nil), fake.deleted...)
-	remaining := len(fake.sandboxes)
-	fake.mu.Unlock()
-	if len(deleted) != 1 {
-		t.Errorf("want 1 deletion on Stop, got %d (%v)", len(deleted), deleted)
-	}
-	if remaining != 0 {
-		t.Errorf("want 0 sandboxes remaining, got %d", remaining)
+	if hits.Load() < 3 {
+		t.Errorf("expected at least 3 attempts before ready, got %d", hits.Load())
 	}
 }
 
-func TestDaytona_FailsFastOnMissingOptions(t *testing.T) {
-	cases := []Options{
-		{HubBaseURL: "http://h", HubAuthToken: "t"},                // missing APIKey
-		{APIKey: "k", HubAuthToken: "t"},                           // missing HubBaseURL
-		{APIKey: "k", HubBaseURL: "http://h"},                      // missing HubAuthToken
-	}
-	for i, c := range cases {
-		if _, err := New(c, nil); err == nil {
-			t.Errorf("case %d: want error, got nil", i)
-		}
-	}
-}
-
-func TestDaytona_PreviewTokenInjectedInTransport(t *testing.T) {
-	// Verify that the RoundTripper added by Launch attaches the
-	// x-daytona-preview-token header to the host client's outgoing
-	// requests. We don't actually invoke the host API; we capture the
-	// header via a stand-in handler.
-	var got string
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("x-daytona-preview-token")
-		w.WriteHeader(204)
+// TestWaitForHostReady_TimesOutWithUnderlyingError makes sure a
+// permanently-broken sandbox surfaces a useful message rather than
+// just "context deadline exceeded".
+func TestWaitForHostReady_TimesOutWithUnderlyingError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Bad Gateway", 502)
 	}))
-	t.Cleanup(origin.Close)
+	t.Cleanup(srv.Close)
 
-	transport := &previewTokenInjector{token: "the-token"}
-	cli := &http.Client{Transport: transport}
-	resp, err := cli.Get(origin.URL + "/anything")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
+	l := &Launcher{}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	c := hostclient.NewHTTP(srv.URL, http.DefaultTransport)
+	err := l.waitForHostReady(ctx, c, "sb-broken")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
 	}
-	resp.Body.Close()
-	if got != "the-token" {
-		t.Errorf("token header missing or wrong: %q", got)
+	if !strings.Contains(err.Error(), "sb-broken") {
+		t.Errorf("error should name the sandbox, got %q", err.Error())
+	}
+	// We don't pin the exact substring (could be "502" or "Bad Gateway"
+	// depending on hostclient's error wrapping), but it must NOT be
+	// just a bare deadline error.
+	if errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "Bad Gateway") && !strings.Contains(err.Error(), "502") {
+		t.Errorf("error should mention the underlying 502, got %q", err.Error())
 	}
 }

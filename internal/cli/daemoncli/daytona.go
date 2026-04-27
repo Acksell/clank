@@ -32,7 +32,7 @@ func buildDaytonaLauncher(opts ServerOptions) (*daytonalauncher.Launcher, error)
 	return daytonalauncher.New(daytonalauncher.Options{
 		APIKey:       prefs.Daytona.APIKey,
 		Image:        prefs.Daytona.Image,
-		BaseURL:      prefs.Daytona.BaseURL,
+		APIUrl:       prefs.Daytona.BaseURL, // pref name kept for back-compat; SDK calls it APIUrl
 		ExtraEnv:     prefs.Daytona.ExtraEnv,
 		HubBaseURL:   opts.PublicBaseURL,
 		HubAuthToken: prefs.RemoteHub.AuthToken,
