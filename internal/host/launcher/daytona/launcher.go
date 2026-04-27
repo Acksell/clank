@@ -171,12 +171,28 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		envVars[k] = v
 	}
 
+	// Build the wrapping image with an EXPLICIT ENTRYPOINT.
+	//
+	// Daytona has a documented bug
+	// (https://github.com/daytonaio/daytona/issues/3853): when the
+	// generated wrapping dockerfile is just `FROM <image>`, the
+	// CreateSandbox API does NOT inherit the parent image's
+	// ENTRYPOINT. The sandbox falls back to `sleep infinity`, our
+	// entrypoint.sh never runs, clank-host never binds, and the
+	// preview proxy returns 502s — the exact symptom we hit.
+	//
+	// daytona.Base(...).Entrypoint(...) emits the entrypoint as an
+	// explicit line in the dockerfile, which the API does honor. The
+	// path here MUST match the ENTRYPOINT in cmd/clank-host/Dockerfile.
+	img := daytona.Base(l.opts.Image).
+		Entrypoint([]string{"/usr/local/bin/entrypoint.sh"})
+
 	sandbox, err := l.client.Create(ctx, types.ImageParams{
 		SandboxBaseParams: types.SandboxBaseParams{
 			EnvVars: envVars,
 			Public:  true, // preview proxy still requires the token; "public" only means port previews are reachable from outside the org.
 		},
-		Image:     l.opts.Image,
+		Image:     img,
 		Resources: l.opts.Resources,
 	})
 	if err != nil {

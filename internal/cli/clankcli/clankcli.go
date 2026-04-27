@@ -137,8 +137,13 @@ The daemon is auto-started if not already running.`,
 				return fmt.Errorf("subscribe events: %w", err)
 			}
 
-			// Create the session.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// Create the session. Generous timeout because Daytona-
+			// launched sessions block here while the cloud hub
+			// provisions a sandbox (image build + boot + readiness
+			// probe routinely takes 1-3 minutes for a cold start).
+			// Local-only sessions return in well under a second; the
+			// upper bound only matters for slow paths.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 
 			remoteURL, _ := git.RemoteURL(projectDir, "origin") // best-effort; LocalPath alone is sufficient on co-located host

@@ -68,6 +68,21 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// hubResponseHeaderTimeout caps how long the client waits for the
+// daemon to start writing response headers.
+//
+// Sized for /sessions when LaunchHost provisions a sandbox: cold
+// Daytona launches (image pull + build + container start) routinely
+// take 60-180s, plus our /status readiness probe. 30s (the previous
+// value) was tuned for an all-local Unix-socket world and is far too
+// aggressive for cloud-hub flows.
+//
+// The right long-term fix is async session creation (return 202 +
+// session id immediately, stream status via SSE). Until that lands,
+// 5 minutes is an honest upper bound that covers slow first-run
+// builds without making a truly hung daemon hang clients forever.
+const hubResponseHeaderTimeout = 5 * time.Minute
+
 // NewClient creates a client that connects to clankd at the given Unix
 // socket path. Use NewTCPClient to talk to a remote hub over TCP.
 //
@@ -84,7 +99,7 @@ func NewClient(sockPath string) *Client {
 					var d net.Dialer
 					return d.DialContext(ctx, "unix", sockPath)
 				},
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: hubResponseHeaderTimeout,
 			},
 		},
 	}
@@ -101,7 +116,7 @@ func NewTCPClient(baseURL, authToken string) *Client {
 		authToken: authToken,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: 30 * time.Second,
+				ResponseHeaderTimeout: hubResponseHeaderTimeout,
 			},
 		},
 	}
