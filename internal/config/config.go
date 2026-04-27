@@ -126,6 +126,20 @@ type Preferences struct {
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
 	Daytona *DaytonaPreference `json:"daytona,omitempty"`
+
+	// DefaultLaunchHostProvider, when set, is applied to every new
+	// session whose StartRequest omits LaunchHost. Use this on a
+	// cloud hub to make TUI-created sessions automatically spin up
+	// sandboxes (e.g. "daytona") without each client having to know
+	// about launchers.
+	//
+	// Empty (default) = no auto-launch; sessions land on the hub's
+	// "local" host (the cloud-hub machine itself).
+	//
+	// Stored as a plain string to avoid importing internal/agent
+	// into the config package — the value is validated at the
+	// hub when a launcher is looked up.
+	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.

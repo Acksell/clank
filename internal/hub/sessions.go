@@ -354,6 +354,22 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	// dispatching the session there. The launcher chooses the
 	// hostname; we register the resulting client and overwrite
 	// req.Hostname so the rest of the flow runs unchanged.
+	//
+	// When the request omits LaunchHost, fall back to the hub's
+	// service-level default (set from preferences on cloud hubs).
+	// This is what makes TUI-created sessions auto-spawn a Daytona
+	// sandbox: the TUI doesn't know about launchers, but the cloud
+	// hub does. Read defensively under launchersMu and copy the
+	// pointed-to value so a concurrent SetDefaultLaunchHost can't
+	// tear the spec we just captured.
+	if req.LaunchHost == nil {
+		s.launchersMu.RLock()
+		if s.defaultLaunchHostSpec != nil {
+			cp := *s.defaultLaunchHostSpec
+			req.LaunchHost = &cp
+		}
+		s.launchersMu.RUnlock()
+	}
 	if req.LaunchHost != nil {
 		launcher, err := s.hostLauncher(req.LaunchHost.Provider)
 		if err != nil {

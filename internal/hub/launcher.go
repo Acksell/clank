@@ -62,3 +62,22 @@ func (s *Service) hostLauncher(provider string) (HostLauncher, error) {
 	}
 	return l, nil
 }
+
+// SetDefaultLaunchHost configures a fallback LaunchHostSpec applied to
+// any StartRequest whose LaunchHost is nil. Used on cloud hubs so
+// TUI-created sessions (which don't pick a launcher) automatically
+// spawn a sandbox. Pass nil to clear.
+//
+// Wired by daemoncli from preferences.default_launch_host_provider so
+// users can opt in by editing one config field.
+func (s *Service) SetDefaultLaunchHost(spec *agent.LaunchHostSpec) {
+	s.launchersMu.Lock()
+	defer s.launchersMu.Unlock()
+	if spec == nil {
+		s.defaultLaunchHostSpec = nil
+		return
+	}
+	// Defensive copy so callers mutating the spec post-set don't race.
+	cp := *spec
+	s.defaultLaunchHostSpec = &cp
+}

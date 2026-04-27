@@ -180,6 +180,16 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			}
 		}
 
+		// Apply the service-level default launch host, if configured.
+		// On a cloud hub with daytona registered, setting
+		// `default_launch_host_provider: "daytona"` makes every
+		// TUI-created session auto-spawn a sandbox without the TUI
+		// needing to send a LaunchHostSpec.
+		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
+			d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})
+			log.Printf("default launch host: %s (applied to sessions without an explicit LaunchHost)", prefs.DefaultLaunchHostProvider)
+		}
+
 		return runHubServer(d, opts)
 	}
 

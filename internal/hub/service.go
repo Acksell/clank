@@ -94,8 +94,14 @@ type Service struct {
 	// launchers holds HostLaunchers keyed by provider name. Populated by
 	// SetHostLauncher; consulted in createSession when a request carries
 	// LaunchHost. Empty in laptop-hub mode (no provisioning needed there).
-	launchersMu sync.RWMutex
-	launchers   map[string]HostLauncher
+	//
+	// defaultLaunchHostSpec (if non-nil) is applied to StartRequests
+	// that omit LaunchHost — used by cloud hubs so TUI-created sessions
+	// get auto-launched in a sandbox without each client needing to
+	// know about launchers. Reads/writes are guarded by launchersMu.
+	launchersMu           sync.RWMutex
+	launchers             map[string]HostLauncher
+	defaultLaunchHostSpec *agent.LaunchHostSpec
 
 	// primaryAgentsRefreshMu guards primaryAgentsRefreshInFlight.
 	primaryAgentsRefreshMu       sync.Mutex
