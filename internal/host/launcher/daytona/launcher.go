@@ -165,8 +165,55 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 
 	transport := &previewTokenInjector{token: preview.Token}
 	client := hostclient.NewHTTP(preview.URL, transport)
+
+	// Daytona reports the sandbox as "started" as soon as the
+	// container is up, but the entrypoint still has to start
+	// clank-host (and, in dev, tailscaled before that). Until
+	// clank-host binds to HostPort, the Daytona preview proxy
+	// returns 502. Probe /status before handing the client back so
+	// the hub doesn't immediately try to use a not-yet-listening
+	// sandbox and surface that 502 to the user.
+	if err := l.waitForHostReady(ctx, client, created.ID); err != nil {
+		_ = l.deleteSandbox(context.Background(), created.ID)
+		return "", nil, fmt.Errorf("wait for clank-host: %w", err)
+	}
+
 	l.log.Printf("daytona launcher: sandbox %s ready at %s (host=%s)", created.ID, preview.URL, box.name)
 	return box.name, client, nil
+}
+
+// waitForHostReady polls the spawned clank-host's /status until it
+// returns 2xx, or until the context deadline expires. Bridges the
+// gap between Daytona's "container is running" signal and
+// clank-host's "port is bound and serving" reality.
+//
+// Errors include the most recent /status error so users see *why*
+// the host wasn't ready (proxy 502, transport error, etc.) rather
+// than a bare "context deadline exceeded".
+func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, sandboxID string) error {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	var lastErr error
+	for {
+		// Use a short per-attempt timeout so the proxy can return
+		// 502 quickly on a not-yet-bound port instead of stalling
+		// behind the parent ctx for many seconds.
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := c.Status(probeCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("sandbox %s never reached ready (last error: %v)", sandboxID, lastErr)
+			}
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
 }
 
 // Stop deletes every sandbox the launcher created in this process.

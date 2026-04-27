@@ -88,16 +88,36 @@ func newFakeDaytona(t *testing.T, apiKey string, pendingPolls int) *fakeDaytona 
 
 	// GET /sandbox/{id}/ports/{port}/preview-url — official Daytona
 	// path per https://www.daytona.io/docs/en/preview/.
+	//
+	// We return the *fake server's own* URL as the preview URL so
+	// the post-provision host-readiness probe (waitForHostReady)
+	// can reach a real HTTP server in tests. The Daytona control
+	// plane and the host plane share path namespaces here only by
+	// convenience — `/status` happens to be a host-plane endpoint
+	// that's unique enough not to collide with Daytona's
+	// `/sandbox/...` routes.
 	mux.HandleFunc("GET /sandbox/{id}/ports/{port}/preview-url", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+apiKey {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
 		id := r.PathValue("id")
-		port := r.PathValue("port")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"url":   "https://" + port + "-" + id + ".preview.daytona.app",
+			"url":   f.srv.URL,
 			"token": "preview-tkn-" + id,
+		})
+	})
+
+	// GET /status — host-plane endpoint stubbed so waitForHostReady
+	// has a 200 to land on. Real clank-host inside a Daytona
+	// sandbox serves this; the fake serves a minimal payload that
+	// satisfies hostclient.HTTP.Status's JSON decode.
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"hostname":   "fake",
+			"version":    "test",
+			"started_at": time.Now(),
+			"sessions":   0,
 		})
 	})
 
