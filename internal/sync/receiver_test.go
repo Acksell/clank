@@ -10,6 +10,7 @@ import (
 )
 
 func TestReceiver_PersistsAfterUnbundle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	st, err := store.Open(filepath.Join(dir, "clank.db"))
@@ -70,7 +71,10 @@ func TestReceiver_PersistsAfterUnbundle(t *testing.T) {
 		t.Fatalf("ReceiveBundle (b): %v", err)
 	}
 
-	repos, _ = recv.ListSyncedRepos(context.Background())
+	repos, err = recv.ListSyncedRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListSyncedRepos (after second bundle): %v", err)
+	}
 	if len(repos) != 1 {
 		t.Fatalf("want still 1 repo after second branch, got %d", len(repos))
 	}
@@ -80,8 +84,12 @@ func TestReceiver_PersistsAfterUnbundle(t *testing.T) {
 }
 
 func TestReceiver_RejectsMissingFields(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	root, _ := NewMirrorRoot(filepath.Join(dir, "sync"))
+	root, err := NewMirrorRoot(filepath.Join(dir, "sync"))
+	if err != nil {
+		t.Fatalf("NewMirrorRoot: %v", err)
+	}
 	recv := NewReceiver(root, nil, nil)
 
 	body, _ := makeBundle(t, "main", "x.txt", "x\n")

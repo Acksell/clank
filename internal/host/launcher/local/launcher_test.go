@@ -34,6 +34,7 @@ func buildClankHost(t *testing.T) string {
 }
 
 func TestLauncher_LaunchesAndStops(t *testing.T) {
+	t.Parallel()
 	bin := buildClankHost(t)
 	launcher := New(Options{BinPath: bin}, nil)
 	t.Cleanup(launcher.Stop)
@@ -67,6 +68,7 @@ func TestLauncher_LaunchesAndStops(t *testing.T) {
 }
 
 func TestLauncher_StopShutsChildren(t *testing.T) {
+	t.Parallel()
 	bin := buildClankHost(t)
 	launcher := New(Options{BinPath: bin}, nil)
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -397,7 +398,7 @@ func TestRunHubServer_TCPMode_ReceivesBundle(t *testing.T) {
 		t.Fatalf("authenticated POST: %v", err)
 	}
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := readAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		t.Fatalf("authenticated bundle: want 204, got %d: %s", resp.StatusCode, body)
 	}
@@ -543,24 +544,6 @@ func buildBundleForLaunchTest(t *testing.T) ([]byte, string) {
 	return body, tip
 }
 
-// readAll is a tiny helper to pull a response body into a byte slice for
-// error-message inclusion. Avoids io.ReadAll noise in the test code.
-func readAll(r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
-	buf := bytes.NewBuffer(nil)
-	tmp := make([]byte, 4096)
-	for {
-		n, err := r.Read(tmp)
-		if n > 0 {
-			buf.Write(tmp[:n])
-		}
-		if err != nil {
-			if err.Error() == "EOF" {
-				err = nil
-			}
-			return buf.Bytes(), err
-		}
-	}
-}
 
 // TestRunHubServer_TCPMode_LaunchHostFlow is the closing E2E smoke for
 // the MVP: it pushes a bundle to a cloud-hub-mode hub, then triggers a
@@ -694,7 +677,7 @@ func TestRunHubServer_TCPMode_LaunchHostFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	respBody, _ := readAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	t.Logf("/sessions response: %d %s", resp.StatusCode, respBody)
 
