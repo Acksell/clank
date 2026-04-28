@@ -4,6 +4,13 @@
 install:
 	go install ./cmd/clank/ ./cmd/clankd/ ./cmd/clank-host/
 
+.PHONY: test test-race
+test:
+	go test ./...
+
+test-race:
+	go test -race ./...
+
 # ---- clank-host sandbox image ----------------------------------------
 #
 # Used by the cloud hub's Daytona launcher. Daytona pulls this image
