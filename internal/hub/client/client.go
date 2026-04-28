@@ -112,14 +112,14 @@ func NewClient(sockPath string) *Client {
 // every request and must match the remote hub's
 // preferences.remote_hub.auth_token.
 func NewTCPClient(baseURL, authToken string) *Client {
+	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults; bare
+	// &http.Transport{} would drop them silently.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = hubResponseHeaderTimeout
 	return &Client{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		authToken: authToken,
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: hubResponseHeaderTimeout,
-			},
-		},
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		authToken:  authToken,
+		httpClient: &http.Client{Transport: tr},
 	}
 }
 
