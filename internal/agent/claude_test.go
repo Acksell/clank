@@ -21,6 +21,16 @@ type mockTransport struct {
 	// interrupted is set to true when Interrupt is called.
 	interrupted bool
 
+	// permissionMode records the most recent value passed to
+	// SetPermissionMode so tests can assert that ClaudeCodeBackend
+	// forwarded the right SDK string.
+	permissionMode string
+
+	// model records the most recent value passed to SetModel. modelSet
+	// distinguishes "not called" from "called with nil" (revert to default).
+	model    string
+	modelSet bool
+
 	// connected tracks connection state.
 	connected bool
 	closed    bool
@@ -109,8 +119,21 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 	return nil
 }
 
-func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(_ context.Context, _ string) error {
+func (t *mockTransport) SetModel(_ context.Context, model *string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.modelSet = true
+	if model == nil {
+		t.model = ""
+	} else {
+		t.model = *model
+	}
+	return nil
+}
+func (t *mockTransport) SetPermissionMode(_ context.Context, mode string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.permissionMode = mode
 	return nil
 }
 func (t *mockTransport) RewindFiles(_ context.Context, _ string) error { return nil }
@@ -1031,6 +1054,111 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 
 	if !interrupted {
 		t.Error("expected transport.Interrupt to be called")
+	}
+}
+
+func TestClaudeCodeBackendSetPermissionMode(t *testing.T) {
+	t.Parallel()
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "session-perm"},
+		},
+	})
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
+	})
+	if err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+
+	// Default mode is acceptEdits.
+	if got := b.PermissionMode(); got != agent.PermissionModeAcceptEdits {
+		t.Errorf("initial PermissionMode = %q, want %q", got, agent.PermissionModeAcceptEdits)
+	}
+
+	if err := b.SetPermissionMode(context.Background(), agent.PermissionModePlan); err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+
+	transport.mu.Lock()
+	gotTransport := transport.permissionMode
+	transport.mu.Unlock()
+
+	if gotTransport != string(agent.PermissionModePlan) {
+		t.Errorf("transport.permissionMode = %q, want %q", gotTransport, agent.PermissionModePlan)
+	}
+
+	if got := b.PermissionMode(); got != agent.PermissionModePlan {
+		t.Errorf("cached PermissionMode = %q, want %q", got, agent.PermissionModePlan)
+	}
+}
+
+func TestClaudeCodeBackendSetModel(t *testing.T) {
+	t.Parallel()
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "session-model"},
+		},
+	})
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	if err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{Text: "test"}); err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+
+	const want = "claude-sonnet-4-6"
+	if err := b.SetModel(context.Background(), want); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	transport.mu.Lock()
+	gotModel := transport.model
+	gotSet := transport.modelSet
+	transport.mu.Unlock()
+
+	if !gotSet {
+		t.Fatal("expected transport.SetModel to be called")
+	}
+	if gotModel != want {
+		t.Errorf("transport.model = %q, want %q", gotModel, want)
+	}
+	if got := b.Model(); got != want {
+		t.Errorf("cached Model = %q, want %q", got, want)
+	}
+
+	// Empty modelID reverts to CLI default — SDK expects nil pointer.
+	if err := b.SetModel(context.Background(), ""); err != nil {
+		t.Fatalf("SetModel reset: %v", err)
+	}
+	transport.mu.Lock()
+	gotModel = transport.model
+	transport.mu.Unlock()
+	if gotModel != "" {
+		t.Errorf("after reset transport.model = %q, want empty", gotModel)
+	}
+	if got := b.Model(); got != "" {
+		t.Errorf("after reset cached Model = %q, want empty", got)
+	}
+}
+
+func TestClaudeCodeBackendSetModelNotConnected(t *testing.T) {
+	t.Parallel()
+
+	b := agent.NewClaudeCodeBackend(t.TempDir())
+	if err := b.SetModel(context.Background(), "claude-sonnet-4-6"); err == nil {
+		t.Fatal("expected error when calling SetModel before Open")
 	}
 }
 

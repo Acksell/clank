@@ -36,7 +36,11 @@ func (b *noopBackend) Send(_ context.Context, _ agent.SendMessageOpts) error {
 	return nil
 }
 func (b *noopBackend) Abort(_ context.Context) error { return nil }
-func (b *noopBackend) Stop() error                   { return nil }
+func (b *noopBackend) SetPermissionMode(_ context.Context, _ agent.PermissionMode) error {
+	return nil
+}
+func (b *noopBackend) SetModel(_ context.Context, _ string) error { return nil }
+func (b *noopBackend) Stop() error                                { return nil }
 func (b *noopBackend) Events() <-chan agent.Event {
 	// Return a closed channel so callers that range over events
 	// terminate immediately instead of blocking forever on nil.

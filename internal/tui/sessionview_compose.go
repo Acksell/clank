@@ -73,6 +73,28 @@ func NewSessionViewComposing(client *hubclient.Client, projectDir string) *Sessi
 
 // updateCompose handles all messages while in composing mode.
 func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Confirm dialog takes priority — mirrors the live-session
+	// handler. Compose-mode actions like permission-mode bypass open a
+	// confirm before applying; without this, key presses would slip
+	// past to the textarea.
+	if m.showConfirm {
+		switch msg := msg.(type) {
+		case confirmResultMsg:
+			m.showConfirm = false
+			if msg.confirmed {
+				return m, m.handleConfirmAction(msg.action)
+			}
+			// Cancelled: drop any stashed launch request so a future
+			// confirm flow doesn't accidentally launch it.
+			m.pendingLaunchReq = nil
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.confirm, cmd = m.confirm.Update(msg)
+			return m, cmd
+		}
+	}
+
 	// Model picker takes priority when open.
 	if m.showModelPicker {
 		switch msg := msg.(type) {
@@ -162,9 +184,19 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		} else {
 			m.backend = agent.BackendOpenCode
 		}
-		return m, nil
+		// Clear stale per-backend lists; the prefetch below repopulates
+		// for the new backend. Without this, the prompt-box badge keeps
+		// rendering OpenCode's `build`/model entries on a Claude session.
+		m.agents = nil
+		m.selectedAgent = 0
+		m.models = nil
+		m.selectedModel = -1
+		return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+		if m.backend == agent.BackendClaudeCode {
+			return m, m.cyclePermissionMode()
+		}
 		// Cycle through agents (only when agents are loaded).
 		if len(m.agents) > 1 {
 			m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
@@ -172,6 +204,14 @@ func (m *SessionViewModel) handleComposeKey(msg tea.KeyPressMsg) (tea.Model, tea
 		return m, nil
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+		if m.backend == agent.BackendClaudeCode {
+			if len(m.models) > 0 {
+				m.showModelPicker = true
+				m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
+				return m, m.modelPicker.Init()
+			}
+			return m, nil
+		}
 		// Open model picker modal.
 		if len(m.models) > 0 {
 			m.showModelPicker = true
@@ -217,7 +257,6 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	m.err = nil
-	m.submitting = true
 
 	// Both LocalPath and RemoteURL — local host uses path, future
 	// remote hosts fall through to clone. RemoteURL is best-effort
@@ -246,7 +285,38 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 			ProviderID: model.ProviderID,
 		}
 	}
+	// Forward the user's pre-launch permission-mode choice to the
+	// backend so it takes effect from the very first prompt instead of
+	// requiring a runtime SetPermissionMode RPC after open.
+	if m.backend == agent.BackendClaudeCode && m.info != nil && m.info.PermissionMode != "" {
+		req.PermissionMode = m.info.PermissionMode
+	}
 
+	// Bypass-permissions gate: stash the request and pop a one-time
+	// confirm before launch when the workspace hasn't been acknowledged.
+	// handleConfirmAction("launch-bypass") resumes the launch on accept.
+	if req.Backend == agent.BackendClaudeCode &&
+		req.PermissionMode == agent.PermissionModeBypassPermissions {
+		workspace := m.workspacePath()
+		if workspace != "" {
+			prefs, _ := config.LoadPreferences()
+			if !prefs.IsBypassPermissionsConfirmed(workspace) {
+				m.pendingLaunchReq = &req
+				m.showConfirm = true
+				m.confirm = newConfirmDialog(
+					"Bypass all permissions?",
+					fmt.Sprintf(
+						"Claude will read, edit, and run commands without asking — including potentially destructive ones.\nUse only in disposable or isolated environments.\n\n%s\n\nYou won't be asked again for this workspace.",
+						workspace,
+					),
+					"launch-bypass",
+				)
+				return m, nil
+			}
+		}
+	}
+
+	m.submitting = true
 	return m, m.createSessionCmd(req)
 }
 
@@ -369,10 +439,14 @@ func (m *SessionViewModel) viewCompose() tea.View {
 		qLabel = "esc: quit"
 	}
 	helpParts := []string{"enter: launch", "shift+enter: newline", "ctrl+b: toggle backend"}
-	if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
+	if m.backend == agent.BackendClaudeCode {
+		helpParts = append(helpParts, "tab: permission mode")
+	} else if m.backend == agent.BackendOpenCode && len(m.agents) > 1 {
 		helpParts = append(helpParts, "tab: cycle mode")
 	}
-	if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
+	if m.backend == agent.BackendClaudeCode && len(m.models) > 0 {
+		helpParts = append(helpParts, "shift+tab: select model")
+	} else if m.backend == agent.BackendOpenCode && len(m.models) > 0 {
 		helpParts = append(helpParts, "shift+tab: select model")
 	}
 	helpParts = append(helpParts, qLabel)
@@ -380,6 +454,7 @@ func (m *SessionViewModel) viewCompose() tea.View {
 	sb.WriteString(help)
 
 	output := sb.String()
+	output = m.overlaySessionConfirm(output)
 	output = m.overlayModelPicker(output)
 	v := newVoiceEnabledView(output)
 	return v
@@ -466,6 +541,15 @@ func (m *SessionViewModel) renderPromptBox() string {
 			combinedBadge += " " + modelBadge
 		} else {
 			combinedBadge = modelBadge
+		}
+	}
+
+	// Claude permission mode badge — only shown for Claude sessions.
+	if pm := m.renderPermissionModeBadge(); pm != "" {
+		if combinedBadge != "" {
+			combinedBadge += " " + pm
+		} else {
+			combinedBadge = pm
 		}
 	}
 

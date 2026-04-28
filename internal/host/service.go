@@ -335,6 +335,8 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: req.SessionID,
+		PermissionMode:   req.PermissionMode,
+		ModelID:          claudeModelIDFromOverride(req.Backend, req.Model),
 	})
 	if err != nil {
 		return nil, "", err

@@ -2491,3 +2491,27 @@ func TestBuildContentLines_ToolVerboseWrapsToWidth(t *testing.T) {
 		t.Errorf("expected wrapped verbose output to produce more lines than raw newlines (%d), got %d", rawNewlines, len(lines))
 	}
 }
+
+// TestSessionInfoMsg_HydratesClaudeBackend guards a regression where
+// SessionInfoMsg only set m.backend for OpenCode sessions. Claude
+// sessions opened from the inbox were left with an empty backend,
+// breaking Tab/Shift+Tab routing and the permission-mode badge.
+func TestSessionInfoMsg_HydratesClaudeBackend(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewModel(nil, "session-claude")
+	info := &agent.SessionInfo{
+		ID:       "session-claude",
+		Backend:  agent.BackendClaudeCode,
+		Hostname: "localhost",
+		GitRef:   agent.GitRef{LocalPath: "/tmp/repo"},
+	}
+	model, _ := m.Update(sessionInfoMsg{info: info})
+	m = model.(*SessionViewModel)
+
+	if m.backend != agent.BackendClaudeCode {
+		t.Fatalf("backend = %q, want %q", m.backend, agent.BackendClaudeCode)
+	}
+	if m.gitRef.LocalPath != "/tmp/repo" {
+		t.Errorf("gitRef.LocalPath = %q, want /tmp/repo", m.gitRef.LocalPath)
+	}
+}

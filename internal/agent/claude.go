@@ -45,6 +45,22 @@ type ClaudeCodeBackend struct {
 
 	client claudecode.Client // SDK client (persistent connection)
 
+	// permissionMode is the active Claude permission mode. Used both as the
+	// initial mode at Connect (via WithPermissionMode) and as the cached
+	// current value reflected in Status snapshots / surfaced through
+	// PermissionMode() for the TUI badge. Mutated by SetPermissionMode after
+	// the SDK call succeeds, so callers always observe a value that matches
+	// the live CLI state.
+	permissionMode PermissionMode
+
+	// model is the active LLM model ID. Used both as the initial model
+	// at Connect (via WithModel when non-empty) and as the cached
+	// current value reflected in Status snapshots / surfaced through
+	// Model() for the TUI badge. Mutated by SetModel after the SDK call
+	// succeeds. Empty means "use the CLI default", which avoids forcing
+	// a choice on existing sessions that never set a model.
+	model string
+
 	// currentMsgID is the Anthropic API message ID (e.g. "msg_01XFD...") extracted
 	// from the most recent message_start stream event. It's used to build part IDs
 	// for text/thinking blocks as "{msgID}-{blockIndex}".
@@ -83,11 +99,31 @@ func NewClaudeCodeBackend(workDir string) *ClaudeCodeBackend {
 // reattach the persistent subprocess for the existing conversation.
 // resumeSessionID may be empty for fresh sessions.
 func NewClaudeCodeBackendForSession(workDir, resumeSessionID string) *ClaudeCodeBackend {
+	return NewClaudeCodeBackendForSessionWithMode(workDir, resumeSessionID, "")
+}
+
+// NewClaudeCodeBackendForSessionWithMode is NewClaudeCodeBackendForSession
+// with an explicit initial permission mode. Empty mode falls back to
+// PermissionModeAcceptEdits — matching the historical default and
+// keeping a single source of truth for the seed value.
+func NewClaudeCodeBackendForSessionWithMode(workDir, resumeSessionID string, mode PermissionMode) *ClaudeCodeBackend {
+	return NewClaudeCodeBackendForSessionWithModeAndModel(workDir, resumeSessionID, mode, "")
+}
+
+// NewClaudeCodeBackendForSessionWithModeAndModel is the most-specific
+// constructor; the other variants delegate here. Empty model means
+// "use the CLI default" (no WithModel option passed at Connect).
+func NewClaudeCodeBackendForSessionWithModeAndModel(workDir, resumeSessionID string, mode PermissionMode, model string) *ClaudeCodeBackend {
 	ctx, cancel := context.WithCancel(context.Background())
+	if mode == "" {
+		mode = PermissionModeAcceptEdits
+	}
 	return &ClaudeCodeBackend{
 		status:           StatusStarting,
 		projectDir:       workDir,
 		sessionID:        resumeSessionID,
+		permissionMode:   mode,
+		model:            model,
 		events:           make(chan Event, 128),
 		activeToolBlocks: make(map[int]*activeToolBlock),
 		ctx:              ctx,
@@ -114,6 +150,8 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	workDir := b.projectDir
 	resumeID := b.sessionID
 	factory := b.ClientFactory
+	initialMode := b.permissionMode
+	initialModel := b.model
 	b.mu.Unlock()
 
 	// Defensive guard: an empty workDir would silently inherit the
@@ -128,7 +166,10 @@ func (b *ClaudeCodeBackend) Open(ctx context.Context) error {
 	opts := []claudecode.Option{
 		claudecode.WithCwd(workDir),
 		claudecode.WithPartialStreaming(),
-		claudecode.WithPermissionMode(claudecode.PermissionModeAcceptEdits),
+		claudecode.WithPermissionMode(claudecode.PermissionMode(initialMode)),
+	}
+	if initialModel != "" {
+		opts = append(opts, claudecode.WithModel(initialModel))
 	}
 	if resumeID != "" {
 		opts = append(opts, claudecode.WithResume(resumeID))
@@ -252,6 +293,74 @@ func (b *ClaudeCodeBackend) Abort(ctx context.Context) error {
 	}
 
 	return client.Interrupt(ctx)
+}
+
+// SetPermissionMode validates the requested mode, dispatches it to the live
+// Claude CLI via the SDK control protocol, and caches the new value so
+// subsequent Open() calls (and PermissionMode() readers) reflect it.
+func (b *ClaudeCodeBackend) SetPermissionMode(ctx context.Context, mode PermissionMode) error {
+	if err := mode.Validate(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("session not open: client not connected")
+	}
+
+	if err := client.SetPermissionMode(ctx, claudecode.PermissionMode(mode)); err != nil {
+		return fmt.Errorf("set permission mode: %w", err)
+	}
+
+	b.mu.Lock()
+	b.permissionMode = mode
+	b.mu.Unlock()
+	return nil
+}
+
+// PermissionMode returns the cached active mode. Empty until the backend has
+// been initialised (which always seeds it in the constructor).
+func (b *ClaudeCodeBackend) PermissionMode() PermissionMode {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.permissionMode
+}
+
+// SetModel dispatches the model change to the live Claude CLI via the SDK
+// control protocol and caches the new value so subsequent Open() calls
+// (and Model() readers) reflect it. An empty modelID asks the CLI to
+// revert to its default; the SDK accepts a nil pointer for that case.
+func (b *ClaudeCodeBackend) SetModel(ctx context.Context, modelID string) error {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
+		return fmt.Errorf("session not open: client not connected")
+	}
+
+	var arg *string
+	if modelID != "" {
+		arg = &modelID
+	}
+	if err := client.SetModel(ctx, arg); err != nil {
+		return fmt.Errorf("set model: %w", err)
+	}
+
+	b.mu.Lock()
+	b.model = modelID
+	b.mu.Unlock()
+	return nil
+}
+
+// Model returns the cached active model ID. Empty means "CLI default".
+func (b *ClaudeCodeBackend) Model() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.model
 }
 
 func (b *ClaudeCodeBackend) Stop() error {

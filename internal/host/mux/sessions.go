@@ -161,6 +161,56 @@ func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// PermissionModeRequest is the body for POST /sessions/{id}/permission-mode.
+type PermissionModeRequest struct {
+	Mode agent.PermissionMode `json:"mode"`
+}
+
+// ModelRequest is the body for POST /sessions/{id}/model.
+type ModelRequest struct {
+	ModelID string `json:"model_id"`
+}
+
+// HOST
+func (m *Mux) handleSetModel(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, ok := m.svc.Session(id)
+	if !ok {
+		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+		return
+	}
+	var req ModelRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	if err := b.SetModel(r.Context(), req.ModelID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HOST
+func (m *Mux) handleSetPermissionMode(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, ok := m.svc.Session(id)
+	if !ok {
+		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+		return
+	}
+	var req PermissionModeRequest
+	if err := decodeJSON(r.Body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
+		return
+	}
+	if err := b.SetPermissionMode(r.Context(), req.Mode); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // RevertRequest is the body for POST /sessions/{id}/revert.
 type RevertRequest struct {
 	MessageID string `json:"message_id"`

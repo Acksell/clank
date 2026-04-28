@@ -36,7 +36,7 @@ type ServerResolver func(ctx context.Context) (string, error)
 //     re-resolving the server URL each time (handles port changes).
 type OpenCodeBackend struct {
 	mu           sync.Mutex
-	openMu       sync.Mutex     // serializes Open() so check-and-create is atomic
+	openMu       sync.Mutex // serializes Open() so check-and-create is atomic
 	status       SessionStatus
 	sessionID    string         // OpenCode's session ID (assigned by server)
 	serverURL    string         // e.g. "http://127.0.0.1:4123"
@@ -199,6 +199,18 @@ func (b *OpenCodeBackend) Abort(ctx context.Context) error {
 		return fmt.Errorf("abort: %w", err)
 	}
 	return nil
+}
+
+// SetPermissionMode is not supported by OpenCode; permission semantics live
+// in the server-side agent config, not in a runtime-cycleable knob.
+func (b *OpenCodeBackend) SetPermissionMode(ctx context.Context, mode PermissionMode) error {
+	return ErrPermissionModeUnsupported
+}
+
+// SetModel is not supported by OpenCode; model selection is per-message
+// via SendMessageOpts.Model rather than a session-scoped runtime knob.
+func (b *OpenCodeBackend) SetModel(ctx context.Context, modelID string) error {
+	return ErrModelChangeUnsupported
 }
 
 func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {

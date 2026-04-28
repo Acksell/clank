@@ -140,6 +140,43 @@ type Preferences struct {
 	// into the config package — the value is validated at the
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
+
+	// BypassPermissionsConfirmedDirs lists workspace paths for which the
+	// user has acknowledged the "bypass permissions" warning. Sending a
+	// prompt while bypass is active in a directory not on this list pops
+	// a one-time confirmation; subsequent sends in the same directory
+	// proceed without a prompt.
+	BypassPermissionsConfirmedDirs []string `json:"bypass_permissions_confirmed_dirs,omitempty"`
+}
+
+// IsBypassPermissionsConfirmed reports whether the user has previously
+// acknowledged the bypass-permissions warning for the given workspace
+// directory. Empty dir always reports false — we never want to silently
+// skip the warning when the workspace is unknown.
+func (p Preferences) IsBypassPermissionsConfirmed(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	for _, d := range p.BypassPermissionsConfirmedDirs {
+		if d == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkBypassPermissionsConfirmed records dir as acknowledged and persists
+// the change. No-op (no error) when dir is empty or already recorded.
+func MarkBypassPermissionsConfirmed(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	return UpdatePreferences(func(p *Preferences) {
+		if p.IsBypassPermissionsConfirmed(dir) {
+			return
+		}
+		p.BypassPermissionsConfirmedDirs = append(p.BypassPermissionsConfirmedDirs, dir)
+	})
 }
 
 // preferencesPath returns the path to the preferences file.

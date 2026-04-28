@@ -62,6 +62,83 @@ func TestCompose_BackendToggle(t *testing.T) {
 	}
 }
 
+// TestCompose_BackendToggleClearsStaleLists guards a regression where
+// switching from OpenCode to Claude in compose left m.agents and
+// m.models populated with OpenCode entries, causing the prompt-box
+// badge to render `build github-copilot/...` next to the Claude
+// permission-mode badge.
+func TestCompose_BackendToggleClearsStaleLists(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewComposing(nil, "/tmp/project")
+	m.width = 80
+	m.height = 40
+
+	// Seed stale OpenCode-side state.
+	m.agents = []agent.AgentInfo{{Name: "build"}, {Name: "plan"}}
+	m.selectedAgent = 1
+	m.models = []agent.ModelInfo{{ID: "claude-opus-4.7", ProviderID: "github-copilot"}}
+	m.selectedModel = 0
+
+	model, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m = model.(*SessionViewModel)
+
+	if m.backend != agent.BackendClaudeCode {
+		t.Fatalf("backend = %s, want claude-code", m.backend)
+	}
+	if len(m.agents) != 0 {
+		t.Errorf("agents not cleared on backend toggle: %+v", m.agents)
+	}
+	if m.selectedAgent != 0 {
+		t.Errorf("selectedAgent not reset: %d", m.selectedAgent)
+	}
+	if len(m.models) != 0 {
+		t.Errorf("models not cleared on backend toggle: %+v", m.models)
+	}
+	if m.selectedModel != -1 {
+		t.Errorf("selectedModel not reset: %d", m.selectedModel)
+	}
+}
+
+// TestCompose_TabCyclesPermissionModeForClaude verifies that Tab in
+// compose mode advances the Claude permission mode (rather than
+// cycling agents) and that the value persists into m.info so
+// launchSession can fold it into the StartRequest.
+func TestCompose_TabCyclesPermissionModeForClaude(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewComposing(nil, "/tmp/project")
+	m.width = 80
+	m.height = 40
+	m.backend = agent.BackendClaudeCode
+
+	// Default seed (acceptEdits) → next mode in PermissionModeCycle.
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = model.(*SessionViewModel)
+
+	if m.info == nil {
+		t.Fatal("expected m.info to be created when cycling permission mode in compose")
+	}
+	want := agent.PermissionModeAcceptEdits.Next()
+	if m.info.PermissionMode != want {
+		t.Errorf("PermissionMode = %q, want %q", m.info.PermissionMode, want)
+	}
+}
+
+func TestCompose_TabKeepsAgentCyclingForOpenCode(t *testing.T) {
+	t.Parallel()
+	m := NewSessionViewComposing(nil, "/tmp/project")
+	m.width = 80
+	m.height = 40
+	m.agents = []agent.AgentInfo{{Name: "build"}, {Name: "plan"}}
+	m.selectedAgent = 0
+
+	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = model.(*SessionViewModel)
+
+	if m.selectedAgent != 1 {
+		t.Errorf("selectedAgent = %d, want 1", m.selectedAgent)
+	}
+}
+
 func TestCompose_EnterWithEmptyPromptShowsError(t *testing.T) {
 	t.Parallel()
 	m := NewSessionViewComposing(nil, "/tmp/project")

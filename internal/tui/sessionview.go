@@ -240,6 +240,15 @@ type SessionViewModel struct {
 	// creation or message send is in flight; cleared on result.
 	submitting bool
 
+	// pendingSendText holds a prompt deferred behind the bypass-permissions
+	// confirm dialog. Cleared when the dialog resolves (confirm or cancel).
+	pendingSendText string
+
+	// pendingLaunchReq holds a compose-mode StartRequest deferred behind
+	// the bypass-permissions confirm dialog. Same lifecycle as
+	// pendingSendText but for the new-session path.
+	pendingLaunchReq *agent.StartRequest
+
 	// voice points to the InboxModel's voice state for rendering
 	// (header badge, help bar). Nil when running standalone without
 	// an InboxModel parent.
@@ -557,6 +566,10 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.confirmed {
 				return m, m.handleConfirmAction(msg.action)
 			}
+			// Cancelled: drop any prompt stashed for a deferred send so
+			// it doesn't leak into a later confirm flow.
+			m.pendingSendText = ""
+			m.pendingLaunchReq = nil
 			return m, nil
 		default:
 			var cmd tea.Cmd
@@ -588,7 +601,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
 			go m.persistModelPreference()
-			return m, m.input.Focus()
+			cmds := []tea.Cmd{m.input.Focus()}
+			if c := m.applyClaudeModelSelection(); c != nil {
+				cmds = append(cmds, c)
+			}
+			return m, tea.Batch(cmds...)
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
@@ -622,22 +639,27 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// history (sessionMessagesMsg) to avoid a flash of the bare prompt
 		// before the complete conversation renders.
 
-		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && (m.info.GitRef.LocalPath != "" || m.info.GitRef.RemoteURL != "") {
+		// Hydrate routing context from session info on first arrival.
+		// Done unconditionally (not just for OpenCode) so Claude-backed
+		// sessions opened from the inbox correctly route Tab to the
+		// permission-mode cycle and render the permission badge.
+		if m.backend == "" {
 			m.backend = m.info.Backend
-			// projectDir is not on SessionInfo (path-free wire per §7);
-			// relPath becomes a no-op for sessions opened from the inbox.
-			// TODO: resolve via host repo lookup if/when needed for UX.
 			m.hostname = host.Hostname(m.info.Hostname)
 			if m.hostname == "" {
 				m.hostname = host.HostLocal
 			}
 			m.gitRef = m.info.GitRef
-			// Restore the selected agent from session info.
-			if m.info.Agent != "" {
-				// Will be matched against the fetched list in agentsResultMsg.
+		}
+		// Only OpenCode currently exposes a per-project agent list; for
+		// Claude there are no agents to fetch. Models are fetched for
+		// any backend whose manager implements ModelLister (Claude does
+		// via a hardcoded catalogue).
+		if len(m.agents) == 0 && (m.info.GitRef.LocalPath != "" || m.info.GitRef.RemoteURL != "") {
+			if m.info.Backend == agent.BackendOpenCode {
+				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 			}
-			return m, tea.Batch(m.fetchAgents(), m.fetchModels())
+			return m, m.fetchModels()
 		}
 		return m, nil
 
@@ -763,6 +785,26 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else if m.info != nil {
 			m.info.FollowUp = msg.followUp
+		}
+		return m, nil
+
+	case permissionModeResultMsg:
+		if msg.err != nil {
+			// Roll back the optimistic update so the badge reflects
+			// the still-active server-side mode.
+			if m.info != nil {
+				m.info.PermissionMode = msg.previous
+			}
+			m.err = msg.err
+		}
+		return m, nil
+
+	case modelResultMsg:
+		if msg.err != nil {
+			if m.info != nil {
+				m.info.Model = msg.previous
+			}
+			m.err = msg.err
 		}
 		return m, nil
 
@@ -981,13 +1023,18 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+			if m.backend == agent.BackendClaudeCode {
+				return m, m.cyclePermissionMode()
+			}
 			// Cycle through agents.
 			if len(m.agents) > 1 {
 				m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
-			// Open model picker modal.
+			// Open model picker modal (Claude reuses the same picker;
+			// its hardcoded model list comes from the host's
+			// ListModels response).
 			if len(m.models) > 0 {
 				m.showModelPicker = true
 				m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)
@@ -999,29 +1046,10 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil // Already in flight — ignore duplicate Enter.
 			}
 			text := strings.TrimSpace(m.input.Value())
-			if text != "" {
-				agentName := ""
-				if len(m.agents) > 0 {
-					agentName = m.agents[m.selectedAgent].Name
-				}
-				// Clear revert state — the user is sending a new message,
-				// so any previously reverted messages should reappear.
-				if m.info != nil {
-					m.info.RevertMessageID = ""
-				}
-				m.entries = append(m.entries, displayEntry{
-					kind:    entryUser,
-					content: text,
-					agent:   agentName,
-				})
-				m.input.Reset()
-				m.inputActive = false
-				m.input.Blur()
-				m.follow = true
-				m.submitting = true
-				return m, m.sendMessage(text)
+			if text == "" {
+				return m, nil
 			}
-			return m, nil
+			return m, m.commitSend(text)
 		case key.Matches(msg, wordBackwardBinding):
 			// Workaround: upstream bubbles textarea.wordLeft() has an
 			// unconditional for{} loop that never terminates when the cursor
@@ -2086,6 +2114,30 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setVisibility(agent.VisibilityArchived)
 	case "revert":
 		return m.revertSession(m.menuMessageID)
+	case "permission-mode-bypass":
+		// Legacy action ID retained for safety; bypass is now gated at
+		// send-time via "send-bypass". Treat as a direct mode set so
+		// older queued confirms (or tests) still work.
+		return m.setPermissionMode(agent.PermissionModeBypassPermissions)
+	case "send-bypass":
+		text := m.pendingSendText
+		m.pendingSendText = ""
+		if text == "" {
+			return nil
+		}
+		// Record the workspace as confirmed so future sends skip the
+		// dialog. Best-effort: a write failure shouldn't block the send.
+		_ = config.MarkBypassPermissionsConfirmed(m.workspacePath())
+		return m.dispatchSend(text)
+	case "launch-bypass":
+		req := m.pendingLaunchReq
+		m.pendingLaunchReq = nil
+		if req == nil {
+			return nil
+		}
+		_ = config.MarkBypassPermissionsConfirmed(m.workspacePath())
+		m.submitting = true
+		return m.createSessionCmd(*req)
 	}
 	return nil
 }
@@ -2284,10 +2336,12 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString(m.renderPromptBox())
 		sb.WriteString("\n")
 		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
-		if len(m.agents) > 1 {
+		if m.backend == agent.BackendClaudeCode {
+			inputHelp = "enter: send | shift+enter: newline | tab: permission mode | shift+tab: model | esc: cancel"
+		} else if len(m.agents) > 1 {
 			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
 		}
-		if len(m.models) > 0 {
+		if m.backend != agent.BackendClaudeCode && len(m.models) > 0 {
 			inputHelp += " | shift+tab: select model"
 		}
 		sb.WriteString(helpStyle.Render(inputHelp))
