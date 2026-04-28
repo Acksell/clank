@@ -44,3 +44,20 @@ image-push: image
 
 image-print:
 	@echo $(IMAGE)
+
+# ---- Local dev: cloud-hub-on-laptop with auto-tunnel -----------------
+#
+# Spawns a Cloudflare quick tunnel and starts `clankd` with the tunnel
+# URL plumbed in as --public-base-url, so a Daytona (or any cloud)
+# sandbox can reach back into the laptop without a VPN. The tunnel
+# rotates on every invocation. Ctrl-C stops both.
+#
+# Override behavior with env vars consumed by scripts/dev-cloud-hub.sh:
+#   CLANK_DIR  data dir for the cloud hub. Default: ~/.clank-cloud
+#   LISTEN     listener address. Default: tcp://0.0.0.0:7878
+#
+# Production cloud hubs don't need this — they sit on a real domain.
+
+.PHONY: cloud-hub
+cloud-hub:
+	@bash scripts/dev-cloud-hub.sh
