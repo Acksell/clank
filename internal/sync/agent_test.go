@@ -240,3 +240,67 @@ func TestAgent_PushesNewBranches(t *testing.T) {
 		t.Errorf("incremental base: want %s, got %s", tip, last.BaseSHA)
 	}
 }
+
+// TestAgent_StopWithoutStart_NoOp pins the lifecycle guard: a Stop
+// call before Start must not block on doneCh forever. Used to be a
+// real footgun — test setup paths that constructed an Agent and
+// then deferred Stop() would hang the test process if Start was
+// skipped.
+func TestAgent_StopWithoutStart_NoOp(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore()
+	agent, err := NewAgent(AgentOptions{
+		Pusher: NewPusher("http://unused.invalid", "tkn", nil),
+		Store:  store,
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		agent.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// success — Stop returned without a Start
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop without Start blocked > 2s")
+	}
+}
+
+// TestAgent_DoubleStart_NoOp pins the second guard: a stray second
+// Start call must not spawn another goroutine, otherwise the second
+// `defer close(doneCh)` panics on close-of-closed-channel and
+// crashes the daemon.
+func TestAgent_DoubleStart_NoOp(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore()
+	agent, err := NewAgent(AgentOptions{
+		Pusher:   NewPusher("http://unused.invalid", "tkn", nil),
+		Store:    store,
+		Interval: time.Hour, // we don't want a scan during this test
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	agent.Start(ctx)
+	// Second call must be a no-op. Without the guard this panics
+	// on the inner `defer close(doneCh)` from the second goroutine.
+	agent.Start(ctx)
+
+	// And shutdown still works cleanly.
+	done := make(chan struct{})
+	go func() {
+		agent.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop after double Start blocked > 2s")
+	}
+}
