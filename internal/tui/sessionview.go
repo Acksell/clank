@@ -240,6 +240,10 @@ type SessionViewModel struct {
 	// creation or message send is in flight; cleared on result.
 	submitting bool
 
+	// pendingSendText holds a prompt deferred behind the bypass-permissions
+	// confirm dialog. Cleared when the dialog resolves (confirm or cancel).
+	pendingSendText string
+
 	// voice points to the InboxModel's voice state for rendering
 	// (header badge, help bar). Nil when running standalone without
 	// an InboxModel parent.
@@ -557,6 +561,9 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.confirmed {
 				return m, m.handleConfirmAction(msg.action)
 			}
+			// Cancelled: drop any prompt stashed for a deferred send so
+			// it doesn't leak into a later confirm flow.
+			m.pendingSendText = ""
 			return m, nil
 		default:
 			var cmd tea.Cmd
@@ -1033,29 +1040,10 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil // Already in flight — ignore duplicate Enter.
 			}
 			text := strings.TrimSpace(m.input.Value())
-			if text != "" {
-				agentName := ""
-				if len(m.agents) > 0 {
-					agentName = m.agents[m.selectedAgent].Name
-				}
-				// Clear revert state — the user is sending a new message,
-				// so any previously reverted messages should reappear.
-				if m.info != nil {
-					m.info.RevertMessageID = ""
-				}
-				m.entries = append(m.entries, displayEntry{
-					kind:    entryUser,
-					content: text,
-					agent:   agentName,
-				})
-				m.input.Reset()
-				m.inputActive = false
-				m.input.Blur()
-				m.follow = true
-				m.submitting = true
-				return m, m.sendMessage(text)
+			if text == "" {
+				return m, nil
 			}
-			return m, nil
+			return m, m.commitSend(text)
 		case key.Matches(msg, wordBackwardBinding):
 			// Workaround: upstream bubbles textarea.wordLeft() has an
 			// unconditional for{} loop that never terminates when the cursor
@@ -2121,7 +2109,20 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 	case "revert":
 		return m.revertSession(m.menuMessageID)
 	case "permission-mode-bypass":
+		// Legacy action ID retained for safety; bypass is now gated at
+		// send-time via "send-bypass". Treat as a direct mode set so
+		// older queued confirms (or tests) still work.
 		return m.setPermissionMode(agent.PermissionModeBypassPermissions)
+	case "send-bypass":
+		text := m.pendingSendText
+		m.pendingSendText = ""
+		if text == "" {
+			return nil
+		}
+		// Record the workspace as confirmed so future sends skip the
+		// dialog. Best-effort: a write failure shouldn't block the send.
+		_ = config.MarkBypassPermissionsConfirmed(m.projectDir)
+		return m.dispatchSend(text)
 	}
 	return nil
 }

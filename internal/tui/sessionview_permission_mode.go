@@ -2,12 +2,14 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 )
 
 // permissionModeResultMsg is dispatched after a SetPermissionMode RPC
@@ -32,20 +34,12 @@ func (m *SessionViewModel) currentPermissionMode() agent.PermissionMode {
 }
 
 // cyclePermissionMode advances the active mode through PermissionModeCycle.
-// bypassPermissions is gated behind a confirm dialog because it disables
-// every safety check; the dialog reuses the standard confirmAction path.
+// Tab is intentionally allowed to land on bypassPermissions without a
+// confirmation: the warning is gated at send-time instead (see
+// SessionViewModel.commitSend), since merely selecting bypass has no
+// observable effect until the next prompt is sent.
 func (m *SessionViewModel) cyclePermissionMode() tea.Cmd {
-	next := m.currentPermissionMode().Next()
-	if next == agent.PermissionModeBypassPermissions {
-		m.showConfirm = true
-		m.confirm = newConfirmDialog(
-			"Enable bypass permissions?",
-			"This disables ALL permission checks for this session.\nThe agent can edit, run, and delete anything without asking.",
-			"permission-mode-bypass",
-		)
-		return nil
-	}
-	return m.setPermissionMode(next)
+	return m.setPermissionMode(m.currentPermissionMode().Next())
 }
 
 // setPermissionMode dispatches the RPC and applies an optimistic update
@@ -87,4 +81,56 @@ func (m *SessionViewModel) renderPermissionModeBadge() string {
 		fg = warningColor
 	}
 	return lipgloss.NewStyle().Foreground(fg).Render(mode.DisplayName())
+}
+
+// commitSend dispatches a user prompt, appending it to the visible
+// transcript and clearing the input. When bypass-permissions is the
+// active Claude mode and the user has not yet acknowledged the warning
+// for this workspace, the prompt is stashed and a one-time confirmation
+// dialog is shown instead. handleConfirmAction("send-bypass") resumes
+// the send after the user accepts.
+func (m *SessionViewModel) commitSend(text string) tea.Cmd {
+	if m.backend == agent.BackendClaudeCode &&
+		m.currentPermissionMode() == agent.PermissionModeBypassPermissions &&
+		m.projectDir != "" {
+		prefs, _ := config.LoadPreferences()
+		if !prefs.IsBypassPermissionsConfirmed(m.projectDir) {
+			m.pendingSendText = text
+			m.showConfirm = true
+			m.confirm = newConfirmDialog(
+				"Bypass all permissions?",
+				fmt.Sprintf(
+					"Claude will read, edit, and run commands without asking — including potentially destructive ones.\nUse only in disposable or isolated environments.\n\n%s\n\nYou won't be asked again for this workspace.",
+					m.projectDir,
+				),
+				"send-bypass",
+			)
+			return nil
+		}
+	}
+	return m.dispatchSend(text)
+}
+
+// dispatchSend performs the actual transcript append + RPC send. Split
+// from commitSend so the bypass confirm dialog can resume the send via
+// handleConfirmAction without duplicating the bookkeeping.
+func (m *SessionViewModel) dispatchSend(text string) tea.Cmd {
+	agentName := ""
+	if len(m.agents) > 0 {
+		agentName = m.agents[m.selectedAgent].Name
+	}
+	if m.info != nil {
+		m.info.RevertMessageID = ""
+	}
+	m.entries = append(m.entries, displayEntry{
+		kind:    entryUser,
+		content: text,
+		agent:   agentName,
+	})
+	m.input.Reset()
+	m.inputActive = false
+	m.input.Blur()
+	m.follow = true
+	m.submitting = true
+	return m.sendMessage(text)
 }

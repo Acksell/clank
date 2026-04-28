@@ -110,7 +110,7 @@ func TestCompose_TabCyclesPermissionModeForClaude(t *testing.T) {
 	m.height = 40
 	m.backend = agent.BackendClaudeCode
 
-	// Default → next non-bypass mode in PermissionModeCycle.
+	// Default seed (acceptEdits) → next mode in PermissionModeCycle.
 	model, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	m = model.(*SessionViewModel)
 

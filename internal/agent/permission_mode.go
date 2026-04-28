@@ -19,8 +19,8 @@ const (
 )
 
 // PermissionModeCycle is the canonical cycle order surfaced in the TUI.
-// Tab/Shift+Tab walks this slice; bypassPermissions is gated behind a
-// confirm dialog at the call site, not here.
+// Tab/Shift+Tab walks this slice. bypassPermissions is included unconditionally;
+// the warning prompt is gated at send-time per workspace, not at cycle-time.
 var PermissionModeCycle = []PermissionMode{
 	PermissionModeDefault,
 	PermissionModeAcceptEdits,
