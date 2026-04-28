@@ -35,6 +35,10 @@ import (
 // ask Daytona for a preview URL on.
 const HostPort = 7878
 
+// reservedSandboxEnv keys are populated by the launcher; ExtraEnv
+// must not override them.
+var reservedSandboxEnv = []string{"CLANK_HUB_URL", "CLANK_HUB_TOKEN", "CLANK_HOST_PORT"}
+
 // Options configures the Launcher.
 type Options struct {
 	// APIKey is the Daytona API key. Required.
@@ -96,9 +100,11 @@ type Launcher struct {
 	// We own delete-on-shutdown for sandboxes we created. Daytona
 	// charges by uptime, so leaking sandboxes across crashes is
 	// actively harmful. The list is append-only: a Stop() flushes
-	// every entry.
+	// every entry. `stopping` blocks late Launches from leaking
+	// sandboxes that complete Create after Stop snapshotted.
 	createdMu sync.Mutex
 	created   []*daytona.Sandbox
+	stopping  bool
 }
 
 // New constructs a Launcher. Returns an error if required options are
@@ -166,6 +172,11 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		if v == "" {
 			continue
 		}
+		for _, r := range reservedSandboxEnv {
+			if k == r {
+				return "", nil, fmt.Errorf("daytona launcher: ExtraEnv key %q is reserved by the launcher", k)
+			}
+		}
 		envVars[k] = v
 	}
 
@@ -197,6 +208,11 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		return "", nil, fmt.Errorf("create sandbox: %w", err)
 	}
 	l.createdMu.Lock()
+	if l.stopping {
+		l.createdMu.Unlock()
+		_ = l.deleteBackground(sandbox)
+		return "", nil, fmt.Errorf("daytona launcher: stopping; sandbox %s deleted", sandbox.ID)
+	}
 	l.created = append(l.created, sandbox)
 	l.createdMu.Unlock()
 
@@ -305,6 +321,7 @@ func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, san
 // they linger).
 func (l *Launcher) Stop() {
 	l.createdMu.Lock()
+	l.stopping = true
 	created := l.created
 	l.created = nil
 	l.createdMu.Unlock()

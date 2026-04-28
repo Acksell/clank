@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acksell/clank/internal/agent"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
 
@@ -115,6 +116,55 @@ func TestWaitForHostReady_RetriesUntilStatusOK(t *testing.T) {
 		t.Errorf("expected at least 3 attempts before ready, got %d", hits.Load())
 	}
 }
+
+// TestLauncher_ExtraEnv_RejectsReservedKey pins the guard against a
+// user pref like CLANK_HUB_URL silently overriding launcher wiring.
+func TestLauncher_ExtraEnv_RejectsReservedKey(t *testing.T) {
+	t.Parallel()
+	for _, key := range reservedSandboxEnv {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			l := &Launcher{
+				opts: Options{
+					HubBaseURL:       "http://hub",
+					HubAuthToken:     "tkn",
+					ExtraEnv:         map[string]string{key: "rogue-value"},
+					ProvisionTimeout: time.Second,
+				},
+			}
+			_, _, err := l.Launch(context.Background(), agent.LaunchHostSpec{})
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("want reserved-key error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestPreviewTokenInjector_CloseIdleConnectionsDelegates pins the
+// hostclient.HTTP.Close → injector → wrapped transport delegation.
+// Without it, every Daytona host client leaks idle conns at shutdown.
+func TestPreviewTokenInjector_CloseIdleConnectionsDelegates(t *testing.T) {
+	t.Parallel()
+	var called atomic.Bool
+	base := &idlerRT{onClose: func() { called.Store(true) }}
+	p := &previewTokenInjector{token: "x", wrapped: base}
+	c := hostclient.NewHTTP("http://x", p)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !called.Load() {
+		t.Error("hostclient.HTTP.Close should reach the wrapped transport via the injector")
+	}
+}
+
+// idlerRT is a stub RoundTripper that records CloseIdleConnections calls.
+type idlerRT struct {
+	onClose func()
+}
+
+func (r *idlerRT) RoundTrip(*http.Request) (*http.Response, error) { panic("unused") }
+func (r *idlerRT) CloseIdleConnections()                           { r.onClose() }
 
 // TestWaitForHostReady_TimesOutWithUnderlyingError makes sure a
 // permanently-broken sandbox surfaces a useful message rather than

@@ -26,9 +26,7 @@ type previewTokenInjector struct {
 
 // RoundTrip implements http.RoundTripper.
 func (p *previewTokenInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	// Clone the request before mutating headers — RoundTrip is forbidden
-	// from modifying its input. http.Request.Clone is shallow except for
-	// the URL and Header maps, which is what we need.
+	// Clone the request before mutating headers — RoundTrip must not modify its input.
 	r2 := r.Clone(r.Context())
 	r2.Header = r.Header.Clone()
 	r2.Header.Set("x-daytona-preview-token", p.token)
@@ -37,4 +35,16 @@ func (p *previewTokenInjector) RoundTrip(r *http.Request) (*http.Response, error
 		rt = http.DefaultTransport
 	}
 	return rt.RoundTrip(r2)
+}
+
+// CloseIdleConnections delegates so hostclient.HTTP.Close can drain the wrapped transport's pool.
+func (p *previewTokenInjector) CloseIdleConnections() {
+	type idler interface{ CloseIdleConnections() }
+	rt := p.wrapped
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	if i, ok := rt.(idler); ok {
+		i.CloseIdleConnections()
+	}
 }
