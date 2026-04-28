@@ -70,6 +70,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /sessions/{id}/revert", m.handleRevertSession)
 	mx.HandleFunc("POST /sessions/{id}/fork", m.handleForkSession)
 	mx.HandleFunc("POST /sessions/{id}/abort", m.handleAbortSession)
+	mx.HandleFunc("POST /sessions/{id}/permission-mode", m.handleSetSessionPermissionMode)
 	mx.HandleFunc("POST /sessions/{id}/read", m.handleMarkSessionRead)
 	mx.HandleFunc("POST /sessions/{id}/followup", m.handleToggleFollowUp)
 	mx.HandleFunc("POST /sessions/{id}/visibility", m.handleSetVisibility)

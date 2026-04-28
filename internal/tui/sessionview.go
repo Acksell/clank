@@ -622,22 +622,27 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// history (sessionMessagesMsg) to avoid a flash of the bare prompt
 		// before the complete conversation renders.
 
-		// Fetch agents if we don't have them yet (existing sessions opened from inbox).
-		if len(m.agents) == 0 && m.info.Backend == agent.BackendOpenCode && (m.info.GitRef.LocalPath != "" || m.info.GitRef.RemoteURL != "") {
+		// Hydrate routing context from session info on first arrival.
+		// Done unconditionally (not just for OpenCode) so Claude-backed
+		// sessions opened from the inbox correctly route Tab to the
+		// permission-mode cycle and render the permission badge.
+		if m.backend == "" {
 			m.backend = m.info.Backend
-			// projectDir is not on SessionInfo (path-free wire per §7);
-			// relPath becomes a no-op for sessions opened from the inbox.
-			// TODO: resolve via host repo lookup if/when needed for UX.
 			m.hostname = host.Hostname(m.info.Hostname)
 			if m.hostname == "" {
 				m.hostname = host.HostLocal
 			}
 			m.gitRef = m.info.GitRef
-			// Restore the selected agent from session info.
-			if m.info.Agent != "" {
-				// Will be matched against the fetched list in agentsResultMsg.
+		}
+		// Only OpenCode currently exposes a per-project agent list; for
+		// Claude there are no agents to fetch. Models are fetched for
+		// any backend whose manager implements ModelLister (Claude does
+		// via a hardcoded catalogue).
+		if len(m.agents) == 0 && (m.info.GitRef.LocalPath != "" || m.info.GitRef.RemoteURL != "") {
+			if m.info.Backend == agent.BackendOpenCode {
+				return m, tea.Batch(m.fetchAgents(), m.fetchModels())
 			}
-			return m, tea.Batch(m.fetchAgents(), m.fetchModels())
+			return m, m.fetchModels()
 		}
 		return m, nil
 
@@ -763,6 +768,17 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else if m.info != nil {
 			m.info.FollowUp = msg.followUp
+		}
+		return m, nil
+
+	case permissionModeResultMsg:
+		if msg.err != nil {
+			// Roll back the optimistic update so the badge reflects
+			// the still-active server-side mode.
+			if m.info != nil {
+				m.info.PermissionMode = msg.previous
+			}
+			m.err = msg.err
 		}
 		return m, nil
 
@@ -981,12 +997,18 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
+			if m.backend == agent.BackendClaudeCode {
+				return m, m.cyclePermissionMode()
+			}
 			// Cycle through agents.
 			if len(m.agents) > 1 {
 				m.selectedAgent = (m.selectedAgent + 1) % len(m.agents)
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
+			if m.backend == agent.BackendClaudeCode {
+				return m, m.cyclePermissionMode()
+			}
 			// Open model picker modal.
 			if len(m.models) > 0 {
 				m.showModelPicker = true
@@ -2086,6 +2108,8 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setVisibility(agent.VisibilityArchived)
 	case "revert":
 		return m.revertSession(m.menuMessageID)
+	case "permission-mode-bypass":
+		return m.setPermissionMode(agent.PermissionModeBypassPermissions)
 	}
 	return nil
 }
@@ -2284,10 +2308,12 @@ func (m *SessionViewModel) View() tea.View {
 		sb.WriteString(m.renderPromptBox())
 		sb.WriteString("\n")
 		inputHelp := "enter: send | shift+enter: newline | esc: cancel"
-		if len(m.agents) > 1 {
+		if m.backend == agent.BackendClaudeCode {
+			inputHelp = "enter: send | shift+enter: newline | tab: permission mode | shift+tab: model | esc: cancel"
+		} else if len(m.agents) > 1 {
 			inputHelp = "enter: send | shift+enter: newline | tab: cycle mode | esc: cancel"
 		}
-		if len(m.models) > 0 {
+		if m.backend != agent.BackendClaudeCode && len(m.models) > 0 {
 			inputHelp += " | shift+tab: select model"
 		}
 		sb.WriteString(helpStyle.Render(inputHelp))

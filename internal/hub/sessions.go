@@ -407,17 +407,23 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	now := time.Now()
 
 	sessInfo := agent.SessionInfo{
-		ID:        id,
-		Backend:   req.Backend,
-		Status:    agent.StatusStarting,
-		Hostname:  req.Hostname,
-		GitRef:    req.GitRef,
-		ServerURL: serverURL,
-		Prompt:    req.Prompt,
-		TicketID:  req.TicketID,
-		Agent:     req.Agent,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             id,
+		Backend:        req.Backend,
+		Status:         agent.StatusStarting,
+		Hostname:       req.Hostname,
+		GitRef:         req.GitRef,
+		ServerURL:      serverURL,
+		Prompt:         req.Prompt,
+		TicketID:       req.TicketID,
+		Agent:          req.Agent,
+		PermissionMode: req.PermissionMode,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	// Seed the on-record permission mode so the TUI's badge reflects
+	// reality from the first paint instead of relying on a fallback.
+	if sessInfo.Backend == agent.BackendClaudeCode && sessInfo.PermissionMode == "" {
+		sessInfo.PermissionMode = agent.PermissionModeAcceptEdits
 	}
 
 	ms := &managedSession{

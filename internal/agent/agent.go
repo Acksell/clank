@@ -357,6 +357,11 @@ type StartRequest struct {
 	TicketID   string          `json:"ticket_id,omitempty"`  // Optional backlog ticket link
 	Agent      string          `json:"agent,omitempty"`      // OpenCode agent name (e.g. "build", "plan")
 	Model      *ModelOverride  `json:"model,omitempty"`      // Per-message model override; nil = use default
+
+	// PermissionMode seeds the initial Claude permission mode. Ignored
+	// for non-Claude backends. Empty defers to the backend default
+	// (acceptEdits). Validated against PermissionModeCycle when set.
+	PermissionMode PermissionMode `json:"permission_mode,omitempty"`
 }
 
 // Validate checks that required fields are set per §7.3 of
@@ -373,6 +378,11 @@ func (r StartRequest) Validate() error {
 	}
 	if r.Prompt == "" {
 		return fmt.Errorf("prompt is required")
+	}
+	if r.PermissionMode != "" {
+		if err := r.PermissionMode.Validate(); err != nil {
+			return fmt.Errorf("permission_mode: %w", err)
+		}
 	}
 	return nil
 }
@@ -391,6 +401,7 @@ type SessionInfo struct {
 	Title           string            `json:"title,omitempty"` // AI-generated session title from OpenCode
 	TicketID        string            `json:"ticket_id,omitempty"`
 	Agent           string            `json:"agent,omitempty"`             // Current OpenCode agent (e.g. "build", "plan")
+	PermissionMode  PermissionMode    `json:"permission_mode,omitempty"`   // Current Claude permission mode; empty for backends that don't support it.
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
@@ -574,6 +585,12 @@ type SessionBackend interface {
 	// allow=true sends "once", allow=false sends "reject".
 	// Returns an error if the backend does not support permissions.
 	RespondPermission(ctx context.Context, permissionID string, allow bool) error
+
+	// SetPermissionMode changes the active permission mode for an Open
+	// session. Backends without the concept (e.g. OpenCode) return
+	// ErrPermissionModeUnsupported so callers can branch on it without a
+	// type assertion.
+	SetPermissionMode(ctx context.Context, mode PermissionMode) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session
@@ -590,6 +607,11 @@ type BackendInvocation struct {
 	// StartRequest.SessionID (which doubles as the host-side session ID).
 	// A future split may decouple the two.
 	ResumeExternalID string
+
+	// PermissionMode seeds the initial Claude permission mode. Empty
+	// means "use the backend default" (acceptEdits). Ignored by
+	// non-Claude backends.
+	PermissionMode PermissionMode
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

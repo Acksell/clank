@@ -105,6 +105,21 @@ func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
 }
 
+func (m *Mux) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode agent.PermissionMode `json:"mode"`
+	}
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON")
+		return
+	}
+	if err := m.svc.SetSessionPermissionMode(r.Context(), r.PathValue("id"), body.Mode); err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		MessageID string `json:"message_id"`

@@ -126,6 +126,10 @@ func (m *mockBackend) Abort(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockBackend) SetPermissionMode(_ context.Context, _ agent.PermissionMode) error {
+	return nil
+}
+
 func (m *mockBackend) Stop() error {
 	m.mu.Lock()
 	already := m.stopped

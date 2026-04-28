@@ -179,7 +179,7 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 // without needing Start to fire (activateBackend in the hub only calls Watch,
 // which is a no-op for Claude — there is no long-lived process to attach to).
 func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
-	return agent.NewClaudeCodeBackendForSession(inv.WorkDir, inv.ResumeExternalID), nil
+	return agent.NewClaudeCodeBackendForSessionWithMode(inv.WorkDir, inv.ResumeExternalID, inv.PermissionMode), nil
 }
 
 // Init is a no-op for Claude — there are no long-lived servers to manage.

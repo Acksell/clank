@@ -25,13 +25,14 @@ type stubBackend struct {
 	// id is returned by SessionID(). For the real opencode backend this
 	// is empty at construction and only populated after Start creates
 	// the remote session; use idAfterStart to simulate that pattern.
-	id           string
-	idAfterStart string
-	status       agent.SessionStatus
-	startedReq   agent.StartRequest
-	sentMsg      agent.SendMessageOpts
-	aborted      bool
-	stopped      bool
+	id             string
+	idAfterStart   string
+	status         agent.SessionStatus
+	startedReq     agent.StartRequest
+	sentMsg        agent.SendMessageOpts
+	aborted        bool
+	stopped        bool
+	permissionMode agent.PermissionMode
 }
 
 func newStubBackend(id string) *stubBackend {
@@ -58,7 +59,11 @@ func (b *stubBackend) Send(_ context.Context, o agent.SendMessageOpts) error {
 	b.sentMsg = o
 	return nil
 }
-func (b *stubBackend) Abort(_ context.Context) error                           { b.aborted = true; return nil }
+func (b *stubBackend) Abort(_ context.Context) error { b.aborted = true; return nil }
+func (b *stubBackend) SetPermissionMode(_ context.Context, m agent.PermissionMode) error {
+	b.permissionMode = m
+	return nil
+}
 func (b *stubBackend) Stop() error                                             { b.stopped = true; close(b.events); return nil }
 func (b *stubBackend) Events() <-chan agent.Event                              { return b.events }
 func (b *stubBackend) Status() agent.SessionStatus                             { return b.status }

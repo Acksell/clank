@@ -83,6 +83,18 @@ func (s *SessionClient) Abort(ctx context.Context) error {
 	return s.c.post(ctx, p, nil, nil)
 }
 
+// SetPermissionMode updates the Claude permission mode for this session.
+func (s *SessionClient) SetPermissionMode(ctx context.Context, mode agent.PermissionMode) error {
+	p, err := s.path("/permission-mode")
+	if err != nil {
+		return err
+	}
+	body := struct {
+		Mode agent.PermissionMode `json:"mode"`
+	}{Mode: mode}
+	return s.c.post(ctx, p, body, nil)
+}
+
 // Revert reverts the session to messageID, removing all subsequent messages.
 func (s *SessionClient) Revert(ctx context.Context, messageID string) error {
 	p, err := s.path("/revert")

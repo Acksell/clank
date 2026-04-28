@@ -21,6 +21,11 @@ type mockTransport struct {
 	// interrupted is set to true when Interrupt is called.
 	interrupted bool
 
+	// permissionMode records the most recent value passed to
+	// SetPermissionMode so tests can assert that ClaudeCodeBackend
+	// forwarded the right SDK string.
+	permissionMode string
+
 	// connected tracks connection state.
 	connected bool
 	closed    bool
@@ -110,7 +115,10 @@ func (t *mockTransport) Interrupt(_ context.Context) error {
 }
 
 func (t *mockTransport) SetModel(_ context.Context, _ *string) error { return nil }
-func (t *mockTransport) SetPermissionMode(_ context.Context, _ string) error {
+func (t *mockTransport) SetPermissionMode(_ context.Context, mode string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.permissionMode = mode
 	return nil
 }
 func (t *mockTransport) RewindFiles(_ context.Context, _ string) error { return nil }
@@ -1031,6 +1039,49 @@ func TestClaudeCodeBackendAbortCallsInterrupt(t *testing.T) {
 
 	if !interrupted {
 		t.Error("expected transport.Interrupt to be called")
+	}
+}
+
+func TestClaudeCodeBackendSetPermissionMode(t *testing.T) {
+	t.Parallel()
+
+	transport := newMockTransport([]claudecode.Message{
+		&claudecode.SystemMessage{
+			MessageType: "system",
+			Subtype:     "init",
+			Data:        map[string]any{"session_id": "session-perm"},
+		},
+	})
+
+	b := newTestBackend(t, transport)
+	defer b.Stop()
+
+	err := b.OpenAndSend(context.Background(), agent.SendMessageOpts{
+		Text: "test",
+	})
+	if err != nil {
+		t.Fatalf("OpenAndSend: %v", err)
+	}
+
+	// Default mode is acceptEdits.
+	if got := b.PermissionMode(); got != agent.PermissionModeAcceptEdits {
+		t.Errorf("initial PermissionMode = %q, want %q", got, agent.PermissionModeAcceptEdits)
+	}
+
+	if err := b.SetPermissionMode(context.Background(), agent.PermissionModePlan); err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+
+	transport.mu.Lock()
+	gotTransport := transport.permissionMode
+	transport.mu.Unlock()
+
+	if gotTransport != string(agent.PermissionModePlan) {
+		t.Errorf("transport.permissionMode = %q, want %q", gotTransport, agent.PermissionModePlan)
+	}
+
+	if got := b.PermissionMode(); got != agent.PermissionModePlan {
+		t.Errorf("cached PermissionMode = %q, want %q", got, agent.PermissionModePlan)
 	}
 }
 
