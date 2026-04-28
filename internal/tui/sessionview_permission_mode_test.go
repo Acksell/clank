@@ -30,6 +30,35 @@ func TestCyclePermissionMode_BypassNoLongerOpensDialog(t *testing.T) {
 	_ = cmd
 }
 
+// TestCommitSend_BypassUsesGitRefLocalPath asserts the live-session
+// path: NewSessionViewModel does not set m.projectDir (only the
+// compose constructor does), so the dialog must key off
+// SessionInfo.GitRef.LocalPath instead. Without this fallback, every
+// session opened from the inbox silently skipped the bypass warning.
+func TestCommitSend_BypassUsesGitRefLocalPath(t *testing.T) {
+	t.Setenv("CLANK_DIR", t.TempDir())
+
+	m := newTestSessionModel(nil)
+	m.backend = agent.BackendClaudeCode
+	m.projectDir = "" // simulate inbox-opened live session
+	m.info = &agent.SessionInfo{
+		PermissionMode: agent.PermissionModeBypassPermissions,
+		GitRef:         agent.GitRef{LocalPath: "/tmp/live-session-workspace"},
+	}
+
+	cmd := m.commitSend("hello")
+
+	if cmd != nil {
+		t.Error("commitSend must defer when bypass needs confirmation, even with empty projectDir")
+	}
+	if !m.showConfirm {
+		t.Fatal("commitSend must open the confirm dialog using GitRef.LocalPath as the workspace key")
+	}
+	if m.pendingSendText != "hello" {
+		t.Errorf("pendingSendText = %q, want %q", m.pendingSendText, "hello")
+	}
+}
+
 // TestCommitSend_BypassShowsConfirmFirstTime verifies the one-time
 // warning fires when sending a prompt with bypass active in a workspace
 // the user hasn't acknowledged yet.

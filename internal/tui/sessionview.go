@@ -2121,7 +2121,7 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		}
 		// Record the workspace as confirmed so future sends skip the
 		// dialog. Best-effort: a write failure shouldn't block the send.
-		_ = config.MarkBypassPermissionsConfirmed(m.projectDir)
+		_ = config.MarkBypassPermissionsConfirmed(m.workspacePath())
 		return m.dispatchSend(text)
 	}
 	return nil

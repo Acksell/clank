@@ -83,6 +83,19 @@ func (m *SessionViewModel) renderPermissionModeBadge() string {
 	return lipgloss.NewStyle().Foreground(fg).Render(mode.DisplayName())
 }
 
+// workspacePath returns the canonical workspace directory for this
+// session — used as the key for per-workspace bypass acknowledgement.
+// SessionInfo.GitRef.LocalPath is preferred because it reflects the
+// session's actual working directory; m.projectDir (the inbox's launch
+// cwd) is a fallback for compose mode and other code paths that
+// haven't loaded SessionInfo yet.
+func (m *SessionViewModel) workspacePath() string {
+	if m.info != nil && m.info.GitRef.LocalPath != "" {
+		return m.info.GitRef.LocalPath
+	}
+	return m.projectDir
+}
+
 // commitSend dispatches a user prompt, appending it to the visible
 // transcript and clearing the input. When bypass-permissions is the
 // active Claude mode and the user has not yet acknowledged the warning
@@ -90,18 +103,19 @@ func (m *SessionViewModel) renderPermissionModeBadge() string {
 // dialog is shown instead. handleConfirmAction("send-bypass") resumes
 // the send after the user accepts.
 func (m *SessionViewModel) commitSend(text string) tea.Cmd {
+	workspace := m.workspacePath()
 	if m.backend == agent.BackendClaudeCode &&
 		m.currentPermissionMode() == agent.PermissionModeBypassPermissions &&
-		m.projectDir != "" {
+		workspace != "" {
 		prefs, _ := config.LoadPreferences()
-		if !prefs.IsBypassPermissionsConfirmed(m.projectDir) {
+		if !prefs.IsBypassPermissionsConfirmed(workspace) {
 			m.pendingSendText = text
 			m.showConfirm = true
 			m.confirm = newConfirmDialog(
 				"Bypass all permissions?",
 				fmt.Sprintf(
 					"Claude will read, edit, and run commands without asking — including potentially destructive ones.\nUse only in disposable or isolated environments.\n\n%s\n\nYou won't be asked again for this workspace.",
-					m.projectDir,
+					workspace,
 				),
 				"send-bypass",
 			)
