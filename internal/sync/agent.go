@@ -53,9 +53,7 @@ type Agent struct {
 	// "Sync now" TUI action). Buffered so a sender never blocks.
 	pushNow chan struct{}
 
-	// startedMu guards started; we don't reuse stopOnce/startOnce
-	// because we need Stop to know whether a goroutine is actually
-	// running to wait on (otherwise Stop blocks forever on doneCh).
+	// startedMu guards started so Stop knows whether to wait on doneCh.
 	startedMu sync.Mutex
 	started   bool
 	stopOnce  sync.Once
@@ -93,11 +91,7 @@ func NewAgent(opts AgentOptions) (*Agent, error) {
 }
 
 // Start kicks off the goroutine. Returns immediately.
-//
-// A second Start is a no-op rather than a panic — the previous
-// version unconditionally launched another goroutine which then
-// raced on `defer close(a.doneCh)`, crashing the daemon on
-// close-of-closed-channel.
+// A second Start is a no-op rather than a panic.
 func (a *Agent) Start(ctx context.Context) {
 	a.startedMu.Lock()
 	defer a.startedMu.Unlock()
@@ -110,9 +104,7 @@ func (a *Agent) Start(ctx context.Context) {
 }
 
 // Stop signals the goroutine to exit and waits for it to finish.
-// Idempotent. A Stop without a matching Start is a no-op rather
-// than a forever-blocking <-doneCh, so test setup paths and
-// shutdown defers don't deadlock when the agent never actually ran.
+// Idempotent. Stop without a matching Start is a no-op.
 func (a *Agent) Stop() {
 	a.startedMu.Lock()
 	if !a.started {

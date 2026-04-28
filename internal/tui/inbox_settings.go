@@ -13,15 +13,8 @@ import (
 )
 
 // showSettings renders the Settings page in the right pane without
-// shifting focus away from the sidebar. Used for "hover preview" when
-// the sidebar cursor lands on the ⚙ Settings footer row, so the right
-// pane reflects the cursor position the same way it does for branches.
-//
-// We pass `hubclient.OverrideURL()` through so the active-hub row can
-// display the *effective* hub for the running process, not just what
-// preferences.json says — when the user launched with --hub-url, the
-// override wins for the entire process and toggling prefs from this
-// view wouldn't switch the live connection.
+// shifting focus from the sidebar. Used for hover-preview when the
+// cursor lands on the ⚙ row.
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
 	remoteURL := ""
@@ -95,23 +88,12 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			persistDefaultBackend(next)
 			return m, nil
 		case settingsEntryActiveHub:
-			// When --hub-url is in effect for this process, the
-			// override wins regardless of what we persist. Toggling
-			// the pref here would just confuse the user — the
-			// connection wouldn't change and a restart with the
-			// override flag still set would re-pin to the override.
-			// No-op the toggle in that case; the row already labels
-			// itself "overridden (URL)" so the user sees why.
+			// --hub-url override wins for the whole process; toggling prefs would mislead.
 			if hubclient.OverrideURL() != "" {
 				return m, nil
 			}
-			// Toggle local <-> remote. We don't reconnect the running
-			// TUI's hub client here — swapping transports mid-flight
-			// would orphan the in-flight SSE stream and the cached
-			// session list. Persisting + telling the user to restart is
-			// the simplest correct behavior; if hot-swap becomes
-			// painful we can revisit. Re-read prefs to pick up
-			// remote_hub.url for the rendered label.
+			// Toggle local <-> remote. Persist only; user restarts the
+			// TUI for it to take effect (hot-swap would orphan the SSE).
 			prefs, _ := config.LoadPreferences()
 			remoteURL := ""
 			if prefs.RemoteHub != nil {
@@ -136,15 +118,8 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// If a key press arrives while the sidebar is focused, route it to
-	// the sidebar handler. This is how the user navigates back from the
-	// settings page (they pressed left to focus the sidebar, then can
-	// move the cursor or press right to re-enter the settings page).
-	//
-	// If the sidebar cursor moves off the "⚙ Settings" row while the
-	// settings screen is still showing, drop back to the inbox list —
-	// otherwise the page lingers behind a hovered branch and the user
-	// has to jump into the right pane and press esc to dismiss it.
+	// Sidebar-focused keys: route to sidebar handler. Cursor leaving
+	// the ⚙ row while settings is showing drops back to the inbox.
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.pane == paneSidebar {
 		tm, cmd := m.handleSidebarKey(keyMsg)
 		if m.screen == screenSettings && !m.sidebar.CursorOnSettings() {

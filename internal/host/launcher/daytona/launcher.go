@@ -1,17 +1,6 @@
 // Package daytona provisions cloud sandboxes via Daytona's hosted
 // control plane and registers each one with the hub catalog as a
 // `*hostclient.HTTP`.
-//
-// We use Daytona's official Go SDK (github.com/daytonaio/daytona/libs/sdk-go)
-// rather than hand-rolled REST. Earlier versions of this file built
-// the request body manually and got bitten by schema drift — most
-// notably, Daytona's `POST /sandbox` does not accept a top-level
-// `image` field; you have to wrap a custom image in
-// `buildInfo.dockerfileContent`. The SDK does that wrapping for us
-// when we pass `types.ImageParams{Image: "<registry>/<name>:<tag>"}`,
-// auto-generating `FROM <image>` as the dockerfile content. That's
-// what makes Daytona actually pull our image instead of falling back
-// to the default Python snapshot.
 package daytona
 
 import (
@@ -31,84 +20,60 @@ import (
 )
 
 // HostPort is the TCP port clank-host listens on inside the sandbox.
-// Must match the EXPOSE in cmd/clank-host/Dockerfile and the port we
-// ask Daytona for a preview URL on.
+// Must match cmd/clank-host/Dockerfile's EXPOSE.
 const HostPort = 7878
 
-// reservedSandboxEnv keys are populated by the launcher; ExtraEnv
-// must not override them.
+// reservedSandboxEnv keys are populated by the launcher; ExtraEnv must not override them.
 var reservedSandboxEnv = []string{"CLANK_HUB_URL", "CLANK_HUB_TOKEN", "CLANK_HOST_PORT"}
 
 // Options configures the Launcher.
 type Options struct {
-	// APIKey is the Daytona API key. Required.
+	// APIKey is the Daytona API key. Required when SDKClient is nil.
 	APIKey string
 
-	// Image is the OCI image Daytona will pull. Default:
-	// the published clank-host image. Override for dev/CI.
+	// Image is the OCI image Daytona will pull.
+	// Defaults to the published clank-host image.
 	Image string
 
-	// HubBaseURL is the externally-reachable URL of the cloud hub —
-	// the spawned clank-host clones from this and reports session
-	// events back here. Required (no default).
+	// HubBaseURL is the externally-reachable URL of the cloud hub. Required.
 	HubBaseURL string
 
-	// HubAuthToken is the bearer token the spawned clank-host needs
-	// to authenticate to HubBaseURL.
+	// HubAuthToken is the bearer token paired with HubBaseURL.
 	HubAuthToken string
 
-	// ExtraEnv is forwarded into the sandbox unchanged. Use this for
-	// agent credentials (ANTHROPIC_API_KEY, AWS_*, OPENCODE_API_KEY,
-	// etc.). Keys with empty values are dropped.
+	// ExtraEnv is forwarded into the sandbox. Keys with empty values are dropped.
 	ExtraEnv map[string]string
 
-	// APIUrl overrides the default Daytona control-plane endpoint —
-	// useful for self-hosted Daytona. Empty = SDK default
-	// (https://app.daytona.io/api).
+	// APIUrl overrides the default Daytona control-plane endpoint.
 	APIUrl string
 
-	// OrganizationID, when set, scopes operations to a specific
-	// Daytona organization. Empty = the API key's default org.
+	// OrganizationID scopes operations to a specific Daytona org.
 	OrganizationID string
 
-	// ProvisionTimeout caps how long Launch will wait for the
-	// sandbox to reach a usable state. Default: 5 minutes — image
-	// pulls can be slow on the first run with our ~1GB image.
+	// ProvisionTimeout caps how long Launch waits for sandbox readiness. Default: 5 minutes.
 	ProvisionTimeout time.Duration
 
-	// Resources optionally pins CPU/memory/disk for the sandbox.
-	// nil = Daytona defaults (1 CPU, 1 GiB RAM, 3 GiB disk). Our
-	// image is debian + bun + opencode + claude-code, which fits
-	// but doesn't have much headroom; bump if your sessions OOM.
+	// Resources optionally pins CPU/memory/disk. nil uses Daytona defaults.
 	Resources *types.Resources
 
-	// SDKClient overrides the daytona.Client constructor. Tests
-	// inject a fake; production passes nil and we build one from
-	// APIKey/APIUrl.
+	// SDKClient overrides the daytona.Client constructor (tests inject; production passes nil).
 	SDKClient *daytona.Client
 }
 
-// Launcher provisions Daytona sandboxes on demand and registers them
-// with the hub catalog as `*hostclient.HTTP` instances. Caller is
-// responsible for calling Stop() at hub shutdown to delete sandboxes
-// that were created during this process's lifetime.
+// Launcher provisions Daytona sandboxes on demand. Stop() deletes every
+// sandbox created during this process's lifetime.
 type Launcher struct {
 	opts   Options
 	log    *log.Logger
 	client *daytona.Client
 
-	// We own delete-on-shutdown for sandboxes we created. Daytona
-	// charges by uptime, so leaking sandboxes across crashes is
-	// actively harmful. The list is append-only: a Stop() flushes
-	// every entry. `stopping` blocks late Launches from leaking
-	// sandboxes that complete Create after Stop snapshotted.
+	// stopping blocks late Launches from leaking sandboxes that finish Create after Stop snapshotted.
 	createdMu sync.Mutex
 	created   []*daytona.Sandbox
 	stopping  bool
 }
 
-// New constructs a Launcher. Returns an error if required options are
-// missing — fail-fast at boot rather than at first session.
+// New constructs a Launcher. Required options missing returns an error.
 func New(opts Options, lg *log.Logger) (*Launcher, error) {
 	if opts.HubBaseURL == "" {
 		return nil, fmt.Errorf("daytona launcher: HubBaseURL is required")
@@ -145,20 +110,7 @@ func New(opts Options, lg *log.Logger) (*Launcher, error) {
 	return &Launcher{opts: opts, log: lg, client: c}, nil
 }
 
-// Launch implements hub.HostLauncher. Steps:
-//
-//  1. client.Create(ctx, ImageParams{...}) — the SDK wraps our image
-//     in `FROM <image>` and submits via buildInfo.dockerfileContent.
-//     With WaitForStart=true (the SDK default) this blocks until the
-//     Daytona-side state reaches "started".
-//  2. sandbox.GetPreviewLink(ctx, HostPort) — returns the proxied URL
-//     and the token to send as `x-daytona-preview-token`.
-//  3. Build a *hostclient.HTTP whose RoundTripper injects that token.
-//  4. waitForHostReady — probe clank-host's /status until 2xx.
-//     Daytona reports "started" when the container is up, but the
-//     entrypoint still has to launch clank-host inside it. Without
-//     this probe the hub's first call returns a 502 from the
-//     preview proxy.
+// Launch implements hub.HostLauncher.
 func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hostname, *hostclient.HTTP, error) {
 	ctx, cancel := context.WithTimeout(ctx, l.opts.ProvisionTimeout)
 	defer cancel()
@@ -180,26 +132,17 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		envVars[k] = v
 	}
 
-	// Build the wrapping image with an EXPLICIT ENTRYPOINT.
-	//
-	// Daytona has a documented bug
-	// (https://github.com/daytonaio/daytona/issues/3853): when the
-	// generated wrapping dockerfile is just `FROM <image>`, the
-	// CreateSandbox API does NOT inherit the parent image's
-	// ENTRYPOINT. The sandbox falls back to `sleep infinity`, our
-	// entrypoint.sh never runs, clank-host never binds, and the
-	// preview proxy returns 502s — the exact symptom we hit.
-	//
-	// daytona.Base(...).Entrypoint(...) emits the entrypoint as an
-	// explicit line in the dockerfile, which the API does honor. The
-	// path here MUST match the ENTRYPOINT in cmd/clank-host/Dockerfile.
+	// Set ENTRYPOINT explicitly: Daytona drops base-image ENTRYPOINT on
+	// `FROM <image>` wrapping (daytonaio/daytona#3853). Path mirrors
+	// cmd/clank-host/Dockerfile.
 	img := daytona.Base(l.opts.Image).
 		Entrypoint([]string{"/usr/local/bin/entrypoint.sh"})
 
 	sandbox, err := l.client.Create(ctx, types.ImageParams{
 		SandboxBaseParams: types.SandboxBaseParams{
 			EnvVars: envVars,
-			Public:  true, // preview proxy still requires the token; "public" only means port previews are reachable from outside the org.
+			// Public=true exposes the preview port; the preview token still gates auth.
+			Public: true,
 		},
 		Image:     img,
 		Resources: l.opts.Resources,
@@ -232,10 +175,7 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 	client := hostclient.NewHTTP(preview.URL, transport)
 
 	if err := l.waitForHostReady(ctx, client, sandbox.ID); err != nil {
-		// Pull the sandbox's entrypoint logs so the user sees *why*
-		// clank-host never came up (env-var crash, listen-address
-		// mismatch, image misbuild, ...). Best-effort: a stuck
-		// sandbox is still leakable, so we always tear it down.
+		// Surface entrypoint logs in the error so debugging doesn't require sandbox shell access.
 		if logs := l.fetchEntrypointLogs(sandbox); logs != "" {
 			err = fmt.Errorf("%w\n--- sandbox entrypoint logs ---\n%s\n--- end logs ---", err, logs)
 		}
@@ -247,13 +187,7 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 	return hostname, client, nil
 }
 
-// fetchEntrypointLogs is best-effort: returns the empty string when
-// the toolbox isn't reachable or the call fails. A short timeout
-// keeps a hung sandbox from blocking the surrounding error path.
-//
-// Daytona's SessionCommandLogsResponse exposes Output (combined),
-// Stdout, and Stderr as plain strings. We prefer Stdout+Stderr when
-// non-empty (more readable), falling back to Output otherwise.
+// fetchEntrypointLogs is best-effort. Returns "" on any failure.
 func (l *Launcher) fetchEntrypointLogs(s *daytona.Sandbox) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -278,22 +212,15 @@ func (l *Launcher) fetchEntrypointLogs(s *daytona.Sandbox) string {
 	return b.String()
 }
 
-// waitForHostReady polls the spawned clank-host's /status until it
-// returns 2xx, or until the context deadline expires. Bridges the
-// gap between Daytona's "container is running" signal and
-// clank-host's "port is bound and serving" reality.
-//
-// Errors include the most recent /status error so users see *why*
-// the host wasn't ready (proxy 502, transport error, etc.) rather
-// than a bare "context deadline exceeded".
+// waitForHostReady polls /status until 2xx or ctx expires. Bridges
+// the gap between Daytona's "started" state and clank-host actually
+// binding its port.
 func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, sandboxID string) error {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
 	var lastErr error
 	for {
-		// Use a short per-attempt timeout so the proxy can return
-		// 502 quickly on a not-yet-bound port instead of stalling
-		// behind the parent ctx for many seconds.
+		// Short per-attempt timeout so proxy 502s return fast.
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		_, err := c.Status(probeCtx)
 		cancel()
@@ -312,13 +239,7 @@ func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, san
 	}
 }
 
-// Stop deletes every sandbox the launcher created in this process.
-// Idempotent. Safe to defer at hub shutdown.
-//
-// Each sandbox gets its own 30s timeout rather than sharing one across
-// the whole slice — Daytona's API can hang, and a single stuck delete
-// shouldn't starve cleanup of the rest (which keep accruing cost while
-// they linger).
+// Stop deletes every sandbox the launcher created. Idempotent.
 func (l *Launcher) Stop() {
 	l.createdMu.Lock()
 	l.stopping = true
@@ -326,9 +247,7 @@ func (l *Launcher) Stop() {
 	l.created = nil
 	l.createdMu.Unlock()
 	for _, s := range created {
-		// Fresh background context per iteration — the caller's ctx
-		// may already be cancelled (defer at shutdown), and shared
-		// budgets across deletes leak money on the first stall.
+		// Per-iteration timeout so one stalled delete doesn't starve the rest.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := s.Delete(ctx)
 		cancel()
@@ -338,9 +257,7 @@ func (l *Launcher) Stop() {
 	}
 }
 
-// deleteBackground deletes a sandbox using a fresh context so the
-// cleanup isn't tied to whatever errored ctx triggered it. Best
-// effort: errors are logged, not returned.
+// deleteBackground deletes a sandbox with a fresh ctx; logs errors.
 func (l *Launcher) deleteBackground(s *daytona.Sandbox) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -351,10 +268,7 @@ func (l *Launcher) deleteBackground(s *daytona.Sandbox) error {
 	return nil
 }
 
-// safeHostnameSuffix takes the random tail of the sandbox UUID for
-// human-readable hostnames. Strips any character that would be invalid
-// in a Hostname (none today — UUIDs are hex+dash — but keeps the
-// suffix robust to schema drift).
+// safeHostnameSuffix returns the trailing UUID segment, capped at 12 chars.
 func safeHostnameSuffix(id string) string {
 	if i := strings.LastIndex(id, "-"); i >= 0 {
 		id = id[i+1:]

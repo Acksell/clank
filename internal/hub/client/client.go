@@ -48,48 +48,23 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// Client communicates with clankd's Hub API. Two transports are
-// supported, picked at construction time:
-//
-//   - Unix socket — historical default, used for the local laptop hub.
-//     sockPath is set; baseURL stays "http://daemon" (the URL hostname
-//     is irrelevant because the dialer always reaches the socket).
-//   - TCP + bearer token — used for talking to a remote hub. baseURL
-//     is the hub's externally-reachable URL ("http://host:port" or
-//     "https://...") and authToken populates Authorization on every
-//     outbound request.
-//
-// The two modes share the same wire protocol; only the transport and
-// the auth header differ. Once the connection is established the rest
-// of the client (sessions, hosts, sse) is mode-agnostic.
+// Client communicates with clankd's Hub API over either a Unix
+// socket (local) or TCP+bearer (remote). Wire protocol is identical;
+// only transport and auth differ.
 type Client struct {
 	sockPath   string // empty when in TCP mode
 	baseURL    string // "http://daemon" (Unix) or "http://host:port" (TCP)
-	authToken  string // empty when in Unix mode; bearer token in TCP mode
+	authToken  string // bearer token in TCP mode
 	httpClient *http.Client
 }
 
-// hubResponseHeaderTimeout caps how long the client waits for the
-// daemon to start writing response headers.
-//
-// Sized for /sessions when LaunchHost provisions a sandbox: cold
-// Daytona launches (image pull + build + container start) routinely
-// take 60-180s, plus our /status readiness probe. 30s (the previous
-// value) was tuned for an all-local Unix-socket world and is far too
-// aggressive for cloud-hub flows.
-//
-// The right long-term fix is async session creation (return 202 +
-// session id immediately, stream status via SSE). Until that lands,
-// 5 minutes is an honest upper bound that covers slow first-run
-// builds without making a truly hung daemon hang clients forever.
+// hubResponseHeaderTimeout caps the wait for response headers. Sized
+// for /sessions when LaunchHost provisions a sandbox (cold Daytona
+// launches routinely take minutes).
 const hubResponseHeaderTimeout = 5 * time.Minute
 
-// NewClient creates a client that connects to clankd at the given Unix
-// socket path. Use NewTCPClient to talk to a remote hub over TCP.
-//
-// The http.Client has no overall Timeout; long-poll, SSE, and websocket
-// upgrade endpoints rely on caller-supplied context for cancellation.
-// Per-request deadlines should be set via ctx.
+// NewClient connects to a local clankd via Unix socket. Use NewTCPClient for remote.
+// No overall Timeout — long-poll/SSE rely on caller ctx.
 func NewClient(sockPath string) *Client {
 	return &Client{
 		sockPath: sockPath,
@@ -112,8 +87,7 @@ func NewClient(sockPath string) *Client {
 // every request and must match the remote hub's
 // preferences.remote_hub.auth_token.
 func NewTCPClient(baseURL, authToken string) *Client {
-	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults; bare
-	// &http.Transport{} would drop them silently.
+	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults.
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = hubResponseHeaderTimeout
 	return &Client{
@@ -123,65 +97,44 @@ func NewTCPClient(baseURL, authToken string) *Client {
 	}
 }
 
-// Override holds CLI-flag-level transport overrides. CLI commands
-// (e.g. `clank --hub-url ...`) populate this via SetOverride before
-// they construct any client; NewDefaultClient and IsRemoteActive
-// consult it ahead of preferences.json.
-//
-// Package-level state is the simplest way to thread CLI flags into
-// the many places clients are constructed without adding a context
-// arg to every call site. Tests reset it with t.Cleanup(ResetOverride).
+// Process-wide CLI-flag override populated by SetOverride before any
+// client is constructed; takes priority over preferences.json.
 var (
 	overrideURL   string
 	overrideToken string
 )
 
-// SetOverride sets the CLI-flag-level hub transport override. Empty
-// url is a no-op (i.e. no override; preferences.json wins again).
-// Call from cobra PersistentPreRun or equivalent before any client
-// is constructed.
+// SetOverride sets the CLI-flag-level hub transport override.
+// Empty url restores preferences.json as the source of truth.
 func SetOverride(url, token string) {
 	overrideURL = url
 	overrideToken = token
 }
 
-// ResetOverride clears any active override. Tests use this with
-// t.Cleanup; production code rarely needs it.
+// ResetOverride clears any active override.
 func ResetOverride() {
 	overrideURL = ""
 	overrideToken = ""
 }
 
 // OverrideURL returns the CLI-flag override URL, or "" if none.
-// Lets callers (e.g. the TUI's settings page) detect whether the
-// active hub was forced from the command line and label/disable
-// affordances that don't apply mid-process.
 func OverrideURL() string {
 	return strings.TrimSpace(overrideURL)
 }
 
 // NewDefaultClient creates a client using, in priority order:
-//  1. CLI-flag overrides (SetOverride) — wins over everything.
+//  1. CLI-flag overrides (SetOverride).
 //  2. preferences.ActiveHub == "remote" with a configured remote_hub URL.
 //  3. The local Unix socket.
 //
-// Use this for user-facing commands (TUI, send, subscribe). For
-// daemon-control commands (start/stop/status of the local daemon),
-// use NewLocalClient instead — those should always target the local
-// socket regardless of which hub the user is "viewing."
+// Use NewLocalClient for daemon-control commands instead.
 func NewDefaultClient() (*Client, error) {
 	if strings.TrimSpace(overrideURL) != "" {
 		return NewTCPClient(overrideURL, overrideToken), nil
 	}
 	prefs, err := config.LoadPreferences()
 	if err != nil {
-		// Don't silently reinterpret a corrupt preferences file as
-		// "use local hub". The user clearly intended *some* config —
-		// returning an error here surfaces parse failures or read
-		// errors instead of routing commands to the wrong daemon.
-		// (LoadPreferences treats a missing file as a non-error
-		// already, so this only fires when the file exists but is
-		// broken.)
+		// A corrupt prefs file must surface, not silently fall back to local.
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
 	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
@@ -194,11 +147,8 @@ func NewDefaultClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
-// NewLocalClient always returns a Unix-socket client for the local
-// clankd, ignoring ActiveHub. Used by daemon-control commands —
-// `clankd start/stop/status` operate on this machine's daemon by
-// definition, even when the user has set ActiveHub=remote so their
-// TUI talks to a different hub.
+// NewLocalClient returns a Unix-socket client for the local clankd,
+// ignoring ActiveHub. Use for daemon-control (start/stop/status).
 func NewLocalClient() (*Client, error) {
 	sockPath, err := SocketPath()
 	if err != nil {
@@ -207,15 +157,8 @@ func NewLocalClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
-// IsRemoteActive reports whether NewDefaultClient would return a TCP
-// client targeting a remote hub (either via CLI override or via
-// preferences). Lets callers (e.g. the TUI bootstrap) skip
-// local-daemon-management logic that isn't applicable in remote mode.
-//
-// Returning bool means we can't bubble a prefs-load error like
-// NewDefaultClient does — instead we log loudly and degrade to false.
-// Callers that care about the distinction should use NewDefaultClient
-// directly, which surfaces the error.
+// IsRemoteActive reports whether NewDefaultClient would target a
+// remote hub. Logs and degrades to false on prefs load failure.
 func IsRemoteActive() bool {
 	if strings.TrimSpace(overrideURL) != "" {
 		return true
@@ -228,13 +171,9 @@ func IsRemoteActive() bool {
 	return prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != ""
 }
 
-// ActiveHubLabel returns a short human-readable description of which
-// hub NewDefaultClient would target right now. Used by the TUI/CLI to
-// surface the active hub in headers and error messages.
-//
-// Same degraded-and-log policy as IsRemoteActive: a string return
-// can't carry an error, so we log loudly and tag the label as broken
-// instead of silently saying "local".
+// ActiveHubLabel returns a short human-readable description of the
+// hub NewDefaultClient would target. Logs and labels as broken on
+// prefs load failure.
 func ActiveHubLabel() string {
 	if u := strings.TrimSpace(overrideURL); u != "" {
 		return "override (" + u + ")"

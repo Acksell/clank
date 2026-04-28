@@ -1,24 +1,11 @@
-// Package daytona implements a HostLauncher backed by Daytona-managed
-// cloud sandboxes. The cloud hub uses it to provision a fresh
-// clank-host inside a sandbox when a session request asks for
-// LaunchHost{Provider:"daytona"}.
-//
-// The sandbox runs the published clank-host image (see
-// cmd/clank-host/Dockerfile) listening on a fixed port; Daytona's
-// preview proxy exposes that port at a per-sandbox URL guarded by
-// `x-daytona-preview-token`. The launcher constructs an HTTP host
-// client whose RoundTripper injects that token on every outbound
-// request.
 package daytona
 
 import (
 	"net/http"
 )
 
-// previewTokenInjector wraps an http.RoundTripper to add the
-// `x-daytona-preview-token` header on every outbound request — that's
-// how Daytona's preview proxy authorizes inbound traffic to the
-// sandbox.
+// previewTokenInjector adds Daytona's `x-daytona-preview-token`
+// header to every outbound request before delegating to wrapped.
 type previewTokenInjector struct {
 	wrapped http.RoundTripper
 	token   string
@@ -26,7 +13,7 @@ type previewTokenInjector struct {
 
 // RoundTrip implements http.RoundTripper.
 func (p *previewTokenInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	// Clone the request before mutating headers — RoundTrip must not modify its input.
+	// RoundTrip must not modify its input — clone before setting headers.
 	r2 := r.Clone(r.Context())
 	r2.Header = r.Header.Clone()
 	r2.Header.Set("x-daytona-preview-token", p.token)
@@ -37,7 +24,7 @@ func (p *previewTokenInjector) RoundTrip(r *http.Request) (*http.Response, error
 	return rt.RoundTrip(r2)
 }
 
-// CloseIdleConnections delegates so hostclient.HTTP.Close can drain the wrapped transport's pool.
+// CloseIdleConnections delegates so wrapping us doesn't hide the pool.
 func (p *previewTokenInjector) CloseIdleConnections() {
 	type idler interface{ CloseIdleConnections() }
 	rt := p.wrapped

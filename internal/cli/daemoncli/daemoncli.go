@@ -147,24 +147,13 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			defer stopAgent()
 		}
 
-		// Register the in-process LocalLauncher under "local-stub". Cheap
-		// to wire up unconditionally — only consulted when a session
-		// request specifies launch_host.provider="local-stub". The
-		// Daytona launcher (Step 7) registers under "daytona" alongside.
-		//
-		// In TCP/cloud-hub mode we configure the launcher with the
-		// hub's own public URL + bearer token so the spawned clank-host
-		// (which simulates a Daytona sandbox) clones from the cloud
-		// mirror, exactly like a real sandbox would.
+		// In TCP/cloud-hub mode the local-stub launcher clones from the
+		// hub's own mirror so spawned hosts behave like a real sandbox.
 		launcherOpts := locallauncher.Options{}
 		if opts.Listen != "" && opts.PublicBaseURL != "" {
 			launcherOpts.GitSyncSource = opts.PublicBaseURL
 			prefs, perr := config.LoadPreferences()
 			if perr != nil {
-				// Surface the failure: a missing token here means the
-				// spawned clank-host can't authenticate against the
-				// cloud-hub mirror, so silently swallowing this would
-				// just turn into a confusing 401 at first session use.
 				log.Printf("local launcher: preferences load failed (%v) — GitSyncToken will be empty", perr)
 			} else if prefs.RemoteHub != nil {
 				launcherOpts.GitSyncToken = prefs.RemoteHub.AuthToken
@@ -173,18 +162,11 @@ func RunStart(foreground bool, opts ServerOptions) error {
 		localLauncher := locallauncher.New(launcherOpts, nil)
 		d.SetHostLauncher("local-stub", localLauncher)
 		defer localLauncher.Stop()
-		// Track which launchers actually got registered so we can
-		// validate `default_launch_host_provider` against reality
-		// before applying it. Without this guard, a typo or a Daytona
-		// misconfiguration silently sets a default that the next
-		// session-create then fails on with "no host launcher
-		// registered for provider X".
+		// Validate default_launch_host_provider against actually-registered launchers.
 		registeredLaunchers := map[string]bool{"local-stub": true}
 
-		// Daytona launcher: only active in cloud-hub mode (TCP) and only
-		// when preferences.daytona.api_key is configured. Misconfiguration
-		// is logged but non-fatal — the hub still serves sync, just can't
-		// provision sandboxes.
+		// Daytona launcher: TCP mode only, preferences.daytona.api_key required.
+		// Misconfiguration is logged but non-fatal.
 		if opts.Listen != "" {
 			if dl, err := buildDaytonaLauncher(opts); err != nil {
 				log.Printf("daytona launcher: not registered: %v", err)
@@ -195,12 +177,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			}
 		}
 
-		// Apply the service-level default launch host, if configured AND
-		// the named launcher is actually registered. A configured
-		// default for a launcher that failed to register is treated as
-		// "ignored" (logged) rather than fatal, so the hub still boots
-		// and the operator sees the issue instead of getting a
-		// per-session error.
+		// Apply the configured default launch host only if its launcher is registered.
 		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
 			if registeredLaunchers[prefs.DefaultLaunchHostProvider] {
 				d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})

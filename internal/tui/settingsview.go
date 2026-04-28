@@ -71,16 +71,9 @@ type settingsView struct {
 	focused bool
 }
 
-// newSettingsView builds a settings page with the current preference
-// values baked in so they render in the "value" column.
-//
-// `overrideURL` (typically `hubclient.OverrideURL()`) is non-empty
-// when the user launched the process with --hub-url. In that case the
-// override pins the connection for the entire process, so we render
-// the active-hub row as "overridden (URL)" with a different
-// description ("restart without --hub-url to use prefs"). The toggle
-// is wired to no-op in that mode so users don't get the impression
-// that pressing Enter switches the live connection.
+// newSettingsView builds the settings page with current preference
+// values baked in. A non-empty overrideURL renders the active-hub row
+// as "overridden (URL)" and disables its toggle.
 func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, remoteHubURL, overrideURL string) settingsView {
 	hubLabel := "Active hub"
 	hubDesc := "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect."
@@ -183,23 +176,15 @@ func resolveColorSchemeName(name string) string {
 	return name
 }
 
-// resolveDefaultBackendName returns the backend name to display, falling
-// back to the package-level default when no preference is set or the
-// stored value is unknown. Unknown values are treated as "default" so
-// the settings UI never displays a string that the runtime would reject.
+// resolveDefaultBackendName returns the backend name to display.
+// Unknown values fall back to agent.DefaultBackend.
 func resolveDefaultBackendName(name string) string {
 	bt, _ := agent.ResolveBackendPreference(name)
 	return string(bt)
 }
 
-// resolveActiveHubName renders the active-hub field for the settings
-// page. Empty/"local" prints just "local"; "remote" appends the URL
-// so the user can see at a glance which hub they're pointed at.
-//
-// When the user picks "remote" but the remote hub URL is empty, we
-// label it as "remote (not configured)" — the toggle is still useful
-// because it surfaces the misconfiguration rather than silently
-// staying on local.
+// resolveActiveHubName renders the active-hub field. "remote" with no
+// URL configured renders as "remote (not configured)".
 func resolveActiveHubName(activeHub, remoteHubURL string) string {
 	switch activeHub {
 	case "remote":

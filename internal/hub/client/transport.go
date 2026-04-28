@@ -76,26 +76,9 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	return nil
 }
 
-// openSSE opens an SSE GET to path on a no-timeout client and returns
-// the response. Caller is responsible for closing resp.Body.
-//
-// We allocate a fresh *http.Client (and *http.Transport) per call rather
-// than reusing c.httpClient because the latter has request timeouts
-// that would prematurely close long-lived event streams. The cost is
-// one transport per subscription; in practice the TUI subscribes once
-// per process, so this is not a hot path. If callers ever start
-// subscribing repeatedly, hoist a single SSE-tuned client onto Client
-// (idle conns disabled, no Timeout) instead of caching this one.
-//
-// Transport selection mirrors the regular request path: when sockPath
-// is set, dial the Unix socket; otherwise fall back to the package
-// default (TCP). Bearer auth is added when present.
-//
-// We Clone() http.DefaultTransport rather than zero-initialise — a
-// bare &http.Transport{} drops ProxyFromEnvironment, IdleConnTimeout,
-// TLSHandshakeTimeout, ExpectContinueTimeout, and MaxIdleConns, which
-// would silently break corp-proxy users and leak idle connections on
-// long-running remote SSE subscriptions.
+// openSSE opens an SSE GET on a no-timeout client. Caller closes resp.Body.
+// Fresh transport per call so c.httpClient's request timeouts can't kill
+// long-lived event streams. Cloning DefaultTransport keeps Proxy/Idle/TLS defaults.
 func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if c.sockPath != "" {
