@@ -247,6 +247,29 @@ func (s *Service) SetSessionPermissionMode(ctx context.Context, id string, mode 
 	return nil
 }
 
+// SetSessionModel dispatches the new model to the backend and persists it
+// on the session info. Empty modelID asks the backend to revert to its
+// CLI default.
+func (s *Service) SetSessionModel(ctx context.Context, id, modelID string) error {
+	s.mu.RLock()
+	ms, ok := s.sessions[id]
+	s.mu.RUnlock()
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if ms.backend == nil {
+		return ErrNoActiveBackend
+	}
+	if err := ms.backend.SetModel(ctx, modelID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	ms.info.Model = modelID
+	s.persistSession(ms)
+	s.mu.Unlock()
+	return nil
+}
+
 // RevertSession reverts the session to before the given message ID.
 func (s *Service) RevertSession(ctx context.Context, id, messageID string) error {
 	if messageID == "" {

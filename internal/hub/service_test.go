@@ -130,6 +130,10 @@ func (m *mockBackend) SetPermissionMode(_ context.Context, _ agent.PermissionMod
 	return nil
 }
 
+func (m *mockBackend) SetModel(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockBackend) Stop() error {
 	m.mu.Lock()
 	already := m.stopped

@@ -425,6 +425,11 @@ func (s *Service) createSession(req agent.StartRequest) (*agent.SessionInfo, err
 	if sessInfo.Backend == agent.BackendClaudeCode && sessInfo.PermissionMode == "" {
 		sessInfo.PermissionMode = agent.PermissionModeAcceptEdits
 	}
+	// Seed the model from the wire override so reopened sessions and
+	// snapshots reflect the initial choice without an extra round-trip.
+	if sessInfo.Backend == agent.BackendClaudeCode && req.Model != nil {
+		sessInfo.Model = req.Model.ModelID
+	}
 
 	ms := &managedSession{
 		info:    sessInfo,

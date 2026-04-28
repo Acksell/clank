@@ -179,7 +179,27 @@ func NewClaudeBackendManager() *ClaudeBackendManager {
 // without needing Start to fire (activateBackend in the hub only calls Watch,
 // which is a no-op for Claude — there is no long-lived process to attach to).
 func (m *ClaudeBackendManager) CreateBackend(ctx context.Context, inv agent.BackendInvocation) (agent.SessionBackend, error) {
-	return agent.NewClaudeCodeBackendForSessionWithMode(inv.WorkDir, inv.ResumeExternalID, inv.PermissionMode), nil
+	return agent.NewClaudeCodeBackendForSessionWithModeAndModel(inv.WorkDir, inv.ResumeExternalID, inv.PermissionMode, inv.ModelID), nil
+}
+
+// ListModels returns the hardcoded Claude model catalog. The Claude CLI
+// has no remote catalog endpoint, so the list is shipped statically. The
+// projectDir argument is ignored — Anthropic's models are global, not
+// project-scoped.
+func (m *ClaudeBackendManager) ListModels(ctx context.Context, projectDir string) ([]agent.ModelInfo, error) {
+	return agent.DefaultClaudeModels, nil
+}
+
+// claudeModelIDFromOverride extracts the Claude model ID from a wire
+// ModelOverride, returning empty for non-Claude backends or when no
+// override is supplied. Centralised so service.CreateSession can wire
+// it into BackendInvocation without leaking the per-message override
+// shape into the host's backend invocation type.
+func claudeModelIDFromOverride(bt agent.BackendType, m *agent.ModelOverride) string {
+	if bt != agent.BackendClaudeCode || m == nil {
+		return ""
+	}
+	return m.ModelID
 }
 
 // Init is a no-op for Claude — there are no long-lived servers to manage.

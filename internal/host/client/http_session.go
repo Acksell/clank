@@ -139,6 +139,17 @@ func (b *httpSessionBackend) SetPermissionMode(ctx context.Context, mode agent.P
 	return b.c.do(ctx, http.MethodPost, p, body, nil)
 }
 
+func (b *httpSessionBackend) SetModel(ctx context.Context, modelID string) error {
+	body := struct {
+		ModelID string `json:"model_id"`
+	}{modelID}
+	p, err := b.path("/model")
+	if err != nil {
+		return err
+	}
+	return b.c.do(ctx, http.MethodPost, p, body, nil)
+}
+
 // Stop releases the session on the host. Maps to POST /sessions/{id}/stop.
 func (b *httpSessionBackend) Stop() error {
 	// Use a background context — Stop is invoked during shutdown when the

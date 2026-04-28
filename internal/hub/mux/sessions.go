@@ -120,6 +120,21 @@ func (m *Mux) handleSetSessionPermissionMode(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (m *Mux) handleSetSessionModel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON")
+		return
+	}
+	if err := m.svc.SetSessionModel(r.Context(), r.PathValue("id"), body.ModelID); err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		MessageID string `json:"message_id"`

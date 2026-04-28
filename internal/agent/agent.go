@@ -402,6 +402,7 @@ type SessionInfo struct {
 	TicketID        string            `json:"ticket_id,omitempty"`
 	Agent           string            `json:"agent,omitempty"`             // Current OpenCode agent (e.g. "build", "plan")
 	PermissionMode  PermissionMode    `json:"permission_mode,omitempty"`   // Current Claude permission mode; empty for backends that don't support it.
+	Model           string            `json:"model,omitempty"`             // Current Claude model ID; empty for backends that don't track a session-scoped model.
 	Draft           string            `json:"draft,omitempty"`             // Unsent follow-up text the user was composing
 	RevertMessageID string            `json:"revert_message_id,omitempty"` // When set, messages from this ID onward are reverted (hidden)
 	ServerURL       string            `json:"server_url,omitempty"`        // Runtime-only: backend server URL (e.g. OpenCode serve endpoint). Not persisted.
@@ -591,6 +592,12 @@ type SessionBackend interface {
 	// ErrPermissionModeUnsupported so callers can branch on it without a
 	// type assertion.
 	SetPermissionMode(ctx context.Context, mode PermissionMode) error
+
+	// SetModel changes the active LLM model for an Open session.
+	// Backends without runtime model switching (e.g. OpenCode, which
+	// uses per-message overrides on Send) return ErrModelChangeUnsupported
+	// so callers can branch on it without a type assertion.
+	SetModel(ctx context.Context, modelID string) error
 }
 
 // BackendInvocation is the host-resolved, backend-only view of a session
@@ -612,6 +619,12 @@ type BackendInvocation struct {
 	// means "use the backend default" (acceptEdits). Ignored by
 	// non-Claude backends.
 	PermissionMode PermissionMode
+
+	// ModelID seeds the initial LLM model for backends that support a
+	// session-scoped model (Claude). Empty means "use the backend
+	// default". Ignored by non-Claude backends, which apply model
+	// selection per-message via SendMessageOpts.Model.
+	ModelID string
 }
 
 // BackendManager creates and manages SessionBackend instances for a specific

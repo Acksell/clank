@@ -95,6 +95,19 @@ func (s *SessionClient) SetPermissionMode(ctx context.Context, mode agent.Permis
 	return s.c.post(ctx, p, body, nil)
 }
 
+// SetModel updates the Claude model for this session. Empty modelID
+// asks the backend to revert to its CLI default.
+func (s *SessionClient) SetModel(ctx context.Context, modelID string) error {
+	p, err := s.path("/model")
+	if err != nil {
+		return err
+	}
+	body := struct {
+		ModelID string `json:"model_id"`
+	}{ModelID: modelID}
+	return s.c.post(ctx, p, body, nil)
+}
+
 // Revert reverts the session to messageID, removing all subsequent messages.
 func (s *SessionClient) Revert(ctx context.Context, messageID string) error {
 	p, err := s.path("/revert")

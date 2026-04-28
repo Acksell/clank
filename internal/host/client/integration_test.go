@@ -33,6 +33,7 @@ type stubBackend struct {
 	aborted        bool
 	stopped        bool
 	permissionMode agent.PermissionMode
+	modelID        string
 }
 
 func newStubBackend(id string) *stubBackend {
@@ -62,6 +63,10 @@ func (b *stubBackend) Send(_ context.Context, o agent.SendMessageOpts) error {
 func (b *stubBackend) Abort(_ context.Context) error { b.aborted = true; return nil }
 func (b *stubBackend) SetPermissionMode(_ context.Context, m agent.PermissionMode) error {
 	b.permissionMode = m
+	return nil
+}
+func (b *stubBackend) SetModel(_ context.Context, m string) error {
+	b.modelID = m
 	return nil
 }
 func (b *stubBackend) Stop() error                                             { b.stopped = true; close(b.events); return nil }

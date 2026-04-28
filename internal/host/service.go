@@ -336,6 +336,7 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 		WorkDir:          workDir,
 		ResumeExternalID: req.SessionID,
 		PermissionMode:   req.PermissionMode,
+		ModelID:          claudeModelIDFromOverride(req.Backend, req.Model),
 	})
 	if err != nil {
 		return nil, "", err

@@ -588,7 +588,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showModelPicker = false
 			m.selectedModel = msg.selectedModel
 			go m.persistModelPreference()
-			return m, m.input.Focus()
+			cmds := []tea.Cmd{m.input.Focus()}
+			if c := m.applyClaudeModelSelection(); c != nil {
+				cmds = append(cmds, c)
+			}
+			return m, tea.Batch(cmds...)
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
@@ -777,6 +781,15 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the still-active server-side mode.
 			if m.info != nil {
 				m.info.PermissionMode = msg.previous
+			}
+			m.err = msg.err
+		}
+		return m, nil
+
+	case modelResultMsg:
+		if msg.err != nil {
+			if m.info != nil {
+				m.info.Model = msg.previous
 			}
 			m.err = msg.err
 		}
@@ -1006,10 +1019,9 @@ func (m *SessionViewModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
-			if m.backend == agent.BackendClaudeCode {
-				return m, m.cyclePermissionMode()
-			}
-			// Open model picker modal.
+			// Open model picker modal (Claude reuses the same picker;
+			// its hardcoded model list comes from the host's
+			// ListModels response).
 			if len(m.models) > 0 {
 				m.showModelPicker = true
 				m.modelPicker = newModelPicker(m.models, m.selectedModel, m.backend)

@@ -207,6 +207,12 @@ func (b *OpenCodeBackend) SetPermissionMode(ctx context.Context, mode Permission
 	return ErrPermissionModeUnsupported
 }
 
+// SetModel is not supported by OpenCode; model selection is per-message
+// via SendMessageOpts.Model rather than a session-scoped runtime knob.
+func (b *OpenCodeBackend) SetModel(ctx context.Context, modelID string) error {
+	return ErrModelChangeUnsupported
+}
+
 func (b *OpenCodeBackend) Revert(ctx context.Context, messageID string) error {
 	if b.sessionID == "" {
 		return fmt.Errorf("session not started")
