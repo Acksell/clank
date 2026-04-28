@@ -54,9 +54,8 @@ type Options struct {
 	HubAuthToken string
 
 	// ExtraEnv is forwarded into the sandbox unchanged. Use this for
-	// agent credentials (ANTHROPIC_API_KEY, AWS_*, etc.) and
-	// dev-mode signals (SANDBOX_ENVIRONMENT, TAILSCALE_AUTHKEY).
-	// Keys with empty values are dropped.
+	// agent credentials (ANTHROPIC_API_KEY, AWS_*, OPENCODE_API_KEY,
+	// etc.). Keys with empty values are dropped.
 	ExtraEnv map[string]string
 
 	// APIUrl overrides the default Daytona control-plane endpoint —
@@ -75,9 +74,8 @@ type Options struct {
 
 	// Resources optionally pins CPU/memory/disk for the sandbox.
 	// nil = Daytona defaults (1 CPU, 1 GiB RAM, 3 GiB disk). Our
-	// image is debian + bun + opencode + claude-code + tailscale,
-	// which fits but doesn't have much headroom; bump if your
-	// sessions OOM.
+	// image is debian + bun + opencode + claude-code, which fits
+	// but doesn't have much headroom; bump if your sessions OOM.
 	Resources *types.Resources
 
 	// SDKClient overrides the daytona.Client constructor. Tests
@@ -152,9 +150,9 @@ func New(opts Options, lg *log.Logger) (*Launcher, error) {
 //  3. Build a *hostclient.HTTP whose RoundTripper injects that token.
 //  4. waitForHostReady — probe clank-host's /status until 2xx.
 //     Daytona reports "started" when the container is up, but the
-//     entrypoint still has to launch tailscaled (in dev) and
-//     clank-host. Without this probe the hub's first call returns
-//     a confusing 502 from the preview proxy.
+//     entrypoint still has to launch clank-host inside it. Without
+//     this probe the hub's first call returns a 502 from the
+//     preview proxy.
 func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hostname, *hostclient.HTTP, error) {
 	ctx, cancel := context.WithTimeout(ctx, l.opts.ProvisionTimeout)
 	defer cancel()

@@ -38,7 +38,6 @@ FROM debian:bookworm-slim
 # ca-certificates: needed for HTTPS clones.
 # curl, unzip:     needed by the bun installer.
 # libstdc++6:      runtime dep of bun-built binaries (opencode, claude-code).
-# iptables:        runtime dep of tailscaled (userspace mode still needs it).
 # nodejs:          opencode and @anthropic-ai/claude-code ship CLIs with a
 #                  `#!/usr/bin/env node` shebang, so a node interpreter must
 #                  be on PATH even though we install the packages via bun.
@@ -48,16 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         unzip \
         libstdc++6 \
-        iptables \
         nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Pre-install Tailscale into the image so dev sandboxes can reach the
-# user's laptop over the tailnet without paying install cost on every
-# cold start. The entrypoint only starts tailscaled when
-# SANDBOX_ENVIRONMENT=development AND TAILSCALE_AUTHKEY is set, so a
-# production sandbox image never touches the tailnet.
-RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 # Install bun system-wide, then use it to install both agent CLIs.
 # bun global bins land in /root/.bun/bin — symlink them to /usr/local/bin
