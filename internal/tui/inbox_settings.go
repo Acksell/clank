@@ -9,19 +9,26 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	hubclient "github.com/acksell/clank/internal/hub/client"
 )
 
 // showSettings renders the Settings page in the right pane without
 // shifting focus away from the sidebar. Used for "hover preview" when
 // the sidebar cursor lands on the ⚙ Settings footer row, so the right
 // pane reflects the cursor position the same way it does for branches.
+//
+// We pass `hubclient.OverrideURL()` through so the active-hub row can
+// display the *effective* hub for the running process, not just what
+// preferences.json says — when the user launched with --hub-url, the
+// override wins for the entire process and toggling prefs from this
+// view wouldn't switch the live connection.
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
 	remoteURL := ""
 	if prefs.RemoteHub != nil {
 		remoteURL = prefs.RemoteHub.URL
 	}
-	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL)
+	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL, hubclient.OverrideURL())
 	m.settings.SetSize(m.sessionPaneWidth(), m.height)
 	m.screen = screenSettings
 }
@@ -88,6 +95,16 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			persistDefaultBackend(next)
 			return m, nil
 		case settingsEntryActiveHub:
+			// When --hub-url is in effect for this process, the
+			// override wins regardless of what we persist. Toggling
+			// the pref here would just confuse the user — the
+			// connection wouldn't change and a restart with the
+			// override flag still set would re-pin to the override.
+			// No-op the toggle in that case; the row already labels
+			// itself "overridden (URL)" so the user sees why.
+			if hubclient.OverrideURL() != "" {
+				return m, nil
+			}
 			// Toggle local <-> remote. We don't reconnect the running
 			// TUI's hub client here — swapping transports mid-flight
 			// would orphan the in-flight SSE stream and the cached

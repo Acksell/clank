@@ -73,7 +73,22 @@ type settingsView struct {
 
 // newSettingsView builds a settings page with the current preference
 // values baked in so they render in the "value" column.
-func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, remoteHubURL string) settingsView {
+//
+// `overrideURL` (typically `hubclient.OverrideURL()`) is non-empty
+// when the user launched the process with --hub-url. In that case the
+// override pins the connection for the entire process, so we render
+// the active-hub row as "overridden (URL)" with a different
+// description ("restart without --hub-url to use prefs"). The toggle
+// is wired to no-op in that mode so users don't get the impression
+// that pressing Enter switches the live connection.
+func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub, remoteHubURL, overrideURL string) settingsView {
+	hubLabel := "Active hub"
+	hubDesc := "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect."
+	hubValue := resolveActiveHubName(currentActiveHub, remoteHubURL)
+	if strings.TrimSpace(overrideURL) != "" {
+		hubDesc = "Pinned by --hub-url for this process; toggle disabled. Restart without the flag to switch via preferences."
+		hubValue = "overridden (" + overrideURL + ")"
+	}
 	return settingsView{
 		entries: []settingsEntry{
 			{
@@ -90,9 +105,9 @@ func newSettingsView(currentColorScheme, currentDefaultBackend, currentActiveHub
 			},
 			{
 				kind:        settingsEntryActiveHub,
-				label:       "Active hub",
-				description: "Which clankd this TUI/CLI talks to. Press enter to toggle. Restart the TUI for changes to take effect.",
-				value:       resolveActiveHubName(currentActiveHub, remoteHubURL),
+				label:       hubLabel,
+				description: hubDesc,
+				value:       hubValue,
 			},
 		},
 	}

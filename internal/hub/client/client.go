@@ -152,6 +152,14 @@ func ResetOverride() {
 	overrideToken = ""
 }
 
+// OverrideURL returns the CLI-flag override URL, or "" if none.
+// Lets callers (e.g. the TUI's settings page) detect whether the
+// active hub was forced from the command line and label/disable
+// affordances that don't apply mid-process.
+func OverrideURL() string {
+	return strings.TrimSpace(overrideURL)
+}
+
 // NewDefaultClient creates a client using, in priority order:
 //  1. CLI-flag overrides (SetOverride) — wins over everything.
 //  2. preferences.ActiveHub == "remote" with a configured remote_hub URL.
