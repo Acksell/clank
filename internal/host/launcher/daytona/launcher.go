@@ -163,11 +163,11 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 
 	preview, err := sandbox.GetPreviewLink(ctx, HostPort)
 	if err != nil {
-		_ = l.deleteBackground(sandbox)
+		l.untrackAndDelete(sandbox)
 		return "", nil, fmt.Errorf("get preview link: %w", err)
 	}
 	if preview.URL == "" || preview.Token == "" {
-		_ = l.deleteBackground(sandbox)
+		l.untrackAndDelete(sandbox)
 		return "", nil, fmt.Errorf("preview link response missing url or token: %+v", preview)
 	}
 
@@ -179,7 +179,8 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		if logs := l.fetchEntrypointLogs(sandbox); logs != "" {
 			err = fmt.Errorf("%w\n--- sandbox entrypoint logs ---\n%s\n--- end logs ---", err, logs)
 		}
-		_ = l.deleteBackground(sandbox)
+		_ = client.Close()
+		l.untrackAndDelete(sandbox)
 		return "", nil, fmt.Errorf("wait for clank-host: %w", err)
 	}
 
@@ -266,6 +267,26 @@ func (l *Launcher) deleteBackground(s *daytona.Sandbox) error {
 		return err
 	}
 	return nil
+}
+
+// untrack removes s from l.created. No-op if s isn't tracked.
+func (l *Launcher) untrack(s *daytona.Sandbox) {
+	l.createdMu.Lock()
+	defer l.createdMu.Unlock()
+	for i, c := range l.created {
+		if c == s {
+			l.created = append(l.created[:i], l.created[i+1:]...)
+			return
+		}
+	}
+}
+
+// untrackAndDelete removes s from l.created and deletes it remotely.
+// Use on Launch failure paths so failed sandboxes don't pile up in
+// the cleanup list (Stop would otherwise issue duplicate deletes).
+func (l *Launcher) untrackAndDelete(s *daytona.Sandbox) {
+	l.untrack(s)
+	_ = l.deleteBackground(s)
 }
 
 // safeHostnameSuffix returns the trailing UUID segment, capped at 12 chars.

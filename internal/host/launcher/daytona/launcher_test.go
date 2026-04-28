@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daytonaio/daytona/libs/sdk-go/pkg/daytona"
+
 	"github.com/acksell/clank/internal/agent"
 	hostclient "github.com/acksell/clank/internal/host/client"
 )
@@ -56,13 +58,12 @@ func TestSafeHostnameSuffix(t *testing.T) {
 }
 
 // TestPreviewTokenInjector verifies the RoundTripper attaches the
-// `x-daytona-preview-token` header on every outbound request — that
-// header is what the Daytona preview proxy uses to authenticate the
-// hub-to-sandbox calls.
+// `x-daytona-preview-token` header on every outbound request.
 func TestPreviewTokenInjector(t *testing.T) {
-	var got string
+	t.Parallel()
+	gotCh := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("x-daytona-preview-token")
+		gotCh <- r.Header.Get("x-daytona-preview-token")
 		w.WriteHeader(204)
 	}))
 	t.Cleanup(srv.Close)
@@ -73,7 +74,7 @@ func TestPreviewTokenInjector(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	resp.Body.Close()
-	if got != "tkn" {
+	if got := <-gotCh; got != "tkn" {
 		t.Errorf("preview token header: got %q, want %q", got, "tkn")
 	}
 }
@@ -114,6 +115,33 @@ func TestWaitForHostReady_RetriesUntilStatusOK(t *testing.T) {
 	}
 	if hits.Load() < 3 {
 		t.Errorf("expected at least 3 attempts before ready, got %d", hits.Load())
+	}
+}
+
+// TestLauncher_Untrack pins the failure-path cleanup invariant:
+// removing a sandbox from l.created prevents Stop from re-deleting
+// it and bounds memory growth across repeated failed launches.
+func TestLauncher_Untrack(t *testing.T) {
+	t.Parallel()
+	s1 := &daytona.Sandbox{ID: "1"}
+	s2 := &daytona.Sandbox{ID: "2"}
+	s3 := &daytona.Sandbox{ID: "3"}
+	l := &Launcher{created: []*daytona.Sandbox{s1, s2, s3}}
+
+	l.untrack(s2)
+	if len(l.created) != 2 || l.created[0] != s1 || l.created[1] != s3 {
+		t.Fatalf("untrack(middle): got %v", l.created)
+	}
+
+	l.untrack(&daytona.Sandbox{ID: "not-tracked"})
+	if len(l.created) != 2 {
+		t.Fatalf("untrack(non-tracked) should be no-op, got %v", l.created)
+	}
+
+	l.untrack(s1)
+	l.untrack(s3)
+	if len(l.created) != 0 {
+		t.Fatalf("untrack should empty the slice, got %v", l.created)
 	}
 }
 
