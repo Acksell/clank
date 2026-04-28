@@ -56,6 +56,7 @@ type Agent struct {
 	// startedMu guards started so Stop knows whether to wait on doneCh.
 	startedMu sync.Mutex
 	started   bool
+	cancel    context.CancelFunc // cancels in-flight git subprocesses on Stop
 	stopOnce  sync.Once
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -100,6 +101,7 @@ func (a *Agent) Start(ctx context.Context) {
 		return
 	}
 	a.started = true
+	ctx, a.cancel = context.WithCancel(ctx)
 	go a.run(ctx)
 }
 
@@ -111,7 +113,10 @@ func (a *Agent) Stop() {
 		a.startedMu.Unlock()
 		return
 	}
+	cancel := a.cancel
 	a.startedMu.Unlock()
+	// Cancel first so in-flight git subprocesses exit promptly.
+	cancel()
 	a.stopOnce.Do(func() { close(a.stopCh) })
 	<-a.doneCh
 }
@@ -228,7 +233,9 @@ func (a *Agent) pushBranch(ctx context.Context, repoPath, repoKey, remoteURL, br
 // reachable from base — an incremental push. Empty base = full bundle
 // of everything reachable from the branch.
 func makeBranchBundle(ctx context.Context, repoPath, branch, base string) ([]byte, error) {
-	args := []string{"-C", repoPath, "bundle", "create", "-", branch}
+	// Fully-qualify branch so a same-named tag can't shadow it. base is
+	// a previously-pushed SHA (not a ref name) so it stays as-is.
+	args := []string{"-C", repoPath, "bundle", "create", "-", "refs/heads/" + branch}
 	if base != "" {
 		args = append(args, "^"+base)
 	}
@@ -272,7 +279,8 @@ func localBranches(ctx context.Context, repoPath string) ([]string, error) {
 }
 
 func branchTip(ctx context.Context, repoPath, branch string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", branch).Output()
+	// Fully-qualify so a same-named tag can't shadow the branch.
+	out, err := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "refs/heads/"+branch).Output()
 	if err != nil {
 		return "", fmt.Errorf("rev-parse %s: %w", branch, err)
 	}
