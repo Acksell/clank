@@ -28,6 +28,7 @@ type Entry struct {
 	Timestamp time.Time         `json:"timestamp"`
 	Text      string            `json:"text,omitempty"` // transcript chunk
 	Done      bool              `json:"done,omitempty"` // transcript: end-of-utterance marker
+	Role      agent.VoiceRole   `json:"role,omitempty"` // transcript speaker (user/assistant)
 	ToolName  string            `json:"tool_name,omitempty"`
 	ToolArgs  string            `json:"tool_args,omitempty"`
 	Status    agent.VoiceStatus `json:"status,omitempty"`

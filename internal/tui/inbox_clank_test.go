@@ -10,8 +10,10 @@ import (
 )
 
 // TestInbox_DefaultScreenIsClank verifies the user's chosen landing
-// behaviour: opening the inbox drops them on the Clank page, with the
-// sidebar focused and its cursor parked on the Clank header row.
+// behaviour: opening the inbox drops them on the Clank page with the
+// right pane focused (so the timeline border is visible and arrows
+// scroll history immediately). The sidebar cursor still parks on the
+// Clank header row so left-arrow returns to a sensible position.
 func TestInbox_DefaultScreenIsClank(t *testing.T) {
 	t.Parallel()
 
@@ -19,8 +21,11 @@ func TestInbox_DefaultScreenIsClank(t *testing.T) {
 	if m.screen != screenClank {
 		t.Errorf("expected default screen=screenClank, got %v", m.screen)
 	}
-	if m.pane != paneSidebar {
-		t.Errorf("expected default pane=paneSidebar, got %v", m.pane)
+	if m.pane != paneSessions {
+		t.Errorf("expected default pane=paneSessions (right pane focused on cold-start), got %v", m.pane)
+	}
+	if !m.clank.focused {
+		t.Errorf("expected clank view focused on cold-start so the border renders")
 	}
 	if !m.sidebar.CursorOnClank() {
 		t.Errorf("expected sidebar cursor on Clank row by default")
@@ -123,7 +128,7 @@ func TestInbox_VoiceEventFeedsClankTimeline(t *testing.T) {
 
 	m.handleVoiceEvent(agent.Event{
 		Type: agent.EventVoiceTranscript,
-		Data: agent.VoiceTranscriptData{Text: "hello clank", Done: true},
+		Data: agent.VoiceTranscriptData{Text: "hello clank", Done: true, Role: agent.VoiceRoleUser},
 	})
 	m.handleVoiceEvent(agent.Event{
 		Type: agent.EventVoiceToolCall,
@@ -139,5 +144,74 @@ func TestInbox_VoiceEventFeedsClankTimeline(t *testing.T) {
 	}
 	if m.clank.status != agent.VoiceStatusListening {
 		t.Errorf("expected status=listening, got %q", m.clank.status)
+	}
+}
+
+// clankScreenModel returns an InboxModel parked on the Clank screen
+// with the right pane focused — the state in which the global key
+// regression bugs were originally reported.
+func clankScreenModel() *InboxModel {
+	c := newClankView()
+	c.SetFocused(true)
+	return &InboxModel{
+		width:  120,
+		height: 40,
+		screen: screenClank,
+		pane:   paneSessions,
+		clank:  c,
+		sidebar: SidebarModel{
+			projectDir: "/tmp/test",
+			focused:    false,
+		},
+	}
+}
+
+// TestInbox_QuitFromClankPane: pressing q while focused on the Clank
+// right pane must quit, not be swallowed by clankView.Update.
+func TestInbox_QuitFromClankPane(t *testing.T) {
+	t.Parallel()
+	m := clankScreenModel()
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("expected tea.Quit cmd from q on Clank pane, got nil")
+	}
+	// tea.Quit returns a tea.QuitMsg when invoked. Compare by type.
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("expected QuitMsg, got %T", cmd())
+	}
+}
+
+// TestInbox_ToggleSidebarFromClankPane: w must toggle the sidebar even
+// when the Clank pane is focused.
+func TestInbox_ToggleSidebarFromClankPane(t *testing.T) {
+	t.Parallel()
+	m := clankScreenModel()
+	if m.sidebarHidden {
+		t.Fatal("precondition: sidebar should start visible")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'w', Text: "w"})
+	if !m.sidebarHidden {
+		t.Errorf("expected sidebar hidden after w on Clank pane")
+	}
+	// Right pane must remain focused after the toggle (no other pane).
+	if !m.clank.focused {
+		t.Errorf("expected clank to remain focused after sidebar hide")
+	}
+}
+
+// TestInbox_TabSwitchesPaneFromClank: tab must move focus to the
+// sidebar when the Clank right pane is focused.
+func TestInbox_TabSwitchesPaneFromClank(t *testing.T) {
+	t.Parallel()
+	m := clankScreenModel()
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.pane != paneSidebar {
+		t.Errorf("expected pane=paneSidebar after tab from Clank, got %v", m.pane)
+	}
+	if m.clank.focused {
+		t.Errorf("expected clank to lose focus when tab moves to sidebar")
+	}
+	if !m.sidebar.Focused() {
+		t.Errorf("expected sidebar focused after tab")
 	}
 }

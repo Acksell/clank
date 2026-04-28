@@ -162,6 +162,7 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 					Timestamp: now,
 					Text:      text,
 					Done:      done,
+					Role:      agent.VoiceRoleUser,
 				})
 				s.broadcast(agent.Event{
 					Type:      agent.EventVoiceTranscript,
@@ -169,6 +170,7 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 					Data: agent.VoiceTranscriptData{
 						Text: text,
 						Done: done,
+						Role: agent.VoiceRoleUser,
 					},
 				})
 				if done {
@@ -184,6 +186,7 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 					Timestamp: now,
 					Text:      text,
 					Done:      done,
+					Role:      agent.VoiceRoleAssistant,
 				})
 				s.broadcast(agent.Event{
 					Type:      agent.EventVoiceTranscript,
@@ -191,6 +194,7 @@ func NewSession(ctx context.Context, cfg Config) (*Session, error) {
 					Data: agent.VoiceTranscriptData{
 						Text: text,
 						Done: done,
+						Role: agent.VoiceRoleAssistant,
 					},
 				})
 				if done {

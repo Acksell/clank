@@ -288,10 +288,21 @@ type ReconnectedData struct {
 	URLChanged bool `json:"url_changed"` // Whether the server URL changed (new port)
 }
 
+// VoiceRole identifies the speaker of a transcript chunk so the TUI
+// can color/prefix user vs. assistant utterances and avoid coalescing
+// across speaker boundaries.
+type VoiceRole string
+
+const (
+	VoiceRoleUser      VoiceRole = "user"
+	VoiceRoleAssistant VoiceRole = "assistant"
+)
+
 // VoiceTranscriptData is the payload for EventVoiceTranscript.
 type VoiceTranscriptData struct {
-	Text string `json:"text"`           // Incremental or final transcript text
-	Done bool   `json:"done,omitempty"` // True when transcript is final
+	Text string    `json:"text"`           // Incremental or final transcript text
+	Done bool      `json:"done,omitempty"` // True when transcript is final
+	Role VoiceRole `json:"role,omitempty"` // user (STT) or assistant (model output)
 }
 
 // VoiceStatus represents the voice agent's current state.

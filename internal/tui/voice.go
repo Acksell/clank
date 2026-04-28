@@ -156,7 +156,7 @@ func (m *InboxModel) handleVoiceEvent(evt agent.Event) {
 		}
 	case agent.EventVoiceTranscript:
 		if data, ok := evt.Data.(agent.VoiceTranscriptData); ok {
-			m.clank.AppendTranscript(data.Text, data.Done)
+			m.clank.AppendTranscript(data.Text, data.Done, data.Role)
 		}
 	case agent.EventVoiceToolCall:
 		if data, ok := evt.Data.(agent.VoiceToolCallData); ok {

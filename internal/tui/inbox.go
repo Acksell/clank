@@ -228,11 +228,15 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	// Default landing screen is Clank — the orchestrator agent — so the
-	// user lands directly in the voice/orchestrator chat. Sidebar focus
-	// (paneSessions/paneSidebar) is still configurable from there.
+	// user lands directly in the voice/orchestrator chat. We focus the
+	// right pane (Clank) on cold-start so the timeline border is visible
+	// and the user can scroll history immediately. Pressing left returns
+	// focus to the sidebar.
+	clank := newClankView()
+	clank.SetFocused(true)
 	return &InboxModel{
 		client:      client,
-		pane:        paneSidebar,
+		pane:        paneSessions,
 		sidebar:     bp,
 		spinner:     sp,
 		searchInput: ti,
@@ -241,7 +245,7 @@ func NewInboxModel(client *hubclient.Client) *InboxModel {
 		hostname:    hostname,
 		gitRef:      gitRef,
 		screen:      screenClank,
-		clank:       newClankView(),
+		clank:       clank,
 	}
 }
 
@@ -426,6 +430,15 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleVoiceSSE(msg)
 		// Don't return — let the event continue to the session view for
 		// non-voice handling (or be ignored if it was voice-only).
+	}
+
+	// Global keys (quit, sidebar toggle, help, pane switch) must work
+	// from any right-pane screen — Settings and Clank used to swallow
+	// them entirely because their sub-update routed all key presses
+	// straight to the embedded view. Hoist them here so the handler
+	// runs before screen-specific dispatch.
+	if handled, model, cmd := m.handleGlobalRightPaneKey(msg); handled {
+		return model, cmd
 	}
 
 	// If we're in session detail view (or composing), delegate.
@@ -1581,6 +1594,84 @@ func (m *InboxModel) updateBranchSessionCounts() {
 		statusMap[branch] = st
 	}
 	m.sidebar.SetSessionStatus(statusMap)
+}
+
+// handleGlobalRightPaneKey runs before screen-specific dispatch so the
+// global keymap (quit, sidebar toggle, help, pane switch) keeps working
+// when the right pane is focused on a non-inbox screen (Clank, Settings).
+// Without this, those screens' Update methods swallow every key.
+//
+// Returns handled=true when the message was consumed and the caller
+// should return (model, cmd) immediately.
+func (m *InboxModel) handleGlobalRightPaneKey(msg tea.Msg) (bool, tea.Model, tea.Cmd) {
+	keyMsg, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return false, nil, nil
+	}
+	// Only intercept on the right-pane screens. The classic inbox
+	// screen has its own dispatch further down that already handles
+	// these keys via handleInboxKey/handleSidebarKey.
+	if m.screen != screenClank && m.screen != screenSettings {
+		return false, nil, nil
+	}
+	// Defer to overlays/modes that need to consume keys verbatim.
+	if m.searching || m.showMenu || m.showConfirm || m.showMerge ||
+		m.showThemePicker || m.showHelp || m.showKittyWarning ||
+		m.sidebar.creating {
+		return false, nil, nil
+	}
+
+	keyMsg = normalizeKeyCase(keyMsg)
+	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("ctrl+c"))):
+		m.cleanupVoice()
+		return true, m, tea.Quit
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("q"))):
+		m.cleanupVoice()
+		return true, m, tea.Quit
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("?"))):
+		m.showHelp = true
+		return true, m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("w"))):
+		m.sidebarHidden = !m.sidebarHidden
+		// When the sidebar disappears the only pane left is the right
+		// one, so focus must follow. When it reappears, return focus
+		// to it (matches the inbox-screen behaviour at line ~1059).
+		if m.sidebarHidden {
+			m.setPane(paneSessions)
+			m.setRightPaneFocus(true)
+		} else {
+			m.setPane(paneSidebar)
+			m.setRightPaneFocus(false)
+		}
+		return true, m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("tab", "shift+tab"))):
+		if !m.showTwoPanes() {
+			return true, m, nil
+		}
+		if m.pane == paneSidebar {
+			m.setPane(paneSessions)
+			m.setRightPaneFocus(true)
+		} else {
+			m.setPane(paneSidebar)
+			m.setRightPaneFocus(false)
+		}
+		return true, m, nil
+	}
+	return false, nil, nil
+}
+
+// setRightPaneFocus mirrors the focus flag onto whichever right-pane
+// view is currently mounted, so its border and key routing reflect the
+// pane focus state. Used by the global keymap when toggling panes from
+// outside the screen-specific Update.
+func (m *InboxModel) setRightPaneFocus(focused bool) {
+	switch m.screen {
+	case screenClank:
+		m.clank.SetFocused(focused)
+	case screenSettings:
+		m.settings.SetFocused(focused)
+	}
 }
 
 // handleSidebarKey forwards key events to the sidebar while it's focused.
