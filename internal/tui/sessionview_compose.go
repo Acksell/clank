@@ -84,6 +84,9 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.confirmed {
 				return m, m.handleConfirmAction(msg.action)
 			}
+			// Cancelled: drop any stashed launch request so a future
+			// confirm flow doesn't accidentally launch it.
+			m.pendingLaunchReq = nil
 			return m, nil
 		default:
 			var cmd tea.Cmd
@@ -254,7 +257,6 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 	}
 
 	m.err = nil
-	m.submitting = true
 
 	// Both LocalPath and RemoteURL — local host uses path, future
 	// remote hosts fall through to clone. RemoteURL is best-effort
@@ -290,6 +292,31 @@ func (m *SessionViewModel) launchSession() (tea.Model, tea.Cmd) {
 		req.PermissionMode = m.info.PermissionMode
 	}
 
+	// Bypass-permissions gate: stash the request and pop a one-time
+	// confirm before launch when the workspace hasn't been acknowledged.
+	// handleConfirmAction("launch-bypass") resumes the launch on accept.
+	if req.Backend == agent.BackendClaudeCode &&
+		req.PermissionMode == agent.PermissionModeBypassPermissions {
+		workspace := m.workspacePath()
+		if workspace != "" {
+			prefs, _ := config.LoadPreferences()
+			if !prefs.IsBypassPermissionsConfirmed(workspace) {
+				m.pendingLaunchReq = &req
+				m.showConfirm = true
+				m.confirm = newConfirmDialog(
+					"Bypass all permissions?",
+					fmt.Sprintf(
+						"Claude will read, edit, and run commands without asking — including potentially destructive ones.\nUse only in disposable or isolated environments.\n\n%s\n\nYou won't be asked again for this workspace.",
+						workspace,
+					),
+					"launch-bypass",
+				)
+				return m, nil
+			}
+		}
+	}
+
+	m.submitting = true
 	return m, m.createSessionCmd(req)
 }
 

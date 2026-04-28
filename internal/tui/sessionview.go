@@ -244,6 +244,11 @@ type SessionViewModel struct {
 	// confirm dialog. Cleared when the dialog resolves (confirm or cancel).
 	pendingSendText string
 
+	// pendingLaunchReq holds a compose-mode StartRequest deferred behind
+	// the bypass-permissions confirm dialog. Same lifecycle as
+	// pendingSendText but for the new-session path.
+	pendingLaunchReq *agent.StartRequest
+
 	// voice points to the InboxModel's voice state for rendering
 	// (header badge, help bar). Nil when running standalone without
 	// an InboxModel parent.
@@ -564,6 +569,7 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cancelled: drop any prompt stashed for a deferred send so
 			// it doesn't leak into a later confirm flow.
 			m.pendingSendText = ""
+			m.pendingLaunchReq = nil
 			return m, nil
 		default:
 			var cmd tea.Cmd
@@ -2123,6 +2129,15 @@ func (m *SessionViewModel) handleConfirmAction(action string) tea.Cmd {
 		// dialog. Best-effort: a write failure shouldn't block the send.
 		_ = config.MarkBypassPermissionsConfirmed(m.workspacePath())
 		return m.dispatchSend(text)
+	case "launch-bypass":
+		req := m.pendingLaunchReq
+		m.pendingLaunchReq = nil
+		if req == nil {
+			return nil
+		}
+		_ = config.MarkBypassPermissionsConfirmed(m.workspacePath())
+		m.submitting = true
+		return m.createSessionCmd(*req)
 	}
 	return nil
 }
