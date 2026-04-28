@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -165,7 +166,17 @@ func NewDefaultClient() (*Client, error) {
 		return NewTCPClient(overrideURL, overrideToken), nil
 	}
 	prefs, err := config.LoadPreferences()
-	if err == nil && prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+	if err != nil {
+		// Don't silently reinterpret a corrupt preferences file as
+		// "use local hub". The user clearly intended *some* config —
+		// returning an error here surfaces parse failures or read
+		// errors instead of routing commands to the wrong daemon.
+		// (LoadPreferences treats a missing file as a non-error
+		// already, so this only fires when the file exists but is
+		// broken.)
+		return nil, fmt.Errorf("load preferences: %w", err)
+	}
+	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
 		return NewTCPClient(prefs.RemoteHub.URL, prefs.RemoteHub.AuthToken), nil
 	}
 	sockPath, err := SocketPath()
@@ -192,12 +203,18 @@ func NewLocalClient() (*Client, error) {
 // client targeting a remote hub (either via CLI override or via
 // preferences). Lets callers (e.g. the TUI bootstrap) skip
 // local-daemon-management logic that isn't applicable in remote mode.
+//
+// Returning bool means we can't bubble a prefs-load error like
+// NewDefaultClient does — instead we log loudly and degrade to false.
+// Callers that care about the distinction should use NewDefaultClient
+// directly, which surfaces the error.
 func IsRemoteActive() bool {
 	if strings.TrimSpace(overrideURL) != "" {
 		return true
 	}
 	prefs, err := config.LoadPreferences()
 	if err != nil {
+		log.Printf("hubclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch hubs", err)
 		return false
 	}
 	return prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != ""
@@ -206,12 +223,20 @@ func IsRemoteActive() bool {
 // ActiveHubLabel returns a short human-readable description of which
 // hub NewDefaultClient would target right now. Used by the TUI/CLI to
 // surface the active hub in headers and error messages.
+//
+// Same degraded-and-log policy as IsRemoteActive: a string return
+// can't carry an error, so we log loudly and tag the label as broken
+// instead of silently saying "local".
 func ActiveHubLabel() string {
 	if u := strings.TrimSpace(overrideURL); u != "" {
 		return "override (" + u + ")"
 	}
 	prefs, err := config.LoadPreferences()
-	if err == nil && prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
+	if err != nil {
+		log.Printf("hubclient.ActiveHubLabel: prefs load failed: %v", err)
+		return "unknown (prefs unreadable)"
+	}
+	if prefs.ActiveHub == "remote" && prefs.RemoteHub != nil && strings.TrimSpace(prefs.RemoteHub.URL) != "" {
 		return "remote (" + prefs.RemoteHub.URL + ")"
 	}
 	return "local"

@@ -126,10 +126,12 @@ func (r *Receiver) ReceiveBundle(ctx context.Context, req ReceiveBundleRequest) 
 }
 
 // ListSyncedRepos returns the cloud-hub's view of all synced repos and
-// their branches. Empty slice when persistence is disabled.
+// their branches. Returns an empty (non-nil) slice when persistence is
+// disabled so JSON callers see `[]`, not `null` — keeping the wire
+// contract the same regardless of cloud-hub configuration.
 func (r *Receiver) ListSyncedRepos(ctx context.Context) ([]SyncedRepoView, error) {
 	if r.store == nil {
-		return nil, nil
+		return []SyncedRepoView{}, nil
 	}
 	repos, err := r.store.LoadSyncedRepos()
 	if err != nil {

@@ -90,8 +90,14 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 // Transport selection mirrors the regular request path: when sockPath
 // is set, dial the Unix socket; otherwise fall back to the package
 // default (TCP). Bearer auth is added when present.
+//
+// We Clone() http.DefaultTransport rather than zero-initialise — a
+// bare &http.Transport{} drops ProxyFromEnvironment, IdleConnTimeout,
+// TLSHandshakeTimeout, ExpectContinueTimeout, and MaxIdleConns, which
+// would silently break corp-proxy users and leak idle connections on
+// long-running remote SSE subscriptions.
 func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, error) {
-	transport := &http.Transport{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if c.sockPath != "" {
 		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer

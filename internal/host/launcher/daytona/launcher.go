@@ -298,20 +298,24 @@ func (l *Launcher) waitForHostReady(ctx context.Context, c *hostclient.HTTP, san
 
 // Stop deletes every sandbox the launcher created in this process.
 // Idempotent. Safe to defer at hub shutdown.
+//
+// Each sandbox gets its own 30s timeout rather than sharing one across
+// the whole slice — Daytona's API can hang, and a single stuck delete
+// shouldn't starve cleanup of the rest (which keep accruing cost while
+// they linger).
 func (l *Launcher) Stop() {
 	l.createdMu.Lock()
 	created := l.created
 	l.created = nil
 	l.createdMu.Unlock()
-	if len(created) == 0 {
-		return
-	}
-	// Use a fresh background context — caller's context may already be
-	// cancelled by the time Stop runs (defer at shutdown).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	for _, s := range created {
-		if err := s.Delete(ctx); err != nil {
+		// Fresh background context per iteration — the caller's ctx
+		// may already be cancelled (defer at shutdown), and shared
+		// budgets across deletes leak money on the first stall.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := s.Delete(ctx)
+		cancel()
+		if err != nil {
 			l.log.Printf("daytona launcher: cleanup %s: %v", s.ID, err)
 		}
 	}

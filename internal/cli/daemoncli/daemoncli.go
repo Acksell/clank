@@ -159,13 +159,27 @@ func RunStart(foreground bool, opts ServerOptions) error {
 		launcherOpts := locallauncher.Options{}
 		if opts.Listen != "" && opts.PublicBaseURL != "" {
 			launcherOpts.GitSyncSource = opts.PublicBaseURL
-			if prefs, perr := config.LoadPreferences(); perr == nil && prefs.RemoteHub != nil {
+			prefs, perr := config.LoadPreferences()
+			if perr != nil {
+				// Surface the failure: a missing token here means the
+				// spawned clank-host can't authenticate against the
+				// cloud-hub mirror, so silently swallowing this would
+				// just turn into a confusing 401 at first session use.
+				log.Printf("local launcher: preferences load failed (%v) — GitSyncToken will be empty", perr)
+			} else if prefs.RemoteHub != nil {
 				launcherOpts.GitSyncToken = prefs.RemoteHub.AuthToken
 			}
 		}
 		localLauncher := locallauncher.New(launcherOpts, nil)
 		d.SetHostLauncher("local-stub", localLauncher)
 		defer localLauncher.Stop()
+		// Track which launchers actually got registered so we can
+		// validate `default_launch_host_provider` against reality
+		// before applying it. Without this guard, a typo or a Daytona
+		// misconfiguration silently sets a default that the next
+		// session-create then fails on with "no host launcher
+		// registered for provider X".
+		registeredLaunchers := map[string]bool{"local-stub": true}
 
 		// Daytona launcher: only active in cloud-hub mode (TCP) and only
 		// when preferences.daytona.api_key is configured. Misconfiguration
@@ -176,18 +190,24 @@ func RunStart(foreground bool, opts ServerOptions) error {
 				log.Printf("daytona launcher: not registered: %v", err)
 			} else if dl != nil {
 				d.SetHostLauncher("daytona", dl)
+				registeredLaunchers["daytona"] = true
 				defer dl.Stop()
 			}
 		}
 
-		// Apply the service-level default launch host, if configured.
-		// On a cloud hub with daytona registered, setting
-		// `default_launch_host_provider: "daytona"` makes every
-		// TUI-created session auto-spawn a sandbox without the TUI
-		// needing to send a LaunchHostSpec.
+		// Apply the service-level default launch host, if configured AND
+		// the named launcher is actually registered. A configured
+		// default for a launcher that failed to register is treated as
+		// "ignored" (logged) rather than fatal, so the hub still boots
+		// and the operator sees the issue instead of getting a
+		// per-session error.
 		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
-			d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})
-			log.Printf("default launch host: %s (applied to sessions without an explicit LaunchHost)", prefs.DefaultLaunchHostProvider)
+			if registeredLaunchers[prefs.DefaultLaunchHostProvider] {
+				d.SetDefaultLaunchHost(&agent.LaunchHostSpec{Provider: prefs.DefaultLaunchHostProvider})
+				log.Printf("default launch host: %s (applied to sessions without an explicit LaunchHost)", prefs.DefaultLaunchHostProvider)
+			} else {
+				log.Printf("default launch host %q ignored: launcher not registered", prefs.DefaultLaunchHostProvider)
+			}
 		}
 
 		return runHubServer(d, opts)
