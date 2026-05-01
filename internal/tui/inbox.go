@@ -131,6 +131,11 @@ type InboxModel struct {
 	showThemePicker bool
 	themePicker     themePickerModel
 
+	// Provider auth modal. Walks the user through a device-flow login
+	// for an AI provider (Phase 1: GitHub Copilot only).
+	showProviderAuth bool
+	providerAuth     providerAuthModel
+
 	// Spinner for busy session indicators.
 	spinner spinner.Model
 
@@ -1341,6 +1346,11 @@ func (m *InboxModel) View() tea.View {
 	// unambiguous that the background palette is a live preview).
 	if m.showThemePicker {
 		content = overlayCenter(content, m.themePicker.View(), m.width, m.height)
+	}
+
+	// Overlay provider auth modal if open.
+	if m.showProviderAuth {
+		content = overlayCenter(content, m.providerAuth.View(), m.width, m.height)
 	}
 
 	// Overlay help if open.

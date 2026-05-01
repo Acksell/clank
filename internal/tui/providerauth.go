@@ -1,0 +1,423 @@
+package tui
+
+// providerauth.go — modal flow for connecting an AI provider on the
+// active host (Phase 1: GitHub Copilot device flow). Modeled after
+// the themepicker / modelpicker pattern: a single tea.Model with an
+// internal phase field that walks the user through:
+//
+//   list → (confirm) → deviceShow → polling → success | error
+//
+// The confirm phase is always shown for now (Phase 1 simplification —
+// any running OpenCode sessions on the target host will be killed by
+// the post-auth restart; warning unconditionally is safer than a
+// hand-rolled "are sessions running" check). A one-server-per-session
+// refactor would let us drop the warning entirely; tracked as future
+// work in the plan.
+//
+// All polling/start calls go through the hub. The hub forwards to
+// clank-host in the sandbox; nothing in the TUI talks to GitHub
+// directly.
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/host"
+	hubclient "github.com/acksell/clank/internal/hub/client"
+)
+
+// providerAuthCancelMsg signals the inbox to dismiss the modal.
+type providerAuthCancelMsg struct{}
+
+// providerAuthDoneMsg signals the inbox the flow finished
+// successfully (any subsequent message would be informational only).
+type providerAuthDoneMsg struct{}
+
+// Internal messages: each is the result of a tea.Cmd. The model
+// processes them in Update to advance phase state.
+type providerListLoadedMsg struct {
+	providers []agent.ProviderAuthInfo
+	err       error
+}
+
+type providerStartedMsg struct {
+	start agent.DeviceFlowStart
+	err   error
+}
+
+type providerPollTickMsg struct{}
+
+type providerStatusMsg struct {
+	status agent.DeviceFlowStatus
+	err    error
+}
+
+type providerAuthPhase int
+
+const (
+	providerPhaseLoading providerAuthPhase = iota
+	providerPhaseList
+	providerPhaseConfirm
+	providerPhaseDeviceShow
+	providerPhasePolling
+	providerPhaseSuccess
+	providerPhaseError
+)
+
+const providerAuthPollInterval = 2 * time.Second
+
+// providerAuthModel is the modal's state. Constructed via
+// newProviderAuthModel; rendered through overlayCenter by the inbox.
+type providerAuthModel struct {
+	hub      *hubclient.Client
+	hostname host.Hostname
+
+	phase providerAuthPhase
+
+	providers []agent.ProviderAuthInfo
+	cursor    int
+
+	// activeProvider is the entry the user is connecting; populated
+	// once they hit Enter on the list.
+	activeProvider agent.ProviderAuthInfo
+
+	// flow holds the start payload returned by /device/start; used
+	// to render the user_code + URL during deviceShow / polling.
+	flow agent.DeviceFlowStart
+
+	// flowState tracks the most recent status read; used to drive
+	// the polling phase's spinner label.
+	flowState agent.DeviceFlowState
+
+	errMsg  string
+	spinner spinner.Model
+}
+
+func newProviderAuthModel(c *hubclient.Client, hostname host.Hostname) providerAuthModel {
+	if hostname == "" {
+		hostname = host.HostLocal
+	}
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
+	return providerAuthModel{
+		hub:      c,
+		hostname: hostname,
+		phase:    providerPhaseLoading,
+		spinner:  sp,
+	}
+}
+
+func (m providerAuthModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.loadProvidersCmd())
+}
+
+// Update is the central state-machine dispatcher. Most cases mutate
+// the model and emit a follow-up tea.Cmd; phase transitions all flow
+// through here.
+func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case providerListLoadedMsg:
+		if msg.err != nil {
+			m.phase = providerPhaseError
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.providers = msg.providers
+		m.phase = providerPhaseList
+		if m.cursor >= len(m.providers) {
+			m.cursor = 0
+		}
+		return m, nil
+
+	case providerStartedMsg:
+		if msg.err != nil {
+			m.phase = providerPhaseError
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.flow = msg.start
+		m.flowState = agent.DeviceFlowPending
+		m.phase = providerPhaseDeviceShow
+		return m, nil
+
+	case providerPollTickMsg:
+		if m.phase != providerPhasePolling {
+			return m, nil
+		}
+		return m, m.statusCmd()
+
+	case providerStatusMsg:
+		if msg.err != nil {
+			m.phase = providerPhaseError
+			m.errMsg = msg.err.Error()
+			return m, nil
+		}
+		m.flowState = msg.status.State
+		switch msg.status.State {
+		case agent.DeviceFlowSuccess:
+			m.phase = providerPhaseSuccess
+			return m, nil
+		case agent.DeviceFlowError, agent.DeviceFlowDenied,
+			agent.DeviceFlowExpired, agent.DeviceFlowCanceled:
+			m.phase = providerPhaseError
+			if msg.status.Error != "" {
+				m.errMsg = msg.status.Error
+			} else {
+				m.errMsg = string(msg.status.State)
+			}
+			return m, nil
+		default:
+			// pending / authorized: keep polling.
+			return m, m.pollTickCmd()
+		}
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+	}
+
+	return m, nil
+}
+
+func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, tea.Cmd) {
+	msg = normalizeKeyCase(msg)
+	cancel := key.Matches(msg, key.NewBinding(key.WithKeys("esc")))
+
+	switch m.phase {
+	case providerPhaseLoading:
+		if cancel {
+			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		}
+
+	case providerPhaseList:
+		if cancel {
+			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
+			if m.cursor < len(m.providers)-1 {
+				m.cursor++
+			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if m.cursor >= 0 && m.cursor < len(m.providers) {
+				m.activeProvider = m.providers[m.cursor]
+				m.phase = providerPhaseConfirm
+			}
+		}
+
+	case providerPhaseConfirm:
+		if cancel {
+			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("y", "Y", "enter"))):
+			return m, m.startFlowCmd(m.activeProvider.ProviderID)
+		case key.Matches(msg, key.NewBinding(key.WithKeys("n", "N"))):
+			m.phase = providerPhaseList
+			return m, nil
+		}
+
+	case providerPhaseDeviceShow:
+		if cancel {
+			return m, m.cancelFlowCmd()
+		}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			m.phase = providerPhasePolling
+			return m, m.statusCmd()
+		}
+
+	case providerPhasePolling:
+		if cancel {
+			return m, m.cancelFlowCmd()
+		}
+
+	case providerPhaseSuccess:
+		// Any key dismisses.
+		return m, func() tea.Msg { return providerAuthDoneMsg{} }
+
+	case providerPhaseError:
+		// Any key dismisses.
+		return m, func() tea.Msg { return providerAuthCancelMsg{} }
+	}
+
+	return m, nil
+}
+
+// --- tea.Cmd helpers ---
+
+func (m providerAuthModel) loadProvidersCmd() tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		providers, err := hub.Host(hostname).ListAuthProviders(ctx)
+		return providerListLoadedMsg{providers: providers, err: err}
+	}
+}
+
+func (m providerAuthModel) startFlowCmd(providerID string) tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		start, err := hub.Host(hostname).StartAuthDeviceFlow(ctx, providerID)
+		return providerStartedMsg{start: start, err: err}
+	}
+}
+
+func (m providerAuthModel) statusCmd() tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	provider := m.activeProvider.ProviderID
+	flowID := m.flow.FlowID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		status, err := hub.Host(hostname).AuthDeviceFlowStatus(ctx, provider, flowID)
+		return providerStatusMsg{status: status, err: err}
+	}
+}
+
+func (m providerAuthModel) pollTickCmd() tea.Cmd {
+	return tea.Tick(providerAuthPollInterval, func(time.Time) tea.Msg {
+		return providerPollTickMsg{}
+	})
+}
+
+func (m providerAuthModel) cancelFlowCmd() tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	provider := m.activeProvider.ProviderID
+	flowID := m.flow.FlowID
+	return func() tea.Msg {
+		if flowID == "" {
+			return providerAuthCancelMsg{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = hub.Host(hostname).CancelAuthDeviceFlow(ctx, provider, flowID)
+		return providerAuthCancelMsg{}
+	}
+}
+
+// --- View ---
+
+func (m providerAuthModel) View() string {
+	const menuWidth = 60
+	innerWidth := menuWidth - 4
+
+	var sb strings.Builder
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(textColor).
+		Width(innerWidth).
+		Render("Connect Provider")
+	sb.WriteString(title)
+	sb.WriteString("\n\n")
+
+	switch m.phase {
+	case providerPhaseLoading:
+		sb.WriteString(m.spinner.View())
+		sb.WriteString(" Loading providers…")
+
+	case providerPhaseList:
+		if len(m.providers) == 0 {
+			sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("  no providers available"))
+		} else {
+			for i, p := range m.providers {
+				prefix := "  "
+				labelStyle := lipgloss.NewStyle().Foreground(textColor)
+				if i == m.cursor {
+					prefix = "▶ "
+					labelStyle = labelStyle.Bold(true).Background(primaryColor)
+				}
+				status := lipgloss.NewStyle().Foreground(dimColor).Render("not connected")
+				if p.Connected {
+					status = lipgloss.NewStyle().Foreground(successColor).Render("connected")
+				}
+				row := fmt.Sprintf("%s%s", prefix, labelStyle.Render(p.DisplayName))
+				gap := innerWidth - lipgloss.Width(row) - lipgloss.Width(status) - 2
+				if gap < 1 {
+					gap = 1
+				}
+				sb.WriteString(row + strings.Repeat(" ", gap) + status)
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("↑↓ navigate · enter select · esc cancel"))
+
+	case providerPhaseConfirm:
+		warn := fmt.Sprintf(
+			"Connecting %s will restart the OpenCode server in this sandbox.\n"+
+				"Any sessions currently running will need to be restarted manually.",
+			m.activeProvider.DisplayName,
+		)
+		sb.WriteString(lipgloss.NewStyle().Foreground(warningColor).Render(warn))
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("y/enter to continue · n/esc to cancel"))
+
+	case providerPhaseDeviceShow:
+		sb.WriteString("In your browser, open:\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render("  " + m.flow.VerificationURL))
+		sb.WriteString("\n\nEnter this code:\n")
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(textColor).
+			Render("  " + m.flow.UserCode))
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("press enter once authorized · esc to cancel"))
+
+	case providerPhasePolling:
+		label := "Waiting for authorization…"
+		if m.flowState == agent.DeviceFlowAuthorized {
+			label = "Authorized — restarting OpenCode server (this can take 10–15s)…"
+		}
+		sb.WriteString(m.spinner.View() + " " + label)
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("esc to cancel"))
+
+	case providerPhaseSuccess:
+		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).
+			Render("✓ Connected " + m.activeProvider.DisplayName))
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("press any key to dismiss"))
+
+	case providerPhaseError:
+		sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).
+			Render("Error: " + m.errMsg))
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("press any key to dismiss"))
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(primaryColor).
+		Padding(1, 2).
+		Render(sb.String())
+}

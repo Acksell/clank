@@ -565,6 +565,57 @@ func (s *Service) MergeBranchOnHost(ctx context.Context, hostname host.Hostname,
 	return res, nil
 }
 
+// --- Auth (host pass-throughs) ---
+
+// ListAuthProvidersOnHost returns the auth providers known to the
+// named host plus their current connection state.
+func (s *Service) ListAuthProvidersOnHost(ctx context.Context, hostname host.Hostname) ([]agent.ProviderAuthInfo, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return nil, ErrHostNotRegistered(hostname)
+	}
+	return hc.ListAuthProviders(ctx)
+}
+
+// StartAuthDeviceFlowOnHost kicks off device-flow auth for providerID
+// on the named host, returning the user-facing fields the TUI shows.
+func (s *Service) StartAuthDeviceFlowOnHost(ctx context.Context, hostname host.Hostname, providerID string) (agent.DeviceFlowStart, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStart{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.StartDeviceFlow(ctx, providerID)
+}
+
+// AuthDeviceFlowStatusOnHost returns the current state of an in-progress
+// device flow on the named host. Pure read.
+func (s *Service) AuthDeviceFlowStatusOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) (agent.DeviceFlowStatus, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStatus{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.DeviceFlowStatus(ctx, providerID, flowID)
+}
+
+// CancelAuthDeviceFlowOnHost aborts an in-progress flow.
+func (s *Service) CancelAuthDeviceFlowOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) error {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return ErrHostNotRegistered(hostname)
+	}
+	return hc.CancelDeviceFlow(ctx, providerID, flowID)
+}
+
+// DeleteAuthCredentialOnHost removes the stored credential and
+// triggers an OpenCode restart on the named host.
+func (s *Service) DeleteAuthCredentialOnHost(ctx context.Context, hostname host.Hostname, providerID string) error {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return ErrHostNotRegistered(hostname)
+	}
+	return hc.DeleteAuthCredential(ctx, providerID)
+}
+
 // --- Hosts ---
 
 // ErrHostNotRegisteredErr is the typed error for unknown hostname lookups.
