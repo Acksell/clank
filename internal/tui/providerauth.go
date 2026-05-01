@@ -66,8 +66,14 @@ const (
 	providerPhaseLoading providerAuthPhase = iota
 	providerPhaseList
 	providerPhaseConfirm
-	providerPhaseDeviceShow
-	providerPhasePolling
+	// providerPhaseAwaiting covers both "waiting for the user to
+	// authorize in their browser" and "waiting for the OpenCode
+	// server to come back up after the auth.json write". The view
+	// always shows the URL + user_code (so the user can re-read or
+	// copy), plus a spinner with a state-aware label. Polling starts
+	// the moment we transition into this phase — no enter press
+	// required.
+	providerPhaseAwaiting
 	providerPhaseSuccess
 	providerPhaseError
 )
@@ -146,11 +152,13 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		}
 		m.flow = msg.start
 		m.flowState = agent.DeviceFlowPending
-		m.phase = providerPhaseDeviceShow
-		return m, nil
+		m.phase = providerPhaseAwaiting
+		// Kick off polling immediately so the UI auto-advances when the
+		// user authorizes in their browser.
+		return m, m.statusCmd()
 
 	case providerPollTickMsg:
-		if m.phase != providerPhasePolling {
+		if m.phase != providerPhaseAwaiting {
 			return m, nil
 		}
 		return m, m.statusCmd()
@@ -234,17 +242,7 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 			return m, nil
 		}
 
-	case providerPhaseDeviceShow:
-		if cancel {
-			return m, m.cancelFlowCmd()
-		}
-		switch {
-		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-			m.phase = providerPhasePolling
-			return m, m.statusCmd()
-		}
-
-	case providerPhasePolling:
+	case providerPhaseAwaiting:
 		if cancel {
 			return m, m.cancelFlowCmd()
 		}
@@ -380,17 +378,13 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
 			Render("y/enter to continue · n/esc to cancel"))
 
-	case providerPhaseDeviceShow:
+	case providerPhaseAwaiting:
 		sb.WriteString("In your browser, open:\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render("  " + m.flow.VerificationURL))
 		sb.WriteString("\n\nEnter this code:\n")
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(textColor).
 			Render("  " + m.flow.UserCode))
 		sb.WriteString("\n\n")
-		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("press enter once authorized · esc to cancel"))
-
-	case providerPhasePolling:
 		label := "Waiting for authorization…"
 		if m.flowState == agent.DeviceFlowAuthorized {
 			label = "Authorized — restarting OpenCode server (this can take 10–15s)…"

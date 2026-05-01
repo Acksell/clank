@@ -322,13 +322,20 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var inboxCmd tea.Cmd
 		m.spinner, inboxCmd = m.spinner.Update(tickMsg)
 
+		// Forward to provider auth modal too — its spinner has its own
+		// ID, so the modal's Update will only advance for its own ticks.
+		var providerAuthCmd tea.Cmd
+		if m.showProviderAuth {
+			m.providerAuth, providerAuthCmd = m.providerAuth.Update(tickMsg)
+		}
+
 		// Forward to session view so its spinner keeps ticking too.
 		if m.screen == screenSession && m.sessionView != nil {
 			model, sessionCmd := m.sessionView.Update(tickMsg)
 			m.sessionView = model.(*SessionViewModel)
-			return m, tea.Batch(inboxCmd, sessionCmd)
+			return m, tea.Batch(inboxCmd, providerAuthCmd, sessionCmd)
 		}
-		return m, inboxCmd
+		return m, tea.Batch(inboxCmd, providerAuthCmd)
 	}
 
 	// Always keep the refresh timer ticking, regardless of screen state.
