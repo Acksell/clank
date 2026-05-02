@@ -521,7 +521,7 @@ func (m providerAuthModel) View() string {
 
 		// Privacy note + submit hint.
 		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Italic(true).
-			Render("values are sent directly to the sandbox; clank's hub never sees them"))
+			Render("the key is forwarded to the target host machine"))
 		if m.errMsg != "" {
 			sb.WriteString("\n")
 			sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Render(m.errMsg))
