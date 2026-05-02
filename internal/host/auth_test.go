@@ -39,14 +39,27 @@ func TestAuthManager_ListProviders_EmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
-	if len(infos) != 1 {
-		t.Fatalf("expected 1 provider, got %d", len(infos))
+	// Catalog has the full list; on a fresh sandbox none are connected.
+	if len(infos) == 0 {
+		t.Fatalf("expected non-empty provider list")
 	}
-	if infos[0].ProviderID != ProviderGitHubCopilot {
-		t.Fatalf("expected %s, got %s", ProviderGitHubCopilot, infos[0].ProviderID)
+	for _, p := range infos {
+		if p.Connected {
+			t.Errorf("expected %s disconnected on fresh sandbox, got connected", p.ProviderID)
+		}
 	}
-	if infos[0].Connected {
-		t.Errorf("expected Connected=false on a fresh sandbox")
+	// github-copilot must be present and surface as a device flow.
+	var copilot agent.ProviderAuthInfo
+	for _, p := range infos {
+		if p.ProviderID == ProviderGitHubCopilot {
+			copilot = p
+		}
+	}
+	if copilot.ProviderID != ProviderGitHubCopilot {
+		t.Fatalf("expected github-copilot in catalog")
+	}
+	if copilot.AuthType != "device" {
+		t.Errorf("expected github-copilot AuthType=device, got %s", copilot.AuthType)
 	}
 }
 
@@ -124,6 +137,135 @@ func TestAuthManager_StartDeviceFlow_RejectsUnknownProvider(t *testing.T) {
 	a, _ := newTestAuthManager(t)
 	if _, err := a.StartDeviceFlow(context.Background(), "unknown-provider"); err == nil {
 		t.Fatalf("expected ErrUnknownProvider, got nil")
+	}
+}
+
+// StartDeviceFlow with an api-typed provider must reject — device
+// flow is only for the github-copilot entry. Catches a regression
+// where the catalog lookup might return an api provider but the
+// auth-type guard miss it.
+func TestAuthManager_StartDeviceFlow_RejectsAPIProvider(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	if _, err := a.StartDeviceFlow(context.Background(), "openai"); err == nil {
+		t.Fatalf("expected error when starting device flow on openai (api type), got nil")
+	}
+}
+
+// SubmitAPIKey on an api-typed provider must walk the full flow —
+// pending → authorized (auth.json written) → success (restart hook
+// called).
+func TestAuthManager_SubmitAPIKey_HappyPath(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+	var restartCalls int32
+	a.restart = func(context.Context) error { atomic.AddInt32(&restartCalls, 1); return nil }
+
+	flowID, err := a.SubmitAPIKey(context.Background(), "openai", "sk-test-12345")
+	if err != nil {
+		t.Fatalf("SubmitAPIKey: %v", err)
+	}
+	if flowID == "" {
+		t.Fatalf("expected non-empty flow_id")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var finalState agent.DeviceFlowState
+	for time.Now().Before(deadline) {
+		status, err := a.GetFlowStatus(context.Background(), flowID)
+		if err != nil {
+			t.Fatalf("status: %v", err)
+		}
+		finalState = status.State
+		if status.State == agent.DeviceFlowSuccess ||
+			status.State == agent.DeviceFlowError {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if finalState != agent.DeviceFlowSuccess {
+		t.Fatalf("expected success, got %s", finalState)
+	}
+	if got := atomic.LoadInt32(&restartCalls); got != 1 {
+		t.Errorf("expected 1 restart call, got %d", got)
+	}
+
+	// auth.json should contain the api credential.
+	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	var stored map[string]agent.AuthCredential
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode auth.json: %v", err)
+	}
+	if got := stored["openai"]; got.Type != "api" || got.Key != "sk-test-12345" {
+		t.Errorf("expected openai api/sk-test-12345, got %+v", got)
+	}
+}
+
+// Empty / whitespace keys must be rejected before the goroutine
+// spawns — otherwise we'd happily write an empty credential to
+// auth.json and OpenCode would fail at request time with a less
+// useful error.
+func TestAuthManager_SubmitAPIKey_RejectsBlankKey(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	if _, err := a.SubmitAPIKey(context.Background(), "openai", ""); err == nil {
+		t.Errorf("expected ErrInvalidAPIKey on empty key")
+	}
+	if _, err := a.SubmitAPIKey(context.Background(), "openai", "   "); err == nil {
+		t.Errorf("expected ErrInvalidAPIKey on whitespace key")
+	}
+}
+
+// SubmitAPIKey on a device-typed provider must reject — github-copilot
+// requires the device flow.
+func TestAuthManager_SubmitAPIKey_RejectsDeviceProvider(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+	if _, err := a.SubmitAPIKey(context.Background(), "github-copilot", "ghp_test"); err == nil {
+		t.Errorf("expected error when submitting api key for github-copilot (device type)")
+	}
+}
+
+// ListProviders must include every catalog entry, marking only the
+// stored ones as connected.
+func TestAuthManager_ListProviders_IncludesEntireCatalog(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	// Pre-populate auth.json with one api credential to test the
+	// connected-state propagation.
+	if err := a.writeAuthJSON("openai", agent.AuthCredential{Type: "api", Key: "k"}); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	infos, err := a.ListProviders(context.Background())
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(infos) < 5 {
+		t.Fatalf("expected at least 5 providers, got %d", len(infos))
+	}
+	var openai, copilot agent.ProviderAuthInfo
+	for _, p := range infos {
+		switch p.ProviderID {
+		case "openai":
+			openai = p
+		case "github-copilot":
+			copilot = p
+		}
+	}
+	if !openai.Connected {
+		t.Errorf("expected openai connected after writing")
+	}
+	if copilot.Connected {
+		t.Errorf("expected github-copilot disconnected (not written)")
+	}
+	if openai.AuthType != "api" || copilot.AuthType != "device" {
+		t.Errorf("unexpected auth types: openai=%s copilot=%s", openai.AuthType, copilot.AuthType)
 	}
 }
 

@@ -26,19 +26,33 @@ func (c *HTTP) StartDeviceFlow(ctx context.Context, providerID string) (agent.De
 	return out, err
 }
 
-// DeviceFlowStatus reads the current state of an in-progress flow.
-// Pure read — safe to call as fast as the TUI wants.
-func (c *HTTP) DeviceFlowStatus(ctx context.Context, providerID, flowID string) (agent.DeviceFlowStatus, error) {
+// SubmitAPIKey stores an API key for providerID and returns a
+// flow_id the caller polls via FlowStatus to observe the post-write
+// OpenCode restart. The key is sent in the request body.
+func (c *HTTP) SubmitAPIKey(ctx context.Context, providerID, key string) (agent.DeviceFlowStart, error) {
+	var out agent.DeviceFlowStart
+	path := "/auth/" + url.PathEscape(providerID) + "/apikey"
+	body := struct {
+		Key string `json:"key"`
+	}{Key: key}
+	err := c.do(ctx, http.MethodPost, path, body, &out)
+	return out, err
+}
+
+// FlowStatus reads the current state of an in-progress flow (device
+// or api-key — the endpoint is flow-type-agnostic). Pure read —
+// safe to call as fast as the caller wants.
+func (c *HTTP) FlowStatus(ctx context.Context, providerID, flowID string) (agent.DeviceFlowStatus, error) {
 	var out agent.DeviceFlowStatus
-	path := "/auth/" + url.PathEscape(providerID) + "/device/status?flow_id=" + url.QueryEscape(flowID)
+	path := "/auth/" + url.PathEscape(providerID) + "/flow/status?flow_id=" + url.QueryEscape(flowID)
 	err := c.do(ctx, http.MethodGet, path, nil, &out)
 	return out, err
 }
 
-// CancelDeviceFlow signals the host to abort an in-progress flow.
+// CancelFlow signals the host to abort an in-progress flow.
 // Idempotent for already-finished flows.
-func (c *HTTP) CancelDeviceFlow(ctx context.Context, providerID, flowID string) error {
-	path := "/auth/" + url.PathEscape(providerID) + "/device?flow_id=" + url.QueryEscape(flowID)
+func (c *HTTP) CancelFlow(ctx context.Context, providerID, flowID string) error {
+	path := "/auth/" + url.PathEscape(providerID) + "/flow?flow_id=" + url.QueryEscape(flowID)
 	return c.do(ctx, http.MethodDelete, path, nil, nil)
 }
 

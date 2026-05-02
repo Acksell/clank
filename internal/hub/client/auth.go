@@ -34,21 +34,36 @@ func (h *HostClient) StartAuthDeviceFlow(ctx context.Context, providerID string)
 	return out, nil
 }
 
-// AuthDeviceFlowStatus returns the current state of an in-progress
-// flow. Pure read.
-func (h *HostClient) AuthDeviceFlowStatus(ctx context.Context, providerID, flowID string) (agent.DeviceFlowStatus, error) {
+// SubmitAuthAPIKey stores an API key for providerID on this host
+// and returns a flow_id the caller polls until the OpenCode restart
+// completes.
+func (h *HostClient) SubmitAuthAPIKey(ctx context.Context, providerID, key string) (agent.DeviceFlowStart, error) {
+	var out agent.DeviceFlowStart
+	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/apikey"
+	body := struct {
+		Key string `json:"key"`
+	}{Key: key}
+	if err := h.c.post(ctx, path, body, &out); err != nil {
+		return agent.DeviceFlowStart{}, err
+	}
+	return out, nil
+}
+
+// AuthFlowStatus returns the current state of an in-progress flow
+// (device or api-key — the endpoint is flow-type-agnostic). Pure read.
+func (h *HostClient) AuthFlowStatus(ctx context.Context, providerID, flowID string) (agent.DeviceFlowStatus, error) {
 	var out agent.DeviceFlowStatus
-	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/device/status?flow_id=" + url.QueryEscape(flowID)
+	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/flow/status?flow_id=" + url.QueryEscape(flowID)
 	if err := h.c.get(ctx, path, &out); err != nil {
 		return agent.DeviceFlowStatus{}, err
 	}
 	return out, nil
 }
 
-// CancelAuthDeviceFlow signals the host to abort an in-progress
-// flow. Idempotent for already-finished flows.
-func (h *HostClient) CancelAuthDeviceFlow(ctx context.Context, providerID, flowID string) error {
-	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/device?flow_id=" + url.QueryEscape(flowID)
+// CancelAuthFlow signals the host to abort an in-progress flow.
+// Idempotent for already-finished flows.
+func (h *HostClient) CancelAuthFlow(ctx context.Context, providerID, flowID string) error {
+	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/flow?flow_id=" + url.QueryEscape(flowID)
 	return h.c.do(ctx, "DELETE", path, nil, nil)
 }
 

@@ -587,23 +587,35 @@ func (s *Service) StartAuthDeviceFlowOnHost(ctx context.Context, hostname host.H
 	return hc.StartDeviceFlow(ctx, providerID)
 }
 
-// AuthDeviceFlowStatusOnHost returns the current state of an in-progress
-// device flow on the named host. Pure read.
-func (s *Service) AuthDeviceFlowStatusOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) (agent.DeviceFlowStatus, error) {
+// SubmitAuthAPIKeyOnHost stores an API key for providerID on the
+// named host and returns a flow_id the client polls until the
+// post-write OpenCode restart finishes.
+func (s *Service) SubmitAuthAPIKeyOnHost(ctx context.Context, hostname host.Hostname, providerID, key string) (agent.DeviceFlowStart, error) {
+	hc, ok := s.Host(hostname)
+	if !ok {
+		return agent.DeviceFlowStart{}, ErrHostNotRegistered(hostname)
+	}
+	return hc.SubmitAPIKey(ctx, providerID, key)
+}
+
+// AuthFlowStatusOnHost returns the current state of an in-progress
+// flow on the named host. Works for both device-flow and api-key
+// flows (the flow_id is opaque). Pure read.
+func (s *Service) AuthFlowStatusOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) (agent.DeviceFlowStatus, error) {
 	hc, ok := s.Host(hostname)
 	if !ok {
 		return agent.DeviceFlowStatus{}, ErrHostNotRegistered(hostname)
 	}
-	return hc.DeviceFlowStatus(ctx, providerID, flowID)
+	return hc.FlowStatus(ctx, providerID, flowID)
 }
 
-// CancelAuthDeviceFlowOnHost aborts an in-progress flow.
-func (s *Service) CancelAuthDeviceFlowOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) error {
+// CancelAuthFlowOnHost aborts an in-progress flow.
+func (s *Service) CancelAuthFlowOnHost(ctx context.Context, hostname host.Hostname, providerID, flowID string) error {
 	hc, ok := s.Host(hostname)
 	if !ok {
 		return ErrHostNotRegistered(hostname)
 	}
-	return hc.CancelDeviceFlow(ctx, providerID, flowID)
+	return hc.CancelFlow(ctx, providerID, flowID)
 }
 
 // DeleteAuthCredentialOnHost removes the stored credential and

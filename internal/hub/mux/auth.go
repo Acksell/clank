@@ -13,8 +13,9 @@ import (
 func (m *Mux) registerAuth(mx *http.ServeMux) {
 	mx.HandleFunc("GET /hosts/{hostname}/auth/providers", m.handleListAuthProvidersOnHost)
 	mx.HandleFunc("POST /hosts/{hostname}/auth/{provider}/device/start", m.handleStartAuthDeviceFlowOnHost)
-	mx.HandleFunc("GET /hosts/{hostname}/auth/{provider}/device/status", m.handleAuthDeviceFlowStatusOnHost)
-	mx.HandleFunc("DELETE /hosts/{hostname}/auth/{provider}/device", m.handleCancelAuthDeviceFlowOnHost)
+	mx.HandleFunc("POST /hosts/{hostname}/auth/{provider}/apikey", m.handleSubmitAuthAPIKeyOnHost)
+	mx.HandleFunc("GET /hosts/{hostname}/auth/{provider}/flow/status", m.handleAuthFlowStatusOnHost)
+	mx.HandleFunc("DELETE /hosts/{hostname}/auth/{provider}/flow", m.handleCancelAuthFlowOnHost)
 	mx.HandleFunc("DELETE /hosts/{hostname}/auth/{provider}", m.handleDeleteAuthCredentialOnHost)
 }
 
@@ -54,7 +55,33 @@ func (m *Mux) handleStartAuthDeviceFlowOnHost(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, start)
 }
 
-func (m *Mux) handleAuthDeviceFlowStatusOnHost(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleSubmitAuthAPIKeyOnHost(w http.ResponseWriter, r *http.Request) {
+	hostname, err := parseHostname(r)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	provider := r.PathValue("provider")
+	if provider == "" {
+		writeBadRequest(w, "provider is required")
+		return
+	}
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+	start, err := m.svc.SubmitAuthAPIKeyOnHost(r.Context(), hostname, provider, body.Key)
+	if err != nil {
+		writeAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, start)
+}
+
+func (m *Mux) handleAuthFlowStatusOnHost(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
@@ -66,7 +93,7 @@ func (m *Mux) handleAuthDeviceFlowStatusOnHost(w http.ResponseWriter, r *http.Re
 		writeBadRequest(w, "provider and flow_id are required")
 		return
 	}
-	status, err := m.svc.AuthDeviceFlowStatusOnHost(r.Context(), hostname, provider, flowID)
+	status, err := m.svc.AuthFlowStatusOnHost(r.Context(), hostname, provider, flowID)
 	if err != nil {
 		writeAuthErr(w, err)
 		return
@@ -74,7 +101,7 @@ func (m *Mux) handleAuthDeviceFlowStatusOnHost(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (m *Mux) handleCancelAuthDeviceFlowOnHost(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleCancelAuthFlowOnHost(w http.ResponseWriter, r *http.Request) {
 	hostname, err := parseHostname(r)
 	if err != nil {
 		writeBadRequest(w, err.Error())
@@ -86,7 +113,7 @@ func (m *Mux) handleCancelAuthDeviceFlowOnHost(w http.ResponseWriter, r *http.Re
 		writeBadRequest(w, "provider and flow_id are required")
 		return
 	}
-	if err := m.svc.CancelAuthDeviceFlowOnHost(r.Context(), hostname, provider, flowID); err != nil {
+	if err := m.svc.CancelAuthFlowOnHost(r.Context(), hostname, provider, flowID); err != nil {
 		writeAuthErr(w, err)
 		return
 	}

@@ -1,21 +1,22 @@
 package tui
 
 // providerauth.go — modal flow for connecting an AI provider on the
-// active host (Phase 1: GitHub Copilot device flow). Modeled after
-// the themepicker / modelpicker pattern: a single tea.Model with an
-// internal phase field that walks the user through:
+// active host. Modeled after the themepicker / modelpicker pattern:
+// a single tea.Model with an internal phase field that walks the
+// user through:
 //
-//   list → (confirm) → deviceShow → polling → success | error
+//   list → confirm → (deviceShow|apikeyEntry) → awaiting → success | error
 //
-// The confirm phase is always shown for now (Phase 1 simplification —
-// any running OpenCode sessions on the target host will be killed by
-// the post-auth restart; warning unconditionally is safer than a
-// hand-rolled "are sessions running" check). A one-server-per-session
-// refactor would let us drop the warning entirely; tracked as future
-// work in the plan.
+// The phase after `confirm` depends on the selected provider's
+// AuthType: "device" providers (Phase 1: GitHub Copilot) jump
+// straight into the awaiting phase with the URL+user_code displayed
+// alongside the polling spinner; "api" providers (Phase 2: OpenAI,
+// Google, xAI, Groq, DeepSeek, Mistral, OpenRouter) collect a
+// pasted key in apikeyEntry and then transition to a stripped-down
+// awaiting phase that only renders the restart spinner.
 //
 // All polling/start calls go through the hub. The hub forwards to
-// clank-host in the sandbox; nothing in the TUI talks to GitHub
+// clank-host in the sandbox; nothing in the TUI talks to providers
 // directly.
 
 import (
@@ -26,6 +27,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -66,13 +68,15 @@ const (
 	providerPhaseLoading providerAuthPhase = iota
 	providerPhaseList
 	providerPhaseConfirm
+	// providerPhaseAPIKey collects a pasted API key for "api"
+	// providers. Skipped for "device" providers.
+	providerPhaseAPIKey
 	// providerPhaseAwaiting covers both "waiting for the user to
-	// authorize in their browser" and "waiting for the OpenCode
-	// server to come back up after the auth.json write". The view
-	// always shows the URL + user_code (so the user can re-read or
-	// copy), plus a spinner with a state-aware label. Polling starts
-	// the moment we transition into this phase — no enter press
-	// required.
+	// authorize in their browser" (device) and "waiting for the
+	// OpenCode server to come back up" (both flow types). For device
+	// flows the view shows URL + user_code throughout; for api-key
+	// flows it shows just the spinner. Polling starts the moment we
+	// transition into this phase — no enter press required.
 	providerPhaseAwaiting
 	providerPhaseSuccess
 	providerPhaseError
@@ -95,13 +99,17 @@ type providerAuthModel struct {
 	// once they hit Enter on the list.
 	activeProvider agent.ProviderAuthInfo
 
-	// flow holds the start payload returned by /device/start; used
-	// to render the user_code + URL during deviceShow / polling.
+	// flow holds the start payload returned by /device/start or
+	// /apikey; UserCode/VerificationURL are populated only for
+	// device flows.
 	flow agent.DeviceFlowStart
 
 	// flowState tracks the most recent status read; used to drive
-	// the polling phase's spinner label.
+	// the awaiting phase's spinner label.
 	flowState agent.DeviceFlowState
+
+	// apiKey is the textinput model used during providerPhaseAPIKey.
+	apiKey textinput.Model
 
 	errMsg  string
 	spinner spinner.Model
@@ -114,11 +122,26 @@ func newProviderAuthModel(c *hubclient.Client, hostname host.Hostname) providerA
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
+
+	ti := textinput.New()
+	ti.Placeholder = "sk-..."
+	ti.CharLimit = 256
+	ti.Prompt = "› "
+	ti.EchoMode = textinput.EchoPassword
+	ti.EchoCharacter = '•'
+	styles := ti.Styles()
+	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(primaryColor)
+	styles.Focused.Text = lipgloss.NewStyle().Foreground(textColor)
+	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
+	ti.SetStyles(styles)
+	ti.SetWidth(48)
+
 	return providerAuthModel{
 		hub:      c,
 		hostname: hostname,
 		phase:    providerPhaseLoading,
 		spinner:  sp,
+		apiKey:   ti,
 	}
 }
 
@@ -154,7 +177,8 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		m.flowState = agent.DeviceFlowPending
 		m.phase = providerPhaseAwaiting
 		// Kick off polling immediately so the UI auto-advances when the
-		// user authorizes in their browser.
+		// flow's background goroutine finishes (whether that's the user
+		// authorizing in the browser, or the OpenCode restart completing).
 		return m, m.statusCmd()
 
 	case providerPollTickMsg:
@@ -197,6 +221,13 @@ func (m providerAuthModel) Update(msg tea.Msg) (providerAuthModel, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
+	// Anything else: forward to the textinput (only relevant during
+	// providerPhaseAPIKey but cheap to no-op elsewhere).
+	if m.phase == providerPhaseAPIKey {
+		var cmd tea.Cmd
+		m.apiKey, cmd = m.apiKey.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -236,11 +267,42 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		}
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("y", "Y", "enter"))):
-			return m, m.startFlowCmd(m.activeProvider.ProviderID)
+			// Branch by auth type. Device providers go straight to
+			// /device/start; API-key providers collect input first.
+			switch m.activeProvider.AuthType {
+			case "device":
+				return m, m.startFlowCmd(m.activeProvider.ProviderID)
+			case "api":
+				m.phase = providerPhaseAPIKey
+				m.apiKey.SetValue("")
+				return m, m.apiKey.Focus()
+			default:
+				m.phase = providerPhaseError
+				m.errMsg = "unsupported auth type: " + m.activeProvider.AuthType
+				return m, nil
+			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("n", "N"))):
 			m.phase = providerPhaseList
 			return m, nil
 		}
+
+	case providerPhaseAPIKey:
+		if cancel {
+			return m, func() tea.Msg { return providerAuthCancelMsg{} }
+		}
+		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
+			val := strings.TrimSpace(m.apiKey.Value())
+			if val == "" {
+				m.errMsg = "api key cannot be empty"
+				return m, nil
+			}
+			m.errMsg = ""
+			return m, m.submitAPIKeyCmd(m.activeProvider.ProviderID, val)
+		}
+		// Forward any other key to the textinput.
+		var cmd tea.Cmd
+		m.apiKey, cmd = m.apiKey.Update(msg)
+		return m, cmd
 
 	case providerPhaseAwaiting:
 		if cancel {
@@ -283,6 +345,17 @@ func (m providerAuthModel) startFlowCmd(providerID string) tea.Cmd {
 	}
 }
 
+func (m providerAuthModel) submitAPIKeyCmd(providerID, key string) tea.Cmd {
+	hub := m.hub
+	hostname := m.hostname
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		start, err := hub.Host(hostname).SubmitAuthAPIKey(ctx, providerID, key)
+		return providerStartedMsg{start: start, err: err}
+	}
+}
+
 func (m providerAuthModel) statusCmd() tea.Cmd {
 	hub := m.hub
 	hostname := m.hostname
@@ -291,7 +364,7 @@ func (m providerAuthModel) statusCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		status, err := hub.Host(hostname).AuthDeviceFlowStatus(ctx, provider, flowID)
+		status, err := hub.Host(hostname).AuthFlowStatus(ctx, provider, flowID)
 		return providerStatusMsg{status: status, err: err}
 	}
 }
@@ -313,7 +386,7 @@ func (m providerAuthModel) cancelFlowCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = hub.Host(hostname).CancelAuthDeviceFlow(ctx, provider, flowID)
+		_ = hub.Host(hostname).CancelAuthFlow(ctx, provider, flowID)
 		return providerAuthCancelMsg{}
 	}
 }
@@ -378,17 +451,33 @@ func (m providerAuthModel) View() string {
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
 			Render("y/enter to continue · n/esc to cancel"))
 
-	case providerPhaseAwaiting:
-		sb.WriteString("In your browser, open:\n")
-		sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render("  " + m.flow.VerificationURL))
-		sb.WriteString("\n\nEnter this code:\n")
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(textColor).
-			Render("  " + m.flow.UserCode))
+	case providerPhaseAPIKey:
+		sb.WriteString(fmt.Sprintf("Paste your %s API key:\n\n", m.activeProvider.DisplayName))
+		sb.WriteString(m.apiKey.View())
 		sb.WriteString("\n\n")
-		label := "Waiting for authorization…"
-		if m.flowState == agent.DeviceFlowAuthorized {
-			label = "Authorized — restarting OpenCode server (this can take 10–15s)…"
+		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Italic(true).
+			Render("the key is sent directly to the sandbox; clank's hub never sees it"))
+		if m.errMsg != "" {
+			sb.WriteString("\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Render(m.errMsg))
 		}
+		sb.WriteString("\n\n")
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
+			Render("enter to submit · esc to cancel"))
+
+	case providerPhaseAwaiting:
+		// Device flows show the URL + user_code; API-key flows skip
+		// straight to the spinner because there's nothing for the user
+		// to do externally.
+		if m.flow.UserCode != "" {
+			sb.WriteString("In your browser, open:\n")
+			sb.WriteString(lipgloss.NewStyle().Foreground(primaryColor).Render("  " + m.flow.VerificationURL))
+			sb.WriteString("\n\nEnter this code:\n")
+			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(textColor).
+				Render("  " + m.flow.UserCode))
+			sb.WriteString("\n\n")
+		}
+		label := awaitingLabel(m.flowState, m.flow.UserCode != "")
 		sb.WriteString(m.spinner.View() + " " + label)
 		sb.WriteString("\n\n")
 		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
@@ -414,4 +503,17 @@ func (m providerAuthModel) View() string {
 		BorderForeground(primaryColor).
 		Padding(1, 2).
 		Render(sb.String())
+}
+
+// awaitingLabel chooses the spinner label based on flow state +
+// whether this is a device flow (showing URL) or an API-key flow
+// (already submitted, just waiting on restart).
+func awaitingLabel(state agent.DeviceFlowState, isDevice bool) string {
+	if state == agent.DeviceFlowAuthorized {
+		return "Authorized — restarting OpenCode server (this can take 10–15s)…"
+	}
+	if isDevice {
+		return "Waiting for authorization…"
+	}
+	return "Saving credential…"
 }

@@ -37,6 +37,39 @@ import (
 // at packages/opencode/src/plugin/github-copilot/copilot.ts.
 const ProviderGitHubCopilot = "github-copilot"
 
+// providerCatalog enumerates the providers this AuthManager knows
+// how to authenticate. Phase 1 hardcoded only github-copilot; Phase 2
+// adds the common API-key providers. Keys match the AI SDK's
+// canonical provider IDs (`@ai-sdk/openai` → `openai`, etc.) which
+// OpenCode uses as the auth.json keys.
+//
+// The ordering controls how providers appear in the TUI list.
+// Anthropic and Bedrock/Vertex/Azure are intentionally omitted: the
+// Anthropic-via-OpenCode path is out-of-scope for v1 (per the plan's
+// strategic-pivot non-goal), and the cloud-IAM providers need
+// multi-field forms which Phase 3 will add.
+var providerCatalog = []agent.ProviderAuthInfo{
+	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: "device"},
+	{ProviderID: "openai", DisplayName: "OpenAI", AuthType: "api"},
+	{ProviderID: "google", DisplayName: "Google Gemini", AuthType: "api"},
+	{ProviderID: "xai", DisplayName: "xAI (Grok)", AuthType: "api"},
+	{ProviderID: "groq", DisplayName: "Groq", AuthType: "api"},
+	{ProviderID: "deepseek", DisplayName: "DeepSeek", AuthType: "api"},
+	{ProviderID: "mistral", DisplayName: "Mistral", AuthType: "api"},
+	{ProviderID: "openrouter", DisplayName: "OpenRouter", AuthType: "api"},
+}
+
+// providerByID looks up a catalog entry by provider ID. Returns
+// false if the ID is not known to this manager.
+func providerByID(id string) (agent.ProviderAuthInfo, bool) {
+	for _, p := range providerCatalog {
+		if p.ProviderID == id {
+			return p, true
+		}
+	}
+	return agent.ProviderAuthInfo{}, false
+}
+
 // copilotClientID is OpenCode's GitHub OAuth app client_id, the same
 // one the upstream plugin uses. Pinned here so the device flow we
 // initiate is recognized by GitHub as opencode-style usage.
@@ -116,20 +149,19 @@ func (a *AuthManager) AuthJSONPath() string {
 
 // ListProviders returns the providers this host knows how to
 // authenticate, with their current connection state read from
-// auth.json. Phase 1 hardcodes the github-copilot entry; Phase 2
-// expands by querying OpenCode's plugin auth methods.
+// auth.json. The catalog is currently hardcoded (see providerCatalog);
+// Phase 4 will replace this with a query against OpenCode's plugin
+// auth methods so the list adapts as users install npm-based provider
+// plugins.
 func (a *AuthManager) ListProviders(_ context.Context) ([]agent.ProviderAuthInfo, error) {
 	store, err := a.readAuthJSON()
 	if err != nil {
 		return nil, err
 	}
-	infos := []agent.ProviderAuthInfo{
-		{
-			ProviderID:  ProviderGitHubCopilot,
-			DisplayName: "GitHub Copilot",
-			AuthType:    "device",
-			Connected:   store[ProviderGitHubCopilot].Type != "",
-		},
+	infos := make([]agent.ProviderAuthInfo, 0, len(providerCatalog))
+	for _, p := range providerCatalog {
+		p.Connected = store[p.ProviderID].Type != ""
+		infos = append(infos, p)
 	}
 	return infos, nil
 }
@@ -145,7 +177,8 @@ var ErrUnknownProvider = errors.New("unknown auth provider")
 // the flow's in-memory state is updated as it transitions
 // pending → authorized → success.
 func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (agent.DeviceFlowStart, error) {
-	if providerID != ProviderGitHubCopilot {
+	info, ok := providerByID(providerID)
+	if !ok || info.AuthType != "device" {
 		return agent.DeviceFlowStart{}, ErrUnknownProvider
 	}
 	device, err := a.startCopilotDeviceCode(ctx)
@@ -169,6 +202,62 @@ func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (a
 		ExpiresAt:       time.Now().Add(time.Duration(device.ExpiresIn) * time.Second),
 		Interval:        device.Interval,
 	}, nil
+}
+
+// ErrInvalidAPIKey is returned when SubmitAPIKey is called with a
+// blank or whitespace-only key. Mux handlers map this to a 400.
+var ErrInvalidAPIKey = errors.New("api key cannot be empty")
+
+// SubmitAPIKey stores an API key for providerID and triggers an
+// OpenCode restart so the new credential takes effect. Returns a
+// flow_id the client polls via GetFlowStatus to observe the
+// authorized → success transition (the restart is the only
+// long-running step; "pending" is essentially instantaneous for
+// this flow type, but exposing it keeps the state machine uniform
+// with device flows).
+func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string) (string, error) {
+	info, ok := providerByID(providerID)
+	if !ok || info.AuthType != "api" {
+		return "", ErrUnknownProvider
+	}
+	if strings.TrimSpace(key) == "" {
+		return "", ErrInvalidAPIKey
+	}
+
+	flowID := ulid.Make().String()
+	flowCtx, cancel := context.WithCancel(context.Background())
+	a.flowMu.Lock()
+	a.flows[flowID] = &flowState{state: agent.DeviceFlowPending, cancel: cancel}
+	a.flowMu.Unlock()
+
+	go a.runAPIKeyFlow(flowCtx, flowID, providerID, key)
+	return flowID, nil
+}
+
+// runAPIKeyFlow writes the credential, then restarts OpenCode. The
+// state transitions mirror the device flow tail: pending → authorized
+// (auth.json written, restart starting) → success (server healthy).
+// Cancellation between authorized and success is honored; a kill
+// signal at that point still leaves the credential in place but
+// surfaces a canceled flow state to the TUI.
+func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key string) {
+	cred := agent.AuthCredential{Type: "api", Key: key}
+	if err := a.writeAuthJSON(providerID, cred); err != nil {
+		a.transition(flowID, agent.DeviceFlowError, "write auth.json: "+err.Error())
+		return
+	}
+	a.transition(flowID, agent.DeviceFlowAuthorized, "")
+	if a.restart != nil {
+		if err := a.restart(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				a.transition(flowID, agent.DeviceFlowCanceled, "")
+				return
+			}
+			a.transition(flowID, agent.DeviceFlowError, "restart opencode: "+err.Error())
+			return
+		}
+	}
+	a.transition(flowID, agent.DeviceFlowSuccess, "")
 }
 
 // GetFlowStatus returns the current state of flowID. Pure read.
@@ -210,7 +299,7 @@ func (a *AuthManager) CancelFlow(_ context.Context, flowID string) error {
 // DeleteCredential removes providerID from auth.json and triggers an
 // OpenCode restart. Used for "log out" actions.
 func (a *AuthManager) DeleteCredential(ctx context.Context, providerID string) error {
-	if providerID != ProviderGitHubCopilot {
+	if _, ok := providerByID(providerID); !ok {
 		return ErrUnknownProvider
 	}
 	if err := a.removeFromAuthJSON(providerID); err != nil {

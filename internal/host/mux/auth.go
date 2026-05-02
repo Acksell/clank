@@ -4,6 +4,13 @@ package hostmux
 // contract clank-host exposes to the hub for provider authentication.
 // See internal/host/auth.go for the actual flow logic; this file is
 // pure decode/dispatch/encode.
+//
+// Path conventions:
+//   /auth/{provider}/device/start  — device-flow only (Copilot-style OAuth)
+//   /auth/{provider}/apikey        — api-key flow (paste a key)
+//   /auth/{provider}/flow/status   — flow-type-agnostic status poll
+//   /auth/{provider}/flow          — flow-type-agnostic cancel (DELETE)
+//   /auth/{provider}               — log out (delete stored credential)
 
 import (
 	"errors"
@@ -18,8 +25,9 @@ import (
 func (m *Mux) registerAuth(mx *http.ServeMux) {
 	mx.HandleFunc("GET /auth/providers", m.handleListAuthProviders)
 	mx.HandleFunc("POST /auth/{provider}/device/start", m.handleStartDeviceFlow)
-	mx.HandleFunc("GET /auth/{provider}/device/status", m.handleDeviceFlowStatus)
-	mx.HandleFunc("DELETE /auth/{provider}/device", m.handleCancelDeviceFlow)
+	mx.HandleFunc("POST /auth/{provider}/apikey", m.handleSubmitAPIKey)
+	mx.HandleFunc("GET /auth/{provider}/flow/status", m.handleFlowStatus)
+	mx.HandleFunc("DELETE /auth/{provider}/flow", m.handleCancelFlow)
 	mx.HandleFunc("DELETE /auth/{provider}", m.handleDeleteCredential)
 }
 
@@ -69,7 +77,32 @@ func (m *Mux) handleStartDeviceFlow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, start)
 }
 
-func (m *Mux) handleDeviceFlowStatus(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleSubmitAPIKey(w http.ResponseWriter, r *http.Request) {
+	a, ok := m.requireAuth(w)
+	if !ok {
+		return
+	}
+	provider := r.PathValue("provider")
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "provider is required"})
+		return
+	}
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r.Body, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "invalid JSON: " + err.Error()})
+		return
+	}
+	flowID, err := a.SubmitAPIKey(r.Context(), provider, body.Key)
+	if err != nil {
+		writeAuthErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agent.DeviceFlowStart{FlowID: flowID})
+}
+
+func (m *Mux) handleFlowStatus(w http.ResponseWriter, r *http.Request) {
 	a, ok := m.requireAuth(w)
 	if !ok {
 		return
@@ -87,7 +120,7 @@ func (m *Mux) handleDeviceFlowStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (m *Mux) handleCancelDeviceFlow(w http.ResponseWriter, r *http.Request) {
+func (m *Mux) handleCancelFlow(w http.ResponseWriter, r *http.Request) {
 	a, ok := m.requireAuth(w)
 	if !ok {
 		return
@@ -129,6 +162,8 @@ func writeAuthErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "unknown_provider", Error: err.Error()})
 	case errors.Is(err, host.ErrUnknownFlow):
 		writeJSON(w, http.StatusNotFound, errResp{Code: "unknown_flow", Error: err.Error()})
+	case errors.Is(err, host.ErrInvalidAPIKey):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_api_key", Error: err.Error()})
 	default:
 		writeError(w, err)
 	}
