@@ -88,13 +88,14 @@ func (m *Mux) handleSubmitAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Key string `json:"key"`
+		Key      string            `json:"key"`
+		Metadata map[string]string `json:"metadata,omitempty"`
 	}
 	if err := decodeJSON(r.Body, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_request", Error: "invalid JSON: " + err.Error()})
 		return
 	}
-	flowID, err := a.SubmitAPIKey(r.Context(), provider, body.Key)
+	flowID, err := a.SubmitAPIKey(r.Context(), provider, body.Key, body.Metadata)
 	if err != nil {
 		writeAuthErr(w, err)
 		return
@@ -164,6 +165,8 @@ func writeAuthErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, errResp{Code: "unknown_flow", Error: err.Error()})
 	case errors.Is(err, host.ErrInvalidAPIKey):
 		writeJSON(w, http.StatusBadRequest, errResp{Code: "invalid_api_key", Error: err.Error()})
+	case errors.Is(err, host.ErrMissingPrompt):
+		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_prompt", Error: err.Error()})
 	default:
 		writeError(w, err)
 	}

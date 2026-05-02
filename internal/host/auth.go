@@ -39,15 +39,18 @@ const ProviderGitHubCopilot = "github-copilot"
 
 // providerCatalog enumerates the providers this AuthManager knows
 // how to authenticate. Phase 1 hardcoded only github-copilot; Phase 2
-// adds the common API-key providers. Keys match the AI SDK's
-// canonical provider IDs (`@ai-sdk/openai` → `openai`, etc.) which
-// OpenCode uses as the auth.json keys.
+// added single-key API providers; Phase 3 adds providers that need
+// extra prompts (Azure, Cloudflare). Keys match OpenCode's auth.json
+// keys (provider IDs from the AI SDK package names or the upstream
+// plugin's `auth.provider` field).
 //
 // The ordering controls how providers appear in the TUI list.
-// Anthropic and Bedrock/Vertex/Azure are intentionally omitted: the
-// Anthropic-via-OpenCode path is out-of-scope for v1 (per the plan's
-// strategic-pivot non-goal), and the cloud-IAM providers need
-// multi-field forms which Phase 3 will add.
+// Anthropic is intentionally omitted (per the v1 strategic-pivot
+// non-goal). Bedrock and Vertex are also omitted for now: Bedrock
+// uses bearer tokens that most users haven't pre-provisioned, and
+// Vertex needs Application Default Credentials (a multi-line JSON
+// service-account file) that doesn't fit the auth.json shape — both
+// are deferrable to a later phase that adds richer credential types.
 var providerCatalog = []agent.ProviderAuthInfo{
 	{ProviderID: ProviderGitHubCopilot, DisplayName: "GitHub Copilot", AuthType: "device"},
 	{ProviderID: "openai", DisplayName: "OpenAI", AuthType: "api"},
@@ -57,6 +60,25 @@ var providerCatalog = []agent.ProviderAuthInfo{
 	{ProviderID: "deepseek", DisplayName: "DeepSeek", AuthType: "api"},
 	{ProviderID: "mistral", DisplayName: "Mistral", AuthType: "api"},
 	{ProviderID: "openrouter", DisplayName: "OpenRouter", AuthType: "api"},
+	{
+		ProviderID: "azure", DisplayName: "Azure OpenAI", AuthType: "api",
+		Prompts: []agent.ProviderPrompt{
+			{Key: "resourceName", Message: "Azure resource name", Placeholder: "e.g. my-models"},
+		},
+	},
+	{
+		ProviderID: "cloudflare-workers-ai", DisplayName: "Cloudflare Workers AI", AuthType: "api",
+		Prompts: []agent.ProviderPrompt{
+			{Key: "accountId", Message: "Cloudflare Account ID", Placeholder: "e.g. 1234567890abcdef1234567890abcdef"},
+		},
+	},
+	{
+		ProviderID: "cloudflare-ai-gateway", DisplayName: "Cloudflare AI Gateway", AuthType: "api",
+		Prompts: []agent.ProviderPrompt{
+			{Key: "accountId", Message: "Cloudflare Account ID", Placeholder: "e.g. 1234567890abcdef1234567890abcdef"},
+			{Key: "gatewayId", Message: "AI Gateway ID", Placeholder: "e.g. my-gateway"},
+		},
+	},
 }
 
 // providerByID looks up a catalog entry by provider ID. Returns
@@ -208,20 +230,43 @@ func (a *AuthManager) StartDeviceFlow(ctx context.Context, providerID string) (a
 // blank or whitespace-only key. Mux handlers map this to a 400.
 var ErrInvalidAPIKey = errors.New("api key cannot be empty")
 
-// SubmitAPIKey stores an API key for providerID and triggers an
-// OpenCode restart so the new credential takes effect. Returns a
-// flow_id the client polls via GetFlowStatus to observe the
-// authorized → success transition (the restart is the only
-// long-running step; "pending" is essentially instantaneous for
-// this flow type, but exposing it keeps the state machine uniform
-// with device flows).
-func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string) (string, error) {
+// ErrMissingPrompt is returned when a provider declares prompts in
+// its catalog entry (e.g. Azure resourceName, Cloudflare accountId)
+// but the caller didn't supply a value for one of them.
+var ErrMissingPrompt = errors.New("required provider prompt missing")
+
+// SubmitAPIKey stores an API key for providerID — plus any
+// provider-specific metadata fields (Azure resource name, Cloudflare
+// account/gateway IDs, etc.) — and triggers an OpenCode restart so
+// the new credential takes effect. Returns a flow_id the client
+// polls via GetFlowStatus to observe the authorized → success
+// transition (the restart is the only long-running step; "pending"
+// is essentially instantaneous for this flow type, but exposing it
+// keeps the state machine uniform with device flows).
+//
+// metadata may be nil for providers that need only a key. When the
+// catalog entry declares Prompts, every prompt key must be present
+// in metadata with a non-blank value, or ErrMissingPrompt is
+// returned before the goroutine spawns.
+func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string, metadata map[string]string) (string, error) {
 	info, ok := providerByID(providerID)
 	if !ok || info.AuthType != "api" {
 		return "", ErrUnknownProvider
 	}
 	if strings.TrimSpace(key) == "" {
 		return "", ErrInvalidAPIKey
+	}
+	for _, p := range info.Prompts {
+		if strings.TrimSpace(metadata[p.Key]) == "" {
+			return "", fmt.Errorf("%w: %s", ErrMissingPrompt, p.Key)
+		}
+	}
+	// Filter metadata to only keys this provider knows about, both
+	// to drop typos from the client and to avoid persisting unrelated
+	// fields to auth.json.
+	cleaned := make(map[string]string, len(info.Prompts))
+	for _, p := range info.Prompts {
+		cleaned[p.Key] = strings.TrimSpace(metadata[p.Key])
 	}
 
 	flowID := ulid.Make().String()
@@ -230,7 +275,7 @@ func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string) (s
 	a.flows[flowID] = &flowState{state: agent.DeviceFlowPending, cancel: cancel}
 	a.flowMu.Unlock()
 
-	go a.runAPIKeyFlow(flowCtx, flowID, providerID, key)
+	go a.runAPIKeyFlow(flowCtx, flowID, providerID, key, cleaned)
 	return flowID, nil
 }
 
@@ -240,8 +285,11 @@ func (a *AuthManager) SubmitAPIKey(_ context.Context, providerID, key string) (s
 // Cancellation between authorized and success is honored; a kill
 // signal at that point still leaves the credential in place but
 // surfaces a canceled flow state to the TUI.
-func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key string) {
+func (a *AuthManager) runAPIKeyFlow(ctx context.Context, flowID, providerID, key string, metadata map[string]string) {
 	cred := agent.AuthCredential{Type: "api", Key: key}
+	if len(metadata) > 0 {
+		cred.Metadata = metadata
+	}
 	if err := a.writeAuthJSON(providerID, cred); err != nil {
 		a.transition(flowID, agent.DeviceFlowError, "write auth.json: "+err.Error())
 		return

@@ -161,7 +161,7 @@ func TestAuthManager_SubmitAPIKey_HappyPath(t *testing.T) {
 	var restartCalls int32
 	a.restart = func(context.Context) error { atomic.AddInt32(&restartCalls, 1); return nil }
 
-	flowID, err := a.SubmitAPIKey(context.Background(), "openai", "sk-test-12345")
+	flowID, err := a.SubmitAPIKey(context.Background(), "openai", "sk-test-12345", nil)
 	if err != nil {
 		t.Fatalf("SubmitAPIKey: %v", err)
 	}
@@ -212,10 +212,10 @@ func TestAuthManager_SubmitAPIKey_HappyPath(t *testing.T) {
 func TestAuthManager_SubmitAPIKey_RejectsBlankKey(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAuthManager(t)
-	if _, err := a.SubmitAPIKey(context.Background(), "openai", ""); err == nil {
+	if _, err := a.SubmitAPIKey(context.Background(), "openai", "", nil); err == nil {
 		t.Errorf("expected ErrInvalidAPIKey on empty key")
 	}
-	if _, err := a.SubmitAPIKey(context.Background(), "openai", "   "); err == nil {
+	if _, err := a.SubmitAPIKey(context.Background(), "openai", "   ", nil); err == nil {
 		t.Errorf("expected ErrInvalidAPIKey on whitespace key")
 	}
 }
@@ -225,8 +225,117 @@ func TestAuthManager_SubmitAPIKey_RejectsBlankKey(t *testing.T) {
 func TestAuthManager_SubmitAPIKey_RejectsDeviceProvider(t *testing.T) {
 	t.Parallel()
 	a, _ := newTestAuthManager(t)
-	if _, err := a.SubmitAPIKey(context.Background(), "github-copilot", "ghp_test"); err == nil {
+	if _, err := a.SubmitAPIKey(context.Background(), "github-copilot", "ghp_test", nil); err == nil {
 		t.Errorf("expected error when submitting api key for github-copilot (device type)")
+	}
+}
+
+// Multi-field providers (Azure, Cloudflare) must round-trip both
+// the key and the prompt metadata to auth.json.
+func TestAuthManager_SubmitAPIKey_WithMetadata(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+	a.restart = func(context.Context) error { return nil }
+
+	flowID, err := a.SubmitAPIKey(context.Background(), "azure", "az-key-123", map[string]string{
+		"resourceName": "my-models",
+	})
+	if err != nil {
+		t.Fatalf("SubmitAPIKey: %v", err)
+	}
+
+	// Wait for the flow to complete.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		status, _ := a.GetFlowStatus(context.Background(), flowID)
+		if status.State == agent.DeviceFlowSuccess || status.State == agent.DeviceFlowError {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	var stored map[string]agent.AuthCredential
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode auth.json: %v", err)
+	}
+	got := stored["azure"]
+	if got.Type != "api" || got.Key != "az-key-123" {
+		t.Errorf("expected azure api/az-key-123, got %+v", got)
+	}
+	if got.Metadata["resourceName"] != "my-models" {
+		t.Errorf("expected resourceName=my-models, got %+v", got.Metadata)
+	}
+}
+
+// Missing required prompts must reject before the goroutine spawns.
+// Otherwise we'd write a half-baked credential to auth.json.
+func TestAuthManager_SubmitAPIKey_RejectsMissingPrompt(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	// Azure requires resourceName; submit without it.
+	if _, err := a.SubmitAPIKey(context.Background(), "azure", "az-key", nil); err == nil {
+		t.Errorf("expected ErrMissingPrompt on azure without resourceName")
+	}
+	// Empty value should also reject.
+	if _, err := a.SubmitAPIKey(context.Background(), "azure", "az-key", map[string]string{
+		"resourceName": "   ",
+	}); err == nil {
+		t.Errorf("expected ErrMissingPrompt on whitespace resourceName")
+	}
+}
+
+// Cloudflare AI Gateway has two prompts (accountId + gatewayId).
+// Only providing one should still reject.
+func TestAuthManager_SubmitAPIKey_RejectsPartialPrompts(t *testing.T) {
+	t.Parallel()
+	a, _ := newTestAuthManager(t)
+
+	if _, err := a.SubmitAPIKey(context.Background(), "cloudflare-ai-gateway", "cf-key", map[string]string{
+		"accountId": "abc123",
+		// gatewayId missing
+	}); err == nil {
+		t.Errorf("expected ErrMissingPrompt when gatewayId omitted")
+	}
+}
+
+// Unknown metadata keys (e.g. typos) must be silently dropped at
+// the manager boundary — a misspelled "resourcename" shouldn't end
+// up in auth.json next to the real "resourceName".
+func TestAuthManager_SubmitAPIKey_FiltersUnknownMetadata(t *testing.T) {
+	t.Parallel()
+	a, home := newTestAuthManager(t)
+	a.restart = func(context.Context) error { return nil }
+
+	_, err := a.SubmitAPIKey(context.Background(), "azure", "az-key", map[string]string{
+		"resourceName": "my-models",
+		"unrelated":    "should be dropped",
+	})
+	if err != nil {
+		t.Fatalf("SubmitAPIKey: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		// Wait for write to complete.
+		path := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+		if _, err := os.Stat(path); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	data, _ := os.ReadFile(authPath)
+	var stored map[string]agent.AuthCredential
+	_ = json.Unmarshal(data, &stored)
+	if _, ok := stored["azure"].Metadata["unrelated"]; ok {
+		t.Errorf("expected unrelated metadata key to be filtered, but it persisted")
 	}
 }
 

@@ -34,15 +34,18 @@ func (h *HostClient) StartAuthDeviceFlow(ctx context.Context, providerID string)
 	return out, nil
 }
 
-// SubmitAuthAPIKey stores an API key for providerID on this host
-// and returns a flow_id the caller polls until the OpenCode restart
-// completes.
-func (h *HostClient) SubmitAuthAPIKey(ctx context.Context, providerID, key string) (agent.DeviceFlowStart, error) {
+// SubmitAuthAPIKey stores an API key (and provider-specific metadata
+// fields like Azure resourceName or Cloudflare accountId) for
+// providerID on this host and returns a flow_id the caller polls
+// until the OpenCode restart completes. metadata may be nil for
+// providers that need only a key.
+func (h *HostClient) SubmitAuthAPIKey(ctx context.Context, providerID, key string, metadata map[string]string) (agent.DeviceFlowStart, error) {
 	var out agent.DeviceFlowStart
 	path := h.base() + "/auth/" + url.PathEscape(providerID) + "/apikey"
 	body := struct {
-		Key string `json:"key"`
-	}{Key: key}
+		Key      string            `json:"key"`
+		Metadata map[string]string `json:"metadata,omitempty"`
+	}{Key: key, Metadata: metadata}
 	if err := h.c.post(ctx, path, body, &out); err != nil {
 		return agent.DeviceFlowStart{}, err
 	}

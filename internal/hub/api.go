@@ -587,15 +587,15 @@ func (s *Service) StartAuthDeviceFlowOnHost(ctx context.Context, hostname host.H
 	return hc.StartDeviceFlow(ctx, providerID)
 }
 
-// SubmitAuthAPIKeyOnHost stores an API key for providerID on the
-// named host and returns a flow_id the client polls until the
-// post-write OpenCode restart finishes.
-func (s *Service) SubmitAuthAPIKeyOnHost(ctx context.Context, hostname host.Hostname, providerID, key string) (agent.DeviceFlowStart, error) {
+// SubmitAuthAPIKeyOnHost stores an API key (and any provider-specific
+// metadata) for providerID on the named host and returns a flow_id
+// the client polls until the post-write OpenCode restart finishes.
+func (s *Service) SubmitAuthAPIKeyOnHost(ctx context.Context, hostname host.Hostname, providerID, key string, metadata map[string]string) (agent.DeviceFlowStart, error) {
 	hc, ok := s.Host(hostname)
 	if !ok {
 		return agent.DeviceFlowStart{}, ErrHostNotRegistered(hostname)
 	}
-	return hc.SubmitAPIKey(ctx, providerID, key)
+	return hc.SubmitAPIKey(ctx, providerID, key, metadata)
 }
 
 // AuthFlowStatusOnHost returns the current state of an in-progress

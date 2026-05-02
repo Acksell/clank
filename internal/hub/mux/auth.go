@@ -67,13 +67,14 @@ func (m *Mux) handleSubmitAuthAPIKeyOnHost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var body struct {
-		Key string `json:"key"`
+		Key      string            `json:"key"`
+		Metadata map[string]string `json:"metadata,omitempty"`
 	}
 	if err := decodeJSON(r.Body, &body); err != nil {
 		writeBadRequest(w, "invalid JSON: "+err.Error())
 		return
 	}
-	start, err := m.svc.SubmitAuthAPIKeyOnHost(r.Context(), hostname, provider, body.Key)
+	start, err := m.svc.SubmitAuthAPIKeyOnHost(r.Context(), hostname, provider, body.Key, body.Metadata)
 	if err != nil {
 		writeAuthErr(w, err)
 		return

@@ -12,6 +12,12 @@ import "time"
 // both Refresh and Access set to the same GitHub access_token and
 // Expires=0 (Copilot tokens do not have a tracked TTL in OpenCode).
 // See packages/opencode/src/plugin/github-copilot/copilot.ts.
+//
+// For api-typed providers that need extra context beyond a single
+// key (Azure resource name, Cloudflare account/gateway IDs, etc.),
+// Metadata carries arbitrary string key-value pairs. The OpenCode
+// provider loader reads these via `auth.metadata?.fieldName` — see
+// the cloudflare/azure plugins for the exact field names.
 type AuthCredential struct {
 	Type    string `json:"type"`
 	Refresh string `json:"refresh,omitempty"`
@@ -23,17 +29,34 @@ type AuthCredential struct {
 	// plugin populates when the deployment type is "enterprise". The
 	// loader uses it to compute the API base URL.
 	EnterpriseURL string `json:"enterpriseUrl,omitempty"`
+
+	// Metadata holds provider-specific extra fields for api-type
+	// credentials (Azure resourceName, Cloudflare accountId/gatewayId).
+	// Empty for providers that need only a key.
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// ProviderPrompt describes one extra input field a provider needs
+// beyond the API key itself. The TUI renders one textinput per prompt
+// in order, then the key. Mirrors the prompt shape OpenCode plugins
+// use (see packages/opencode/src/provider/auth.ts), trimmed to the
+// "text" type — Phase 3 doesn't need select prompts yet.
+type ProviderPrompt struct {
+	Key         string `json:"key"`
+	Message     string `json:"message"`
+	Placeholder string `json:"placeholder,omitempty"`
 }
 
 // ProviderAuthInfo is the snapshot a client gets from
 // GET /auth/providers. AuthType selects which begin-flow the client
 // dispatches to: "device" (kicks off device flow) or "api" (prompts
-// for a key).
+// for a key plus any Prompts the provider needs).
 type ProviderAuthInfo struct {
-	ProviderID  string `json:"provider_id"`
-	DisplayName string `json:"display_name"`
-	AuthType    string `json:"auth_type"`
-	Connected   bool   `json:"connected"`
+	ProviderID  string           `json:"provider_id"`
+	DisplayName string           `json:"display_name"`
+	AuthType    string           `json:"auth_type"`
+	Connected   bool             `json:"connected"`
+	Prompts     []ProviderPrompt `json:"prompts,omitempty"`
 }
 
 // DeviceFlowStart is the response body for POST /auth/{provider}/device/start.

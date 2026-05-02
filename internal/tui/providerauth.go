@@ -111,6 +111,16 @@ type providerAuthModel struct {
 	// apiKey is the textinput model used during providerPhaseAPIKey.
 	apiKey textinput.Model
 
+	// promptIndex tracks which prompt input the user is currently
+	// filling, for providers whose catalog entry has Prompts.
+	// Range: 0 ..= len(activeProvider.Prompts). When equal to the
+	// length, the user is on the API key itself.
+	promptIndex int
+
+	// metadata accumulates the prompt answers as the user advances
+	// through them. Submitted as the request body's "metadata" field.
+	metadata map[string]string
+
 	errMsg  string
 	spinner spinner.Model
 }
@@ -274,7 +284,9 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 				return m, m.startFlowCmd(m.activeProvider.ProviderID)
 			case "api":
 				m.phase = providerPhaseAPIKey
-				m.apiKey.SetValue("")
+				m.promptIndex = 0
+				m.metadata = make(map[string]string, len(m.activeProvider.Prompts))
+				m.configureInputForCurrentField()
 				return m, m.apiKey.Focus()
 			default:
 				m.phase = providerPhaseError
@@ -293,11 +305,21 @@ func (m providerAuthModel) handleKey(msg tea.KeyPressMsg) (providerAuthModel, te
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
 			val := strings.TrimSpace(m.apiKey.Value())
 			if val == "" {
-				m.errMsg = "api key cannot be empty"
+				m.errMsg = "value cannot be empty"
 				return m, nil
 			}
 			m.errMsg = ""
-			return m, m.submitAPIKeyCmd(m.activeProvider.ProviderID, val)
+			// Are we still collecting metadata prompts, or on the
+			// final API key field?
+			if m.promptIndex < len(m.activeProvider.Prompts) {
+				field := m.activeProvider.Prompts[m.promptIndex]
+				m.metadata[field.Key] = val
+				m.promptIndex++
+				m.configureInputForCurrentField()
+				return m, m.apiKey.Focus()
+			}
+			// All fields collected — submit.
+			return m, m.submitAPIKeyCmd(m.activeProvider.ProviderID, val, m.metadata)
 		}
 		// Forward any other key to the textinput.
 		var cmd tea.Cmd
@@ -345,14 +367,30 @@ func (m providerAuthModel) startFlowCmd(providerID string) tea.Cmd {
 	}
 }
 
-func (m providerAuthModel) submitAPIKeyCmd(providerID, key string) tea.Cmd {
+func (m providerAuthModel) submitAPIKeyCmd(providerID, key string, metadata map[string]string) tea.Cmd {
 	hub := m.hub
 	hostname := m.hostname
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		start, err := hub.Host(hostname).SubmitAuthAPIKey(ctx, providerID, key)
+		start, err := hub.Host(hostname).SubmitAuthAPIKey(ctx, providerID, key, metadata)
 		return providerStartedMsg{start: start, err: err}
+	}
+}
+
+// configureInputForCurrentField re-skins the textinput to match
+// whichever field the user is on — masking turns on only for the
+// final API key (so accountId / resourceName / etc. are typed
+// visibly), and the placeholder mirrors the catalog's prompt hint.
+func (m *providerAuthModel) configureInputForCurrentField() {
+	m.apiKey.SetValue("")
+	if m.promptIndex < len(m.activeProvider.Prompts) {
+		p := m.activeProvider.Prompts[m.promptIndex]
+		m.apiKey.Placeholder = p.Placeholder
+		m.apiKey.EchoMode = textinput.EchoNormal
+	} else {
+		m.apiKey.Placeholder = "sk-..."
+		m.apiKey.EchoMode = textinput.EchoPassword
 	}
 }
 
@@ -452,18 +490,48 @@ func (m providerAuthModel) View() string {
 			Render("y/enter to continue · n/esc to cancel"))
 
 	case providerPhaseAPIKey:
-		sb.WriteString(fmt.Sprintf("Paste your %s API key:\n\n", m.activeProvider.DisplayName))
+		// Show provider title.
+		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).
+			Render("Provider: " + m.activeProvider.DisplayName))
+		sb.WriteString("\n\n")
+
+		// Echo previously-collected prompt answers so the user can
+		// double-check before submitting.
+		for i := 0; i < m.promptIndex && i < len(m.activeProvider.Prompts); i++ {
+			p := m.activeProvider.Prompts[i]
+			line := lipgloss.NewStyle().Foreground(dimColor).Render("  "+p.Message+":") +
+				"  " + lipgloss.NewStyle().Foreground(textColor).Render(m.metadata[p.Key])
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+		if m.promptIndex > 0 {
+			sb.WriteString("\n")
+		}
+
+		// Current field label.
+		var fieldLabel string
+		if m.promptIndex < len(m.activeProvider.Prompts) {
+			fieldLabel = m.activeProvider.Prompts[m.promptIndex].Message
+		} else {
+			fieldLabel = "API key"
+		}
+		sb.WriteString(fmt.Sprintf("%s:\n", fieldLabel))
 		sb.WriteString(m.apiKey.View())
 		sb.WriteString("\n\n")
+
+		// Privacy note + submit hint.
 		sb.WriteString(lipgloss.NewStyle().Foreground(mutedColor).Italic(true).
-			Render("the key is sent directly to the sandbox; clank's hub never sees it"))
+			Render("values are sent directly to the sandbox; clank's hub never sees them"))
 		if m.errMsg != "" {
 			sb.WriteString("\n")
 			sb.WriteString(lipgloss.NewStyle().Foreground(dangerColor).Render(m.errMsg))
 		}
 		sb.WriteString("\n\n")
-		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).
-			Render("enter to submit · esc to cancel"))
+		hint := "enter to continue · esc to cancel"
+		if m.promptIndex >= len(m.activeProvider.Prompts) {
+			hint = "enter to submit · esc to cancel"
+		}
+		sb.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
 
 	case providerPhaseAwaiting:
 		// Device flows show the URL + user_code; API-key flows skip
