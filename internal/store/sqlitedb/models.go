@@ -17,6 +17,7 @@ type Host struct {
 	Status     string
 	LastUrl    string
 	LastToken  string
+	AuthToken  string
 	AutoWake   int64
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

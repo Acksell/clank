@@ -252,6 +252,47 @@ func (s *Store) migrate() error {
 		}
 		version = 17
 	}
+	if version < 18 {
+		// auth_token: clank-host's bearer-token, checked by the
+		// require-bearer middleware on every HTTP request. Universal
+		// across providers (Daytona stacks it on top of last_token's
+		// preview-token; Sprites use it as the only auth layer).
+		// See PR 2 of the persistent-host roadmap.
+		//
+		// (Renamed from cap_token to auth_token in v19 — see below.
+		// This migration uses the post-rename name so installs that
+		// jump straight from v17 to v19 don't need the rename step.)
+		_, err := s.db.Exec(`
+			ALTER TABLE hosts ADD COLUMN auth_token TEXT NOT NULL DEFAULT '';
+			PRAGMA user_version = 18;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v18: %w", err)
+		}
+		version = 18
+	}
+	if version < 19 {
+		// Rename auth_token's predecessor (cap_token) for installs
+		// that ran an earlier draft of v18. SQLite raises "duplicate
+		// column" on the ALTER below if cap_token doesn't exist; we
+		// look for it first and skip the rename when it's already
+		// auth_token.
+		var exists int
+		if err := s.db.QueryRow(`
+			SELECT COUNT(*) FROM pragma_table_info('hosts') WHERE name = 'cap_token'
+		`).Scan(&exists); err != nil {
+			return fmt.Errorf("migration v19: probe for legacy column: %w", err)
+		}
+		if exists > 0 {
+			if _, err := s.db.Exec(`ALTER TABLE hosts RENAME COLUMN cap_token TO auth_token;`); err != nil {
+				return fmt.Errorf("migration v19: rename cap_token: %w", err)
+			}
+		}
+		if _, err := s.db.Exec(`PRAGMA user_version = 19;`); err != nil {
+			return fmt.Errorf("migration v19: bump version: %w", err)
+		}
+		version = 19
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

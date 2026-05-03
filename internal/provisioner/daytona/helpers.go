@@ -18,7 +18,12 @@ const HostPort = 7878
 
 // reservedSandboxEnv keys are populated by the provisioner; ExtraEnv
 // must not override them.
-var reservedSandboxEnv = []string{"CLANK_HUB_URL", "CLANK_HUB_TOKEN", "CLANK_HOST_PORT"}
+var reservedSandboxEnv = []string{
+	"CLANK_HUB_URL",
+	"CLANK_HUB_TOKEN",
+	"CLANK_HOST_PORT",
+	"CLANK_HOST_AUTH_TOKEN",
+}
 
 // persistenceLabel marks sandboxes the provisioner manages. Used as a
 // recovery mechanism when the local store is missing or corrupt: List
@@ -134,34 +139,3 @@ func validateExtraEnv(extra map[string]string) error {
 	return nil
 }
 
-// newPreviewClient constructs an HTTP client wired with the preview
-// token injector. Callers reuse this for both readiness probes and
-// the long-lived client returned to upstream layers.
-func newPreviewClient(url, token string) *hostclient.HTTP {
-	return hostclient.NewHTTP(url, &previewTokenInjector{token: token})
-}
-
-// NewHostClient is the public entry point for callers that hold a
-// HostRef and want a ready-to-use HTTP client. Encapsulates the
-// Daytona-specific preview-token transport so consumers (the legacy
-// launcher shim, future gateway) don't reimplement it.
-//
-// `ref` must be the value returned by EnsureHost. Empty URL or Token
-// is treated as a programming error and panics — the provisioner
-// validates them before returning ref, so callers should never see
-// the empty case.
-func NewHostClient(ref HostClientRef) *hostclient.HTTP {
-	if ref.URL == "" || ref.Token == "" {
-		panic("daytona: NewHostClient requires non-empty URL and Token")
-	}
-	return newPreviewClient(ref.URL, ref.Token)
-}
-
-// HostClientRef is the minimal subset of provisioner.HostRef required
-// to build a client. Defined here (instead of importing provisioner)
-// to keep the call shape readable and avoid a cyclic-import risk if
-// the provisioner package later gains a dependency on this one.
-type HostClientRef struct {
-	URL   string
-	Token string
-}

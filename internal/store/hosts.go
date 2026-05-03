@@ -28,6 +28,10 @@ const (
 // LastURL/LastToken are cache hints, not the source of truth: a stale
 // entry is expected after stop/resume and the provisioner refreshes
 // them when /status fails.
+//
+// AuthToken is the clank-host bearer token, baked into the
+// sandbox/sprite at create time. Stable across stop/resume — re-read
+// on every EnsureHost so the local-side transport stays in sync.
 type Host struct {
 	ID         string
 	UserID     string
@@ -37,6 +41,7 @@ type Host struct {
 	Status     HostStatus
 	LastURL    string
 	LastToken  string
+	AuthToken   string
 	AutoWake   bool
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -101,6 +106,7 @@ func (s *Store) UpsertHost(ctx context.Context, h Host) error {
 		Status:     string(h.Status),
 		LastUrl:    h.LastURL,
 		LastToken:  h.LastToken,
+		AuthToken:   h.AuthToken,
 		AutoWake:   autoWake,
 		CreatedAt:  h.CreatedAt,
 		UpdatedAt:  h.UpdatedAt,
@@ -133,6 +139,7 @@ func hostFromRow(r sqlitedb.Host) Host {
 		Status:     HostStatus(r.Status),
 		LastURL:    r.LastUrl,
 		LastToken:  r.LastToken,
+		AuthToken:   r.AuthToken,
 		AutoWake:   r.AutoWake != 0,
 		CreatedAt:  r.CreatedAt,
 		UpdatedAt:  r.UpdatedAt,

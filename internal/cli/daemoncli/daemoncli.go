@@ -177,6 +177,18 @@ func RunStart(foreground bool, opts ServerOptions) error {
 			}
 		}
 
+		// Fly.io Sprites launcher: TCP mode only, preferences.flyio.api_token required.
+		// Misconfiguration is logged but non-fatal.
+		if opts.Listen != "" {
+			if fl, err := buildFlyIOLauncher(opts, d.Store); err != nil {
+				log.Printf("flyio launcher: not registered: %v", err)
+			} else if fl != nil {
+				d.SetHostLauncher("flyio", fl)
+				registeredLaunchers["flyio"] = true
+				defer fl.Stop()
+			}
+		}
+
 		// Apply the configured default launch host only if its launcher is registered.
 		if prefs, err := config.LoadPreferences(); err == nil && prefs.DefaultLaunchHostProvider != "" {
 			if registeredLaunchers[prefs.DefaultLaunchHostProvider] {

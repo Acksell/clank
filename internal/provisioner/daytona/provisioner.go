@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -99,12 +100,14 @@ type Provisioner struct {
 }
 
 type cachedHost struct {
-	sandbox  *daytona.Sandbox
-	client   *hostclient.HTTP
-	hostID   string
-	hostname host.Hostname
-	url      string
-	token    string
+	sandbox   *daytona.Sandbox
+	client    *hostclient.HTTP
+	transport http.RoundTripper
+	hostID    string
+	hostname  host.Hostname
+	url       string
+	token     string // preview-token (provider-edge layer)
+	authToken  string // clank-host bearer-token (universal app layer)
 }
 
 // New constructs a Provisioner. Returns an error if required options
@@ -194,7 +197,10 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 
 	// Resolve the sandbox: from store, from labels, or by creating.
-	sandbox, isNew, err := p.resolveOrCreate(ctx, userID)
+	// Cold-create path returns the freshly-minted auth-token (already
+	// baked into the sandbox env); reuse paths return empty and the
+	// real token is read from the store below.
+	sandbox, isNew, mintedAuthToken, err := p.resolveOrCreate(ctx, userID)
 	if err != nil {
 		return provisioner.HostRef{}, err
 	}
@@ -217,7 +223,24 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	if preview.URL == "" || preview.Token == "" {
 		return provisioner.HostRef{}, fmt.Errorf("preview link missing url or token: %+v", preview)
 	}
-	client := newPreviewClient(preview.URL, preview.Token)
+
+	// Capability-token: cold-create path passed it down via
+	// mintedAuthToken. Reuse path: read from the store. Pre-PR-2 rows
+	// (label-recovery adoption) have empty auth_token, which clank-host
+	// treats as "auth disabled" — return empty here so the transport
+	// stays in sync with that.
+	authToken := mintedAuthToken
+	if !isNew {
+		row, err := p.store.GetHostByUser(ctx, userID, "daytona")
+		if err == nil {
+			authToken = row.AuthToken
+		} else if !errors.Is(err, store.ErrHostNotFound) {
+			return provisioner.HostRef{}, fmt.Errorf("read auth-token: %w", err)
+		}
+	}
+
+	transport := chainTransport(authToken, preview.Token)
+	client := hostclient.NewHTTP(preview.URL, transport)
 	if err := waitForHostReady(ctx, client, sandbox.ID); err != nil {
 		_ = client.Close()
 		if logs := fetchEntrypointLogs(sandbox); logs != "" {
@@ -230,18 +253,20 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 	// Persist the latest known-good URL/token. On a fresh Create we
 	// also need the row in the first place.
-	hostID, err := p.persistRow(ctx, userID, sandbox.ID, string(hostname), preview.URL, preview.Token, isNew)
+	hostID, err := p.persistRow(ctx, userID, sandbox.ID, string(hostname), preview.URL, preview.Token, authToken, isNew)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("persist host row: %w", err)
 	}
 
 	cached := &cachedHost{
-		sandbox:  sandbox,
-		client:   client,
-		hostID:   hostID,
-		hostname: hostname,
-		url:      preview.URL,
-		token:    preview.Token,
+		sandbox:   sandbox,
+		client:    client,
+		transport: transport,
+		hostID:    hostID,
+		hostname:  hostname,
+		url:       preview.URL,
+		token:     preview.Token,
+		authToken:  authToken,
 	}
 	p.cacheSet(userID, cached)
 	return p.refToHost(cached), nil
@@ -249,24 +274,27 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 
 func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 	return provisioner.HostRef{
-		HostID:   c.hostID,
-		URL:      c.url,
-		Token:    c.token,
-		AutoWake: false,
-		Hostname: c.hostname,
+		HostID:    c.hostID,
+		URL:       c.url,
+		Transport: c.transport,
+		AuthToken:  c.authToken,
+		AutoWake:  false,
+		Hostname:  c.hostname,
 	}
 }
 
 // resolveOrCreate returns the persistent sandbox for this userID,
 // creating it if necessary. The bool indicates whether the sandbox
-// was newly created (so persistRow knows to set CreatedAt).
-func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*daytona.Sandbox, bool, error) {
+// was newly created (so persistRow knows to set CreatedAt). The
+// string return is the freshly-minted auth-token on the cold-create
+// path; empty on reuse paths.
+func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*daytona.Sandbox, bool, string, error) {
 	row, err := p.store.GetHostByUser(ctx, userID, "daytona")
 	if err == nil {
 		// Try to fetch by ID. NotFound → out-of-band delete.
 		sandbox, fetchErr := p.client.Get(ctx, row.ExternalID)
 		if fetchErr == nil {
-			return sandbox, false, nil
+			return sandbox, false, "", nil
 		}
 		var notFound *dyterrors.DaytonaNotFoundError
 		if errors.As(fetchErr, &notFound) {
@@ -276,25 +304,32 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 			}
 			// fall through to create
 		} else {
-			return nil, false, fmt.Errorf("get sandbox %s: %w", row.ExternalID, fetchErr)
+			return nil, false, "", fmt.Errorf("get sandbox %s: %w", row.ExternalID, fetchErr)
 		}
 	} else if !errors.Is(err, store.ErrHostNotFound) {
-		return nil, false, fmt.Errorf("look up host: %w", err)
+		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
 	// Recovery: even with no store row, we may have an existing
 	// sandbox tagged with our label (e.g. corrupted DB, manual
-	// migration). Adopt the first match.
+	// migration). Adopt the first match. We can't recover the
+	// original auth-token (it was only known by the daemon that
+	// created the sandbox), so this returns "" and the caller
+	// proceeds without app-layer auth — same as a pre-PR-2 sandbox.
 	if sb := p.recoverByLabel(ctx); sb != nil {
 		p.log.Printf("daytona provisioner: adopted unrecorded sandbox %s by label", sb.ID)
-		return sb, false, nil
+		return sb, false, "", nil
 	}
 
-	sandbox, err := p.create(ctx)
+	authToken, err := generateAuthToken()
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", fmt.Errorf("generate auth-token: %w", err)
 	}
-	return sandbox, true, nil
+	sandbox, err := p.create(ctx, authToken)
+	if err != nil {
+		return nil, false, "", err
+	}
+	return sandbox, true, authToken, nil
 }
 
 // recoverByLabel lists sandboxes filtered by the persistence label and
@@ -316,12 +351,15 @@ func (p *Provisioner) recoverByLabel(ctx context.Context) *daytona.Sandbox {
 
 // create issues a new Create with the persistence label set so future
 // recoveries can find the sandbox. AutoDeleteInterval is left nil so
-// the sandbox persists indefinitely.
-func (p *Provisioner) create(ctx context.Context) (*daytona.Sandbox, error) {
+// the sandbox persists indefinitely. authToken is baked into the
+// sandbox env so clank-host's bearer middleware enforces it from the
+// first request.
+func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
-		"CLANK_HUB_URL":   p.opts.HubBaseURL,
-		"CLANK_HUB_TOKEN": p.opts.HubAuthToken,
-		"CLANK_HOST_PORT": fmt.Sprintf("%d", HostPort),
+		"CLANK_HUB_URL":          p.opts.HubBaseURL,
+		"CLANK_HUB_TOKEN":        p.opts.HubAuthToken,
+		"CLANK_HOST_PORT":        fmt.Sprintf("%d", HostPort),
+		"CLANK_HOST_AUTH_TOKEN":  authToken,
 	}
 	for k, v := range p.opts.ExtraEnv {
 		if v == "" {
@@ -418,7 +456,7 @@ func (p *Provisioner) ensureStarted(ctx context.Context, sandbox *daytona.Sandbo
 }
 
 // persistRow upserts the host record. CreatedAt is preserved on update.
-func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostname, url, token string, isNew bool) (string, error) {
+func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostname, url, token, authToken string, isNew bool) (string, error) {
 	now := time.Now()
 
 	// On update, keep the existing internal ID. On create, mint a new ULID.
@@ -441,6 +479,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 		Status:     store.HostStatusRunning,
 		LastURL:    url,
 		LastToken:  token,
+		AuthToken:   authToken,
 		AutoWake:   false,
 		UpdatedAt:  now,
 	}

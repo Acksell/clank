@@ -21,8 +21,9 @@ import (
 
 // Mux wraps a *host.Service with an http.Handler.
 type Mux struct {
-	svc *host.Service
-	log *log.Logger
+	svc       *host.Service
+	log       *log.Logger
+	authToken string
 }
 
 // New constructs a Mux. log may be nil.
@@ -36,11 +37,26 @@ func New(svc *host.Service, lg *log.Logger) *Mux {
 	return &Mux{svc: svc, log: lg}
 }
 
-// Handler returns an http.Handler with all routes registered.
+// SetAuthToken configures the bearer-token middleware. When non-empty,
+// every request must carry "Authorization: Bearer <token>" or the
+// handler returns 401. When empty (the default), no auth is enforced
+// — that's the laptop-local single-user mode where a Unix socket or
+// loopback TCP listener is the only access boundary.
+//
+// Must be called before Handler() so the wrap is applied; calling
+// after has no effect on the already-built handler.
+func (m *Mux) SetAuthToken(token string) {
+	m.authToken = token
+}
+
+// Handler returns an http.Handler with all routes registered. When an
+// auth token is configured via SetAuthToken, the entire handler is
+// wrapped in the requireBearer middleware so every endpoint is
+// gated uniformly.
 func (m *Mux) Handler() http.Handler {
 	mx := http.NewServeMux()
 	m.register(mx)
-	return mx
+	return requireBearer(m.authToken)(mx)
 }
 
 func (m *Mux) register(mx *http.ServeMux) {

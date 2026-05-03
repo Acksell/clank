@@ -43,6 +43,7 @@ func main() {
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
 	gitSyncSource := flag.String("git-sync-source", "", "Cloud-hub base URL to clone from instead of GitHub (e.g. http://hub.internal:7878). Empty = clone from RemoteURL directly. Used by sandboxes.")
 	gitSyncToken := flag.String("git-sync-token", "", "Bearer token paired with --git-sync-source. Injected as Authorization header on clone.")
+	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -58,14 +59,14 @@ func main() {
 	if addr == "" {
 		addr = "unix://" + *socket
 	}
-	if err := run(addr, *gitSyncSource, *gitSyncToken); err != nil {
+	if err := run(addr, *gitSyncSource, *gitSyncToken, *listenAuthToken); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
 }
 
 // run binds the listener for addr (a "tcp://host:port" or "unix:///path"
 // URL) and serves the host API on it until SIGINT/SIGTERM.
-func run(addr, gitSyncSource, gitSyncToken string) error {
+func run(addr, gitSyncSource, gitSyncToken, listenAuthToken string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
 	ln, kind, sockPath, err := openListener(addr)
@@ -90,7 +91,9 @@ func run(addr, gitSyncSource, gitSyncToken string) error {
 		lg.Printf("warning: host.Init: %v", err)
 	}
 
-	srv := &http.Server{Handler: hostmux.New(svc, lg).Handler()}
+	mux := hostmux.New(svc, lg)
+	mux.SetAuthToken(listenAuthToken)
+	srv := &http.Server{Handler: mux.Handler()}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

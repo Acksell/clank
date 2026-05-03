@@ -1,14 +1,18 @@
 # ---- Build / install -------------------------------------------------
 
+# Path of the cross-compiled clank-host binary embedded into the
+# Sprites provisioner. .gitignored; rebuilt by `make embed-host`.
+EMBED_HOST_BIN := internal/provisioner/flyio/clank-host-linux-amd64
+
 .PHONY: install
-install:
+install: embed-host
 	go install ./cmd/clank/ ./cmd/clankd/ ./cmd/clank-host/
 
 .PHONY: test test-race
-test:
+test: embed-host
 	go test ./...
 
-test-race:
+test-race: embed-host
 	go test -race ./...
 
 # ---- Code generation -------------------------------------------------
@@ -22,6 +26,23 @@ test-race:
 .PHONY: generate
 generate:
 	sqlc generate -f internal/store/sqlc.yaml
+
+# ---- Embedded clank-host (Sprites host bootstrap) --------------------
+#
+# Cross-compiles cmd/clank-host for linux/amd64 into the path that
+# internal/provisioner/flyio/embed.go expects via //go:embed. The
+# Sprites provisioner pushes this binary into a sprite via the SDK's
+# filesystem API and registers it as a service.
+#
+# Pure-Go (CGO=0) so the cross-compile works on any host without
+# needing a linux toolchain. -trimpath strips local filesystem paths
+# from the binary for reproducibility.
+
+.PHONY: embed-host
+embed-host:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+	    -trimpath -o $(EMBED_HOST_BIN) \
+	    ./cmd/clank-host
 
 # ---- clank-host sandbox image ----------------------------------------
 #

@@ -17,6 +17,7 @@ package provisioner
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/acksell/clank/internal/host"
 )
@@ -36,9 +37,22 @@ type HostRef struct {
 	// the local-subprocess provider it is http://127.0.0.1:<port>.
 	URL string
 
-	// Token is the capability/preview token the gateway must attach
-	// when reaching the host. Empty means no per-request auth required.
-	Token string
+	// Transport is the fully-wired http.RoundTripper that injects
+	// every header required to reach this host: the universal
+	// capability-token (Authorization: Bearer) plus any provider-edge
+	// auth (e.g. Daytona's x-daytona-preview-token). Consumers
+	// construct an HTTP client as `hostclient.NewHTTP(ref.URL,
+	// ref.Transport)` and stay agnostic to the auth chain shape.
+	//
+	// Non-nil. The provisioner builds the chain and validates its
+	// pieces before returning.
+	Transport http.RoundTripper
+
+	// AuthToken is the bearer token baked into the host's clank-host
+	// require-bearer middleware. Surfaced separately from Transport
+	// for storage/logging purposes; the same value is already wired
+	// into Transport for outbound requests.
+	AuthToken string
 
 	// AutoWake indicates the provider's URL wakes the underlying
 	// compute on incoming traffic without an explicit API call. True

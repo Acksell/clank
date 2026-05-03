@@ -97,6 +97,28 @@ type DaytonaPreference struct {
 	SuspendOnStop bool `json:"suspend_on_stop,omitempty"`
 }
 
+// FlyIOPreference configures the Fly.io Sprites host launcher.
+// APIToken (a SPRITES_TOKEN) enables the launcher; everything else
+// is optional with sensible defaults.
+//
+// Sprites are persistent per-user — one sprite is created the first
+// time EnsureHost runs and reused indefinitely. The sprite's public
+// URL is set to "public" auth mode; clank-host's bearer-token
+// middleware (see PR 2) is the only auth gate.
+type FlyIOPreference struct {
+	APIToken         string `json:"api_token,omitempty"`
+	OrganizationSlug string `json:"organization_slug,omitempty"`
+	Region           string `json:"region,omitempty"`
+	// SpriteNamePrefix is prepended to the user identifier to form
+	// the sprite name. Empty defaults to "clank-host" (yielding e.g.
+	// "clank-host-local" in the single-user laptop daemon).
+	SpriteNamePrefix string `json:"sprite_name_prefix,omitempty"`
+	// Resource pins for the sprite. 0 uses Sprites' defaults.
+	RamMB     int `json:"ram_mb,omitempty"`
+	CPUs      int `json:"cpus,omitempty"`
+	StorageGB int `json:"storage_gb,omitempty"`
+}
+
 // Preferences stores user preferences that persist across sessions.
 // All fields should be optional (omitempty) so the file can grow over
 // time without breaking older installs.
@@ -139,6 +161,12 @@ type Preferences struct {
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
 	Daytona *DaytonaPreference `json:"daytona,omitempty"`
+
+	// FlyIO configures the cloud-hub-side Fly.io Sprites launcher.
+	// Only effective on a TCP-listening hub. Empty = launcher
+	// disabled (sessions requesting launch_host.provider="flyio"
+	// will 4xx).
+	FlyIO *FlyIOPreference `json:"flyio,omitempty"`
 
 	// DefaultLaunchHostProvider, when set, is applied to every new
 	// session whose StartRequest omits LaunchHost. Use this on a

@@ -17,8 +17,13 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostclient "github.com/acksell/clank/internal/host/client"
+
 	daytonaprov "github.com/acksell/clank/internal/provisioner/daytona"
 )
+
+// _ keeps the daytonaprov import alive — the package name is
+// referenced via the *daytonaprov.Provisioner field on Launcher.
+var _ = (*daytonaprov.Provisioner)(nil)
 
 // Options configures the launcher shim. Only fields the caller cares
 // about for the adapter behavior; the underlying provisioner's
@@ -57,16 +62,16 @@ func New(prov *daytonaprov.Provisioner, opts Options, lg *log.Logger) *Launcher 
 // placeholder until PR 4 introduces real user identity through the
 // gateway/JWT path; one row coexists cleanly with the eventual
 // multi-user shape because the store keys on (user_id, provider).
+//
+// The provisioner returns a fully-wired Transport that injects every
+// header required to reach the host (capability-bearer + Daytona
+// preview-token); the shim just hands it to hostclient.NewHTTP.
 func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hostname, *hostclient.HTTP, error) {
 	ref, err := l.prov.EnsureHost(ctx, "local")
 	if err != nil {
 		return "", nil, fmt.Errorf("daytona launcher: %w", err)
 	}
-	client := daytonaprov.NewHostClient(daytonaprov.HostClientRef{
-		URL:   ref.URL,
-		Token: ref.Token,
-	})
-	return ref.Hostname, client, nil
+	return ref.Hostname, hostclient.NewHTTP(ref.URL, ref.Transport), nil
 }
 
 // Stop is best-effort: optionally suspends the sandbox to stop billing
