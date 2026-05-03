@@ -11,6 +11,18 @@ test:
 test-race:
 	go test -race ./...
 
+# ---- Code generation -------------------------------------------------
+#
+# Regenerates sqlc-derived code (internal/store/sqlitedb/*) from the
+# schema and queries under internal/store/{schema,queries}. Run after
+# editing either, then commit the generated files alongside.
+#
+# Requires sqlc on PATH (`brew install sqlc` on macOS).
+
+.PHONY: generate
+generate:
+	sqlc generate -f internal/store/sqlc.yaml
+
 # ---- clank-host sandbox image ----------------------------------------
 #
 # Used by the cloud hub's Daytona launcher. Daytona pulls this image

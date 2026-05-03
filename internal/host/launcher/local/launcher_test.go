@@ -67,7 +67,45 @@ func TestLauncher_LaunchesAndStops(t *testing.T) {
 	}
 }
 
-func TestLauncher_StopShutsChildren(t *testing.T) {
+// TestLauncher_LaunchIsIdempotent pins the persistent-host contract:
+// repeated Launch calls within a daemon lifetime return the same
+// hostname + URL, not a fresh subprocess each time. This is what
+// turns the launcher from a per-session "spawn-and-track" toy into
+// the persistent-host abstraction the rest of the codebase now
+// expects.
+func TestLauncher_LaunchIsIdempotent(t *testing.T) {
+	t.Parallel()
+	bin := buildClankHost(t)
+	launcher := New(Options{BinPath: bin}, nil)
+	t.Cleanup(launcher.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const n = 3
+	var firstName, lastName string
+	for i := 0; i < n; i++ {
+		name, client, err := launcher.Launch(ctx, agent.LaunchHostSpec{Provider: "local-stub"})
+		if err != nil {
+			t.Fatalf("Launch[%d]: %v", i, err)
+		}
+		// Don't close the client between calls — the launcher caches it.
+		_ = client
+		if i == 0 {
+			firstName = string(name)
+		}
+		lastName = string(name)
+	}
+	if firstName != lastName {
+		t.Errorf("Launch should return stable hostname across calls; got %q then %q", firstName, lastName)
+	}
+}
+
+// TestLauncher_StopClearsChild verifies Stop releases the cached
+// child so a subsequent Launch spawns a fresh subprocess. After
+// Stop, the in-memory cache must be empty so the next Launch is
+// not a probe-on-dead-process.
+func TestLauncher_StopClearsChild(t *testing.T) {
 	t.Parallel()
 	bin := buildClankHost(t)
 	launcher := New(Options{BinPath: bin}, nil)
@@ -75,22 +113,14 @@ func TestLauncher_StopShutsChildren(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	const n = 3
-	for i := 0; i < n; i++ {
-		_, client, err := launcher.Launch(ctx, agent.LaunchHostSpec{Provider: "local-stub"})
-		if err != nil {
-			t.Fatalf("Launch[%d]: %v", i, err)
-		}
-		t.Cleanup(func() { _ = client.Close() })
+	if _, _, err := launcher.Launch(ctx, agent.LaunchHostSpec{Provider: "local-stub"}); err != nil {
+		t.Fatalf("Launch: %v", err)
 	}
-
-	// All n children exist before Stop. After Stop they should be gone.
 	launcher.Stop()
-	// Stop is synchronous: no pending children remain in the launcher.
 	launcher.mu.Lock()
-	remaining := len(launcher.children)
+	cleared := launcher.current == nil
 	launcher.mu.Unlock()
-	if remaining != 0 {
-		t.Errorf("Stop should clear children, %d remain", remaining)
+	if !cleared {
+		t.Error("Stop should clear current; the cached child remains")
 	}
 }

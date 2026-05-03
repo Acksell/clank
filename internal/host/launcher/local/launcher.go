@@ -1,11 +1,17 @@
 // Package local implements a HostLauncher that spawns clank-host
 // subprocesses on a local TCP port. It is the dev/test stub for the
-// "fresh sandbox per session" flow — useful for exercising the whole
-// pipeline (sync → launch → clone-from-mirror → backend) on one
-// machine before the Daytona launcher (Step 7) is available.
+// persistent-host flow on a single laptop daemon.
 //
-// The launcher tracks every spawned child so its Stop() can clean them
-// all up at hub shutdown.
+// Persistence semantics: Launch is idempotent for the lifetime of a
+// daemon process — the first call spawns a clank-host subprocess on a
+// random port; subsequent calls return the same hostname + URL after
+// a /status probe confirms the child is healthy. If the probe fails
+// (e.g. the child crashed) the launcher kills any remnant and respawns.
+// Subprocesses do not survive daemon restarts, so cross-restart
+// persistence is not promised here — that's a cloud-launcher concern.
+//
+// Stop signals the single child to shut down and waits up to 5 seconds
+// for it to exit.
 package local
 
 import (
@@ -26,13 +32,15 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// Launcher spawns clank-host subprocesses on demand.
+// Launcher manages a single persistent clank-host subprocess for the
+// laptop daemon. The process is spawned lazily on the first Launch
+// and is cached + reused for subsequent calls.
 type Launcher struct {
 	opts Options
 	log  *log.Logger
 
-	mu       sync.Mutex
-	children []*child
+	mu      sync.Mutex
+	current *child
 }
 
 // Options configures the Launcher.
@@ -52,9 +60,10 @@ type Options struct {
 }
 
 type child struct {
-	cmd  *exec.Cmd
-	addr string // tcp://host:port the child bound to
-	name host.Hostname
+	cmd    *exec.Cmd
+	addr   string // tcp://host:port the child bound to
+	name   host.Hostname
+	client *hostclient.HTTP
 }
 
 // New constructs a Launcher. Pass an Options zero-value for the
@@ -66,10 +75,26 @@ func New(opts Options, lg *log.Logger) *Launcher {
 	return &Launcher{opts: opts, log: lg}
 }
 
-// Launch spawns a clank-host listening on a random TCP port, waits
-// for it to print its bound address on stderr, and returns a host
-// client pointed at it.
+// Launch returns the persistent clank-host subprocess for this
+// daemon. If one is already running and answering /status, the cached
+// (Hostname, *HTTP) is returned without respawning. Otherwise the
+// previous child (if any) is killed and a fresh process is spawned.
 func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hostname, *hostclient.HTTP, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Fast path: existing child probes healthy.
+	if l.current != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := l.current.client.Status(probeCtx)
+		cancel()
+		if err == nil {
+			return l.current.name, l.current.client, nil
+		}
+		l.log.Printf("local launcher: cached child %s probe failed (%v); respawning", l.current.name, err)
+		l.killCurrentLocked()
+	}
+
 	bin := l.opts.BinPath
 	if bin == "" {
 		resolved, err := exec.LookPath("clank-host")
@@ -86,7 +111,10 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 	if l.opts.GitSyncToken != "" {
 		args = append(args, "--git-sync-token", l.opts.GitSyncToken)
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	// Use a background context here, not the per-Launch ctx — the child
+	// outlives the request that spawned it. CancelFunc is taken care
+	// of by Stop().
+	cmd := exec.Command(bin, args...)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return "", nil, fmt.Errorf("stderr pipe: %w", err)
@@ -103,51 +131,60 @@ func (l *Launcher) Launch(ctx context.Context, _ agent.LaunchHostSpec) (host.Hos
 		return "", nil, err
 	}
 	// Continue draining stderr so the child doesn't block on a full
-	// pipe. Tag the lines so multi-launcher logs stay legible.
+	// pipe. Tag the lines so logs stay legible.
 	go drainTagged(stderr, l.log, "[clank-host:"+addr+"] ")
 
 	httpURL := strings.Replace(addr, "tcp://", "http://", 1)
-	// Use the random tail of the ULID — the first 10 chars are the
-	// timestamp prefix and collide for any two launches in the same
-	// millisecond, which `RegisterHost` would treat as the same host.
+	// Use the random tail of the ULID for the name — the first 10
+	// chars are the timestamp prefix and collide for any two launches
+	// in the same millisecond. We only spawn one child, but the name
+	// must remain unique across daemon restarts so RegisterHost on
+	// the hub side treats the new process as a different host (the
+	// underlying subprocess truly is a different OS process).
 	id := ulid.Make().String()
 	name := host.Hostname("local-" + id[len(id)-8:])
 	client := hostclient.NewHTTP(httpURL, nil)
 
-	l.mu.Lock()
-	l.children = append(l.children, &child{cmd: cmd, addr: addr, name: name})
-	l.mu.Unlock()
-
+	l.current = &child{cmd: cmd, addr: addr, name: name, client: client}
 	l.log.Printf("local launcher: spawned host %s at %s", name, httpURL)
 	return name, client, nil
 }
 
-// Stop signals every spawned clank-host to shut down and waits up to
-// 5 seconds per child for it to exit. Safe to call from a defer.
+// Stop signals the persistent clank-host child to shut down and
+// waits up to 5 seconds for it to exit. Safe to call from a defer.
+// After Stop returns, a subsequent Launch will spawn a fresh process.
 func (l *Launcher) Stop() {
 	l.mu.Lock()
-	children := l.children
-	l.children = nil
-	l.mu.Unlock()
-	for _, c := range children {
-		if c.cmd.Process != nil {
-			_ = c.cmd.Process.Signal(os.Interrupt)
-		}
+	defer l.mu.Unlock()
+	l.killCurrentLocked()
+}
+
+// killCurrentLocked terminates l.current and clears it. Caller must
+// hold l.mu.
+func (l *Launcher) killCurrentLocked() {
+	c := l.current
+	if c == nil {
+		return
 	}
-	for _, c := range children {
-		done := make(chan struct{})
-		go func() {
-			_ = c.cmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			if c.cmd.Process != nil {
-				_ = c.cmd.Process.Kill()
-			}
-			<-done
+	l.current = nil
+	if c.cmd.Process != nil {
+		_ = c.cmd.Process.Signal(os.Interrupt)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = c.cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		if c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
 		}
+		<-done
+	}
+	if c.client != nil {
+		_ = c.client.Close()
 	}
 }
 

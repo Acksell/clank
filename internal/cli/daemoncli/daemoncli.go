@@ -168,7 +168,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 		// Daytona launcher: TCP mode only, preferences.daytona.api_key required.
 		// Misconfiguration is logged but non-fatal.
 		if opts.Listen != "" {
-			if dl, err := buildDaytonaLauncher(opts); err != nil {
+			if dl, err := buildDaytonaLauncher(opts, d.Store); err != nil {
 				log.Printf("daytona launcher: not registered: %v", err)
 			} else if dl != nil {
 				d.SetHostLauncher("daytona", dl)

@@ -12,14 +12,19 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/store/sqlitedb"
 
 	// Pure-Go SQLite driver (no CGo).
 	_ "modernc.org/sqlite"
 )
 
-// Store wraps a SQLite database for persisting session metadata.
+// Store wraps a SQLite database for persisting session metadata and host
+// registry state. New tables are accessed via the sqlc-generated Queries
+// in q; legacy tables (sessions, primary_agents, sync_state, etc.) still
+// use raw SQL on db.
 type Store struct {
 	db *sql.DB
+	q  *sqlitedb.Queries
 }
 
 // Open opens (or creates) a SQLite database at dbPath and runs any
@@ -50,7 +55,7 @@ func Open(dbPath string) (*Store, error) {
 		}
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, q: sqlitedb.New(db)}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -217,6 +222,35 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration v16: %w", err)
 		}
 		version = 16
+	}
+	if version < 17 {
+		// hosts: per-user persistent compute (Daytona sandbox, Sprite,
+		// k8s pod, …). UNIQUE (user_id, provider) enforces the
+		// one-host-per-user-per-provider invariant at the DB layer
+		// even if app code has a bug.
+		// Schema mirrored in internal/store/schema/0001_hosts.sql for
+		// sqlc; keep them in sync.
+		_, err := s.db.Exec(`
+			CREATE TABLE hosts (
+				id          TEXT PRIMARY KEY,
+				user_id     TEXT NOT NULL,
+				provider    TEXT NOT NULL,
+				external_id TEXT NOT NULL,
+				hostname    TEXT NOT NULL,
+				status      TEXT NOT NULL,
+				last_url    TEXT NOT NULL DEFAULT '',
+				last_token  TEXT NOT NULL DEFAULT '',
+				auto_wake   INTEGER NOT NULL DEFAULT 0,
+				created_at  DATETIME NOT NULL,
+				updated_at  DATETIME NOT NULL,
+				UNIQUE (user_id, provider)
+			);
+			PRAGMA user_version = 17;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v17: %w", err)
+		}
+		version = 17
 	}
 	_ = version // suppress unused warning after last migration
 

@@ -87,6 +87,14 @@ type DaytonaPreference struct {
 	Image    string            `json:"image,omitempty"`
 	BaseURL  string            `json:"base_url,omitempty"`
 	ExtraEnv map[string]string `json:"extra_env,omitempty"`
+
+	// SuspendOnStop, when true, asks the daemon to suspend the
+	// persistent sandbox on shutdown (Daytona Stop) so it stops
+	// billing for compute. Default false: leaves the sandbox
+	// running for zero cold-resume latency on the next start.
+	// Daytona bills per-second and a quick laptop reboot costs
+	// cents, so the default favors latency over cost.
+	SuspendOnStop bool `json:"suspend_on_stop,omitempty"`
 }
 
 // Preferences stores user preferences that persist across sessions.
