@@ -211,6 +211,14 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 	_ = isNew // retained on resolveOrCreate's return for future callers
 
+	// Curl the running clank-host from INSIDE the sprite — bypassing
+	// the Sprites edge — so we can prove which routes the actual
+	// running binary registers. When the public URL 404s on a route
+	// we know the embedded binary should serve, this in-sprite probe
+	// is the only way to tell whether the running process is stale
+	// (different binary version) or whether the edge is interfering.
+	p.diagnoseInSprite(ctx, sprite, authToken)
+
 	// Re-read the sprite to pick up the URL field populated after
 	// public-mode is set.
 	fresh, err := p.client.GetSprite(ctx, spriteName)
@@ -316,6 +324,42 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 		case <-t.C:
 		}
 	}
+}
+
+// diagnoseInSprite curl's the running clank-host from inside the
+// sprite and logs each route's status. Bypasses the Sprites edge so
+// we can distinguish "running binary doesn't register the route"
+// from "edge is intercepting the request". Best-effort — failures
+// are logged but never propagate. Runs once per cold provision; the
+// fast cache-hit path skips it.
+func (p *Provisioner) diagnoseInSprite(ctx context.Context, sprite *sprites.Sprite, authToken string) {
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	for _, route := range []string{"/ping", "/status", "/events"} {
+		// curl with very short timeouts and -o /dev/null so we don't
+		// stream forever on /events. -w writes the status code on
+		// stdout regardless of response shape.
+		// Bearer auth so the host's middleware doesn't 401 us.
+		out, err := runInSpriteCmd(probeCtx, sprite,
+			"sh", "-c",
+			fmt.Sprintf(`curl -s -o /dev/null --max-time 2 -w '%%{http_code}' -H 'Authorization: Bearer %s' http://localhost:%d%s`, authToken, HostPort, route))
+		if err != nil {
+			p.log.Printf("flyio diagnose: in-sprite curl %s failed: %v", route, err)
+			continue
+		}
+		p.log.Printf("flyio diagnose: in-sprite GET localhost:%d%s → %s", HostPort, route, strings.TrimSpace(out))
+	}
+}
+
+// runInSpriteCmd executes a command inside the sprite and returns
+// its captured stdout. Used by diagnoseInSprite — production code
+// uses sprite.CommandContext directly because it doesn't need the
+// captured output.
+func runInSpriteCmd(ctx context.Context, sprite *sprites.Sprite, name string, args ...string) (string, error) {
+	cmd := sprite.CommandContext(ctx, name, args...)
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // isSpritesEdge404 distinguishes a "no service bound" response from
