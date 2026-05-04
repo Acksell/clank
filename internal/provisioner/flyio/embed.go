@@ -1,6 +1,11 @@
 package flyio
 
-import _ "embed"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	_ "embed"
+	"sync"
+)
 
 // clankHostBinary is the cross-compiled linux/amd64 clank-host binary
 // the provisioner pushes into a Sprite at create time. The file is
@@ -15,3 +20,13 @@ import _ "embed"
 //
 //go:embed clank-host-linux-amd64
 var clankHostBinary []byte
+
+// clankHostBinarySHA returns a hex sha256 of the embedded binary,
+// computed once on demand. Used as the canonical "did this match"
+// check for ensureBinaryInstalled — size collisions are rare but
+// production-real (rebuild-with-no-source-change is exactly that),
+// and a hash sidecar on the sprite eliminates the false-skip path.
+var clankHostBinarySHA = sync.OnceValue(func() string {
+	sum := sha256.Sum256(clankHostBinary)
+	return hex.EncodeToString(sum[:])
+})

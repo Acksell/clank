@@ -494,7 +494,8 @@ func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites
 	if !ok {
 		return fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
 	}
-	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary)
+	rd, _ := fsys.(spriteFSReader)
+	return p.ensureBinaryInstalledOn(ctx, fsys, rd, wf, installPath, clankHostBinary, clankHostBinarySHA())
 }
 
 // spriteFSWriter is the duck-typed subset of the sprites SDK
@@ -505,21 +506,68 @@ type spriteFSWriter interface {
 	RemoveContext(ctx context.Context, name string) error
 }
 
+// spriteFSReader adds ReadFileContext for callers that need to read
+// the sha sidecar to detect binary drift across daemon versions.
+type spriteFSReader interface {
+	ReadFileContext(ctx context.Context, name string) ([]byte, error)
+}
+
+// installPathSHA is where we write the hex sha256 of the binary at
+// installPath. ensureBinaryInstalled compares the embedded binary's
+// sha against this sidecar — far more reliable than size, which can
+// collide across rebuilds and hide a stale binary on the sprite.
+const installPathSHA = installPath + ".sha256"
+
 // ensureBinaryInstalledOn is the testable core of ensureBinaryInstalled.
-// stat is the read-only handle for the size probe; wf is the
-// write/remove handle for the replacement.
-func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte) error {
+// stat is the read-only handle for stat/sha-sidecar reads; rd reads
+// the sha sidecar (may be nil — we fall back to size-only); wf is
+// the write/remove handle for the replacement.
+//
+// The drift check is sha256 over a tiny sidecar file at
+// path + ".sha256" — written alongside the binary on every install.
+// Falls back to size match when the sidecar is missing (first
+// install on a sprite that predates this scheme). Size-collision
+// across rebuilds is the bug class this guards against: production
+// has hit silent stale-binary cases where the file size happened to
+// match across two unrelated builds.
+func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, rd spriteFSReader, wf spriteFSWriter, path string, want []byte, wantSHA string) error {
+	shaPath := path + ".sha256"
+	if rd != nil {
+		var have []byte
+		readErr := retryClosedConn(ctx, p.log, func() error {
+			b, err := rd.ReadFileContext(ctx, shaPath)
+			if err != nil {
+				return err
+			}
+			have = b
+			return nil
+		})
+		if readErr == nil {
+			haveSHA := strings.TrimSpace(string(have))
+			if haveSHA == wantSHA {
+				p.log.Printf("flyio provisioner: clank-host binary sha match (%s); skipping upload", shortSHA(wantSHA))
+				return nil
+			}
+			p.log.Printf("flyio provisioner: clank-host binary sha drift (have %s, want %s); replacing", shortSHA(haveSHA), shortSHA(wantSHA))
+		} else {
+			p.log.Printf("flyio provisioner: clank-host sha sidecar absent (%v); falling back to size check", readErr)
+		}
+	}
+
+	// Sidecar absent or unreadable. On a legacy sprite we'll
+	// reinstall once to drop the sidecar in place; on a cold sprite
+	// this is the first install. Log which case so production
+	// debugging is unambiguous.
 	var info fs.FileInfo
 	statErr := retryClosedConn(ctx, p.log, func() error {
 		var err error
 		info, err = fs.Stat(stat, strings.TrimPrefix(path, "/"))
 		return err
 	})
-	if statErr == nil && info.Size() == int64(len(want)) {
-		return nil
-	}
-	if statErr == nil {
-		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
+	if statErr != nil {
+		p.log.Printf("flyio provisioner: clank-host not present on sprite (%v); installing (%d bytes)", statErr, len(want))
+	} else {
+		p.log.Printf("flyio provisioner: clank-host present (%d bytes) but sidecar missing/unreadable; replacing to plant sha sidecar", info.Size())
 	}
 
 	// Best-effort unlink before write. ENOENT is fine (cold install).
@@ -531,18 +579,38 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		if err == nil || errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		// Surface non-ENOENT errors but don't fail the install on
-		// them — WriteFile may still succeed in some edge cases.
 		p.log.Printf("flyio provisioner: pre-write remove of %s: %v (continuing)", path, err)
 		return nil
 	})
 
-	return retryClosedConn(ctx, p.log, func() error {
+	if err := retryClosedConn(ctx, p.log, func() error {
 		if err := wf.WriteFileContext(ctx, path, want, 0o755); err != nil {
 			return fmt.Errorf("install clank-host binary: %w", err)
 		}
 		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Plant the sha sidecar so the next EnsureHost can short-circuit
+	// reliably. Best-effort: a failure here just means next call
+	// re-uploads, no correctness loss.
+	_ = retryClosedConn(ctx, p.log, func() error {
+		if err := wf.WriteFileContext(ctx, shaPath, []byte(wantSHA+"\n"), 0o644); err != nil {
+			p.log.Printf("flyio provisioner: write sha sidecar at %s: %v (next install will re-upload)", shaPath, err)
+		}
+		return nil
 	})
+	return nil
+}
+
+// shortSHA returns the first 12 hex chars of a sha256 for log
+// readability. The full 64-char hash is impractical inline.
+func shortSHA(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 // ensureOpenCodeInstalled probes for opencode at the canonical
@@ -729,6 +797,7 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 		return err
 	})
 	if getErr == nil && existing != nil {
+		p.log.Printf("flyio provisioner: existing service %s cmd=%q args=%v port=%v", serviceName, existing.Cmd, existing.Args, existing.HTTPPort)
 		if serviceMatches(&existing.Service, wantReq) {
 			// Already registered with the right shape — auto-resumes
 			// from sprite hibernation on incoming traffic.
