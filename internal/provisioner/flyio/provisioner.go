@@ -326,6 +326,26 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 	}
 }
 
+// logURLSettings prints the sprite's URL configuration so we can
+// distinguish "edge auth strips SSE" from "edge has no entry for
+// this path" from "URL is in private mode". The user's existing
+// sprite may have stale settings that cause /events to 404 even
+// though /status returns 200; a freshly-created sprite has the
+// settings we explicitly write via UpdateURLSettings.
+func (p *Provisioner) logURLSettings(ctx context.Context, sprite *sprites.Sprite) {
+	fresh, err := p.client.GetSprite(ctx, sprite.Name())
+	if err != nil || fresh == nil {
+		p.log.Printf("flyio diagnose: get sprite for url-settings: %v", err)
+		return
+	}
+	if fresh.URLSettings == nil {
+		p.log.Printf("flyio diagnose: sprite %s URL=%q url_settings=<nil>", sprite.Name(), fresh.URL)
+		return
+	}
+	p.log.Printf("flyio diagnose: sprite %s URL=%q url_settings.auth=%q url_settings.private_access=%q",
+		sprite.Name(), fresh.URL, fresh.URLSettings.Auth, fresh.URLSettings.PrivateAccess)
+}
+
 // diagnoseInSprite curl's the running clank-host from inside the
 // sprite AND from outside via the public URL. The two probes side-
 // by-side distinguish three failure modes:
@@ -343,6 +363,8 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 func (p *Provisioner) diagnoseInSprite(ctx context.Context, sprite *sprites.Sprite, authToken string) {
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+
+	p.logURLSettings(probeCtx, sprite)
 
 	// Need the public URL for the second leg. Re-read the sprite
 	// here rather than threading it from EnsureHost — diagnose runs

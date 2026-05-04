@@ -56,11 +56,16 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			// Preserve the original Host header so handlers behind
-			// the proxy see what the client sent. The HostRef.URL's
-			// host is irrelevant to the host's HTTP handlers — they
-			// route by path, not authority.
-			pr.Out.Host = pr.In.Host
+			// Use the upstream's Host (from target). Some upstream
+			// edges — Sprites in particular — route requests by
+			// Host header, and forwarding the client's Host (a
+			// cloudflare quick-tunnel hostname or a localhost
+			// listener) made them serve their own 404 page instead
+			// of routing to the sprite's service. The host plane
+			// itself doesn't care about Host; only the edge does.
+			// pr.SetURL already sets pr.Out.URL.Host to target.Host;
+			// pr.Out.Host gets cleared by the rewrite to match.
+			pr.Out.Host = target.Host
 			// Strip the /hosts/{hostname} prefix the TUI's
 			// HostClient prepends — the host plane is single-user
 			// and serves bare paths (/auth/..., /worktrees/...).
