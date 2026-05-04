@@ -9,94 +9,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/acksell/clank/internal/config"
-	"github.com/acksell/clank/internal/gateway"
-	hub "github.com/acksell/clank/internal/hub"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	hubmux "github.com/acksell/clank/internal/hub/mux"
+	"github.com/acksell/clank/internal/gateway"
 	"github.com/acksell/clank/internal/provisioner"
 	"github.com/acksell/clank/internal/socketutil"
-	clanksync "github.com/acksell/clank/internal/sync"
 )
-
-// runHubServer is the production driver for hub.Service: it owns the
-// listener, the PID file, and the signal-to-Stop translation. The
-// Hub itself never touches the filesystem for these artifacts — keeping
-// the orchestration concerns out of the Hub plane.
-//
-// Two listening modes:
-//   - Unix socket (default): listens on daemonclient.SocketPath(), chmod 0600.
-//     No HTTP auth — file mode is the gate. Used by laptop hubs talking to
-//     local TUI/CLI clients.
-//   - TCP (opts.Listen = "tcp://addr:port"): listens on TCP, wraps the
-//     handler with a static bearer-token middleware comparing against
-//     Preferences.RemoteHub.AuthToken. Used by "remote hubs" that accept
-//     hub-to-hub sync calls and external clients (mobile).
-//
-// Both modes write the PID file at daemonclient.PIDPath() so `clankd stop`
-// works uniformly.
-func runHubServer(s *hub.Service, opts ServerOptions) error {
-	pidPath, err := daemonclient.PIDPath()
-	if err != nil {
-		return fmt.Errorf("pid path: %w", err)
-	}
-
-	// Resolve the bearer token before binding the listener so a
-	// misconfigured TCP launch fails fast without leaving a stray socket.
-	mux := hubmux.New(s, nil)
-	if opts.Listen != "" {
-		recv, err := buildSyncReceiver(s)
-		if err != nil {
-			return err
-		}
-		mux = mux.WithSync(recv)
-	}
-	handler := mux.Handler()
-	if opts.Listen != "" {
-		token, err := tcpAuthToken()
-		if err != nil {
-			return err
-		}
-		handler = bearerAuthMiddleware(handler, token)
-	}
-
-	listener, cleanup, err := openHubListener(opts)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
-		listener.Close()
-		return fmt.Errorf("write PID file: %w", err)
-	}
-	defer os.Remove(pidPath)
-
-	// Translate SIGINT/SIGTERM into a Stop request. Run owns the actual
-	// drain via s.ctx; we just trip it. The done channel ensures the
-	// signal goroutine exits when Run returns even without a signal.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case sig := <-sigCh:
-			log.Printf("received signal %v, shutting down", sig)
-			s.Stop()
-		case <-done:
-		}
-	}()
-
-	return s.Run(listener, handler)
-}
 
 // openHubListener creates the appropriate listener for the configured
 // mode and returns a cleanup func that removes any on-disk artifacts.
@@ -179,23 +102,6 @@ func tcpAuthToken() (string, error) {
 		return "", fmt.Errorf("--listen tcp:// requires preferences.remote_hub.auth_token to be set")
 	}
 	return prefs.RemoteHub.AuthToken, nil
-}
-
-// buildSyncReceiver constructs a sync.Receiver for the cloud-hub mode,
-// creating the mirror root under config.Dir()/sync. The hub's Store is
-// reused for sync persistence — the cloud hub already owns it for
-// session metadata, and migration v16 added the synced_repos /
-// synced_branches tables to the same schema.
-func buildSyncReceiver(s *hub.Service) (*clanksync.Receiver, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return nil, fmt.Errorf("config dir: %w", err)
-	}
-	mirrors, err := clanksync.NewMirrorRoot(filepath.Join(dir, "sync"))
-	if err != nil {
-		return nil, fmt.Errorf("mirror root: %w", err)
-	}
-	return clanksync.NewReceiver(mirrors, s.Store, log.Default()), nil
 }
 
 // runGatewayServer mounts the gateway on opts.Listen. PR 3 replaces

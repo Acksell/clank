@@ -43,8 +43,6 @@ import (
 func main() {
 	socket := flag.String("socket", "", "Path to Unix socket to listen on (mutually exclusive with --listen)")
 	listen := flag.String("listen", "", "Listener address: tcp://host:port (use :0 for auto-pick) or unix:///path. Mutually exclusive with --socket.")
-	gitSyncSource := flag.String("git-sync-source", "", "Cloud-hub base URL to clone from instead of GitHub (e.g. http://hub.internal:7878). Empty = clone from RemoteURL directly. Used by sandboxes.")
-	gitSyncToken := flag.String("git-sync-token", "", "Bearer token paired with --git-sync-source. Injected as Authorization header on clone.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
 	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
 	flag.Parse()
@@ -62,7 +60,7 @@ func main() {
 	if addr == "" {
 		addr = "unix://" + *socket
 	}
-	if err := run(addr, *gitSyncSource, *gitSyncToken, *listenAuthToken, *dataDir); err != nil {
+	if err := run(addr, *listenAuthToken, *dataDir); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
 }
@@ -86,7 +84,7 @@ func resolveDataDir(dataDir string) (string, error) {
 
 // run binds the listener for addr (a "tcp://host:port" or "unix:///path"
 // URL) and serves the host API on it until SIGINT/SIGTERM.
-func run(addr, gitSyncSource, gitSyncToken, listenAuthToken, dataDirOpt string) error {
+func run(addr, listenAuthToken, dataDirOpt string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
 	ln, kind, sockPath, err := openListener(addr)
@@ -117,8 +115,6 @@ func run(addr, gitSyncSource, gitSyncToken, listenAuthToken, dataDirOpt string) 
 			agent.BackendClaudeCode: host.NewClaudeBackendManager(),
 		},
 		Log:           lg,
-		GitSyncSource: gitSyncSource,
-		GitSyncToken:  gitSyncToken,
 		SessionsStore: hostStore,
 	})
 
