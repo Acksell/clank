@@ -10,4 +10,8 @@ internal/provisioner/flyio/clank-host-linux-amd64
 
 # Native clank-host binary produced by `go build ./cmd/clank-host` in
 # the worktree root. Test fixture; not for VCS.
-/clank-hostscreenshot.txt
+/clank-host
+
+# Screenshot files the user shares from the TUI; not for VCS.
+screenshot.txt
+screenshots/
