@@ -61,10 +61,18 @@ func (m *Mux) Handler() http.Handler {
 
 func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("GET /status", m.handleStatus)
+	mx.HandleFunc("GET /ping", m.handlePing)
+	// PR 3: global SSE event stream. TUI/mobile subscribers attach
+	// here through the gateway. Per-session SSE at
+	// /sessions/{id}/events stays for host-client back-compat.
+	mx.HandleFunc("GET /events", m.handleEvents)
 	mx.HandleFunc("GET /backends", m.handleListBackends)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
+	// /discover is the legacy host-client path; /sessions/discover
+	// is the TUI-facing path the gateway routes from.
 	mx.HandleFunc("POST /discover", m.handleDiscoverSessions)
+	mx.HandleFunc("POST /sessions/discover", m.handleDiscoverSessions)
 
 	// Worktree/branch ops. The repo is identified by GitRef in the
 	// request body — the host repo registry was removed in §7.8.
@@ -74,12 +82,22 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("POST /worktrees/merge", m.handleMergeBranch)
 
 	mx.HandleFunc("POST /sessions", m.handleCreateSession)
+	mx.HandleFunc("GET /sessions", m.handleListSessions)
+	mx.HandleFunc("GET /sessions/search", m.handleSearchSessions)
 	mx.HandleFunc("POST /sessions/{id}/open", m.handleOpenSession)
+	// /sessions/{id}/message is the TUI-facing path; /send is the
+	// legacy host-client path. Both registered until the hub goes.
+	mx.HandleFunc("POST /sessions/{id}/message", m.handleSendSession)
 	mx.HandleFunc("POST /sessions/{id}/send", m.handleSendSession)
 	mx.HandleFunc("POST /sessions/{id}/open-and-send", m.handleOpenAndSendSession)
 	mx.HandleFunc("POST /sessions/{id}/abort", m.handleAbortSession)
 	mx.HandleFunc("POST /sessions/{id}/revert", m.handleRevertSession)
 	mx.HandleFunc("POST /sessions/{id}/fork", m.handleForkSession)
+	mx.HandleFunc("POST /sessions/{id}/read", m.handleMarkSessionRead)
+	mx.HandleFunc("POST /sessions/{id}/followup", m.handleToggleSessionFollowUp)
+	mx.HandleFunc("POST /sessions/{id}/visibility", m.handleSetSessionVisibility)
+	mx.HandleFunc("POST /sessions/{id}/draft", m.handleSetSessionDraft)
+	mx.HandleFunc("DELETE /sessions/{id}", m.handleDeleteSession)
 	mx.HandleFunc("GET /sessions/{id}/messages", m.handleGetMessages)
 	mx.HandleFunc("GET /sessions/{id}/events", m.handleSessionEvents)
 	mx.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", m.handlePermissionReply)
