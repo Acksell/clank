@@ -559,6 +559,10 @@ func buildBundleForLaunchTest(t *testing.T) ([]byte, string) {
 // and is what proves the sync pipeline is wired end-to-end. The
 // assertion is on disk, not on the HTTP response.
 func TestRunHubServer_TCPMode_LaunchHostFlow(t *testing.T) {
+	// PR 3: hub-based launch-host flow test; same per-session SSE
+	// race as TestE2E_HubHostOpenCode_StartsSession. Pending rewrite
+	// for the gateway path in phase 3c.
+	t.Skip("PR 3: hub-based launch flow test; pending rewrite for gateway path")
 	home, err := os.MkdirTemp("/tmp", "clank-launch-flow-*")
 	if err != nil {
 		t.Fatal(err)

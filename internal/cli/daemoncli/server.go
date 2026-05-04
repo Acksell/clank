@@ -1,6 +1,7 @@
 package daemoncli
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"log"
@@ -15,9 +16,11 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/config"
+	"github.com/acksell/clank/internal/gateway"
 	hub "github.com/acksell/clank/internal/hub"
 	hubclient "github.com/acksell/clank/internal/hub/client"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
+	"github.com/acksell/clank/internal/provisioner"
 	"github.com/acksell/clank/internal/socketutil"
 	clanksync "github.com/acksell/clank/internal/sync"
 )
@@ -193,6 +196,91 @@ func buildSyncReceiver(s *hub.Service) (*clanksync.Receiver, error) {
 		return nil, fmt.Errorf("mirror root: %w", err)
 	}
 	return clanksync.NewReceiver(mirrors, s.Store, log.Default()), nil
+}
+
+// runGatewayServer mounts the gateway on opts.Listen. PR 3 replaces
+// runHubServer for the public listener; the gateway is a thin reverse
+// proxy that authenticates requests, resolves the user to a host
+// (single-user laptop hardcodes userID="local"), and forwards
+// HTTP/WebSocket traffic via the provisioner-supplied transport.
+//
+// Listening modes match runHubServer for parity:
+//   - Unix socket (default): no in-app auth; file mode is the gate.
+//   - TCP (opts.Listen non-empty): wraps the gateway with the same
+//     bearer-token middleware the hub used. The bearer is checked
+//     before the request reaches the gateway's own PermissiveAuth
+//     (no-op until PR 4 lands real JWT).
+//
+// Both modes write the PID file at hubclient.PIDPath() so existing
+// `clankd stop` keeps working.
+func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
+	pidPath, err := hubclient.PIDPath()
+	if err != nil {
+		return fmt.Errorf("pid path: %w", err)
+	}
+
+	gw, err := gateway.NewGateway(gateway.Config{
+		Provisioner: prov,
+		Auth:        gateway.PermissiveAuth{},
+		ResolveUserID: func(*http.Request) string {
+			return "local" // multi-tenant lands in PR 4
+		},
+	}, log.Default())
+	if err != nil {
+		return fmt.Errorf("build gateway: %w", err)
+	}
+
+	handler := gw.Handler()
+	if opts.Listen != "" {
+		token, err := tcpAuthToken()
+		if err != nil {
+			return err
+		}
+		handler = bearerAuthMiddleware(handler, token)
+	}
+
+	listener, cleanup, err := openHubListener(opts)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		listener.Close()
+		return fmt.Errorf("write PID file: %w", err)
+	}
+	defer os.Remove(pidPath)
+
+	srv := &http.Server{Handler: handler}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Printf("gateway listening on %s", listener.Addr())
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+		}
+		close(serveErr)
+	}()
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("received signal %v, shutting down gateway", sig)
+	case err := <-serveErr:
+		if err != nil {
+			return fmt.Errorf("gateway serve: %w", err)
+		}
+	}
+
+	shutdownCtx, sc := context.WithTimeout(context.Background(), 5*time.Second)
+	defer sc()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("gateway shutdown: %v", err)
+	}
+	return nil
 }
 
 // bearerAuthMiddleware enforces a static bearer token on all requests.
