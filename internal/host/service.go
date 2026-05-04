@@ -482,22 +482,38 @@ func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
 // applyEventToMetadata translates events that modify visible state
 // (status, title) into store updates. Best-effort — failures are
 // logged but do not interrupt the event flow.
+//
+// Also captures Event.ExternalID — backends stamp their native session
+// ID on every emitted event once they know it (see Event.ExternalID
+// docstring). For Claude that happens via the SystemMessage init
+// event during the long-running OpenAndSend; without persisting it
+// here the row would stay at ExternalID="" until Open returns. If the
+// daemon dies in between, the binding is lost forever and a TUI
+// restart can't resume the session.
 func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	if s.sessionsStore == nil {
 		return
 	}
-	var update func(*agent.SessionInfo)
+	var updates []func(*agent.SessionInfo)
+	if evt.ExternalID != "" {
+		extID := evt.ExternalID
+		updates = append(updates, func(info *agent.SessionInfo) {
+			if info.ExternalID == "" {
+				info.ExternalID = extID
+			}
+		})
+	}
 	switch evt.Type {
 	case agent.EventStatusChange:
 		if d, ok := evt.Data.(agent.StatusChangeData); ok {
-			update = func(info *agent.SessionInfo) { info.Status = d.NewStatus }
+			updates = append(updates, func(info *agent.SessionInfo) { info.Status = d.NewStatus })
 		}
 	case agent.EventTitleChange:
 		if d, ok := evt.Data.(agent.TitleChangeData); ok {
-			update = func(info *agent.SessionInfo) { info.Title = d.Title }
+			updates = append(updates, func(info *agent.SessionInfo) { info.Title = d.Title })
 		}
 	}
-	if update == nil {
+	if len(updates) == 0 {
 		return
 	}
 	ctx := context.Background()
@@ -508,7 +524,9 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 		// about, so a miss here means an out-of-band session.
 		return
 	}
-	update(&info)
+	for _, fn := range updates {
+		fn(&info)
+	}
 	info.UpdatedAt = time.Now()
 	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 		s.log.Printf("warning: update session %s metadata for %s event: %v", sessionID, evt.Type, err)

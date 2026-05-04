@@ -165,23 +165,93 @@ func (*fixedHostProvisioner) DestroyHost(context.Context, string) error { return
 // backend received (e.g. did handleCreateSession actually dispatch the
 // initial prompt via OpenAndSend?).
 type stubBackendManager struct {
+	mu   sync.Mutex
 	last *stubBackend
 }
 
 func (m *stubBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
 func (m *stubBackendManager) CreateBackend(_ context.Context, _ agent.BackendInvocation) (agent.SessionBackend, error) {
-	b := &stubBackend{events: make(chan agent.Event)}
+	b := &stubBackend{
+		events: make(chan agent.Event, 16),
+		done:   make(chan struct{}),
+	}
+	m.mu.Lock()
 	m.last = b
+	m.mu.Unlock()
 	return b, nil
 }
 func (m *stubBackendManager) Shutdown() {}
 
 type stubBackend struct {
-	events      chan agent.Event
+	events chan agent.Event
+	// done closes when Stop runs. PushEvent guards on it so a test
+	// goroutine racing service-Cleanup never panics on send-to-
+	// closed-channel and the race detector stays quiet.
+	done chan struct{}
+	// pendingPushes counts in-flight PushEvent calls so Stop can wait
+	// for them to finish before closing the events channel — without
+	// it, a PushEvent that has passed its done-check but hasn't
+	// reached the send still races with close(events).
+	pendingPushes sync.WaitGroup
+	stopOnce      sync.Once
+
 	mu          sync.Mutex
 	openCalled  bool
 	sendOpts    agent.SendMessageOpts
 	openAndSend bool
+
+	// Tests override the runtime fields a real backend usually
+	// updates from inside Open/Start. Both fields are protected by
+	// b.mu and read by Status()/SessionID() on the host's relay
+	// goroutine, so concurrent test mutation is safe.
+	statusOverride agent.SessionStatus
+	statusSet      bool
+	idOverride     string
+	idSet          bool
+
+	// Records mutating operations so wire-level tests can assert the
+	// host translated the request correctly without mocking yet
+	// another struct.
+	aborted  bool
+	stopped  bool
+	revertID string
+	forkID   string
+}
+
+// PushEvent injects an event into the backend's events channel as if
+// the agent emitted it. Drops the event if Stop has been called so
+// test goroutines that race the service's Cleanup don't panic on
+// send-to-closed-channel (and don't trip the race detector).
+func (b *stubBackend) PushEvent(evt agent.Event) {
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+	b.pendingPushes.Add(1)
+	defer b.pendingPushes.Done()
+	select {
+	case b.events <- evt:
+	case <-b.done:
+	}
+}
+
+// SetExternalID overrides what SessionID() returns going forward.
+// Tests use this to mimic opencode's late-binding behavior — the real
+// session ID isn't known until Open completes.
+func (b *stubBackend) SetExternalID(id string) {
+	b.mu.Lock()
+	b.idOverride = id
+	b.idSet = true
+	b.mu.Unlock()
+}
+
+// SetStatus overrides what Status() returns going forward.
+func (b *stubBackend) SetStatus(s agent.SessionStatus) {
+	b.mu.Lock()
+	b.statusOverride = s
+	b.statusSet = true
+	b.mu.Unlock()
 }
 
 func (b *stubBackend) Open(context.Context) error {
@@ -204,20 +274,59 @@ func (b *stubBackend) Send(_ context.Context, opts agent.SendMessageOpts) error 
 	b.mu.Unlock()
 	return nil
 }
-func (*stubBackend) Abort(context.Context) error {
+func (b *stubBackend) Abort(context.Context) error {
+	b.mu.Lock()
+	b.aborted = true
+	b.mu.Unlock()
 	return nil
 }
 func (b *stubBackend) Stop() error {
-	close(b.events)
+	b.stopOnce.Do(func() {
+		b.mu.Lock()
+		b.stopped = true
+		b.mu.Unlock()
+		// Close done first so any PushEvent that hasn't entered the
+		// send select bails out via its preflight check. Wait for
+		// any push that's already past the preflight to finish
+		// before closing events — that's the only safe way to
+		// guarantee no concurrent send.
+		close(b.done)
+		b.pendingPushes.Wait()
+		close(b.events)
+	})
 	return nil
 }
-func (*stubBackend) Status() agent.SessionStatus                            { return agent.StatusIdle }
-func (*stubBackend) SessionID() string                                      { return "stub-ext-id" }
-func (*stubBackend) Messages(context.Context) ([]agent.MessageData, error)  { return nil, nil }
-func (*stubBackend) Revert(context.Context, string) error                   { return nil }
-func (*stubBackend) Fork(context.Context, string) (agent.ForkResult, error) { return agent.ForkResult{}, nil }
-func (*stubBackend) RespondPermission(context.Context, string, bool) error  { return nil }
-func (b *stubBackend) Events() <-chan agent.Event                           { return b.events }
+func (b *stubBackend) Status() agent.SessionStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.statusSet {
+		return b.statusOverride
+	}
+	return agent.StatusIdle
+}
+func (b *stubBackend) SessionID() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.idSet {
+		return b.idOverride
+	}
+	return "stub-ext-id"
+}
+func (*stubBackend) Messages(context.Context) ([]agent.MessageData, error) { return nil, nil }
+func (b *stubBackend) Revert(_ context.Context, msgID string) error {
+	b.mu.Lock()
+	b.revertID = msgID
+	b.mu.Unlock()
+	return nil
+}
+func (b *stubBackend) Fork(_ context.Context, msgID string) (agent.ForkResult, error) {
+	b.mu.Lock()
+	b.forkID = msgID
+	b.mu.Unlock()
+	return agent.ForkResult{ID: "ext-forked-" + msgID}, nil
+}
+func (*stubBackend) RespondPermission(context.Context, string, bool) error { return nil }
+func (b *stubBackend) Events() <-chan agent.Event                          { return b.events }
 
 // initTestGitRepo creates a git repo with an "origin" remote so
 // host.workDirFor accepts the LocalPath as a usable repo root.
