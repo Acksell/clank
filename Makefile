@@ -99,5 +99,12 @@ image-print:
 # Production cloud hubs don't need this — they sit on a real domain.
 
 .PHONY: cloud-hub
-cloud-hub:
+# Depends on `install` so the running clankd always has the freshly-
+# rebuilt embedded clank-host. Without this, scripts/dev-cloud-hub.sh
+# runs whatever clankd is currently on PATH and pushes the stale
+# embedded binary it carries — symptom in the wild: the sprite
+# answers /status (every clank-host has had it forever) but new
+# routes like /events return 404 because the running sprite is on an
+# old binary version.
+cloud-hub: install
 	@bash scripts/dev-cloud-hub.sh
