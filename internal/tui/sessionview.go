@@ -2768,9 +2768,6 @@ func (m *SessionViewModel) buildHelpText() string {
 	if m.info != nil && (m.info.Status == agent.StatusBusy || m.info.Status == agent.StatusStarting) {
 		parts = append([]string{"ctrl+c: cancel"}, parts...)
 	}
-	if m.voice != nil {
-		parts = append([]string{voiceHelpItem(*m.voice)}, parts...)
-	}
 	return strings.Join(parts, " | ")
 }
 

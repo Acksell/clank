@@ -1484,7 +1484,7 @@ func (m *InboxModel) renderSessionPane() string {
 	if m.searching {
 		help = helpStyle.Render("esc: cancel | enter: open | .: this project | up/down: navigate")
 	} else {
-		parts := []string{voiceHelpItem(m.voice), "enter: open", "n: new", "/: search", "w: worktrees", "?: help", "q: quit"}
+		parts := []string{"enter: open", "n: new", "/: search", "w: worktrees", "?: help", "q: quit"}
 		help = helpStyle.Render(strings.Join(parts, " | "))
 	}
 	sb.WriteString(help)
