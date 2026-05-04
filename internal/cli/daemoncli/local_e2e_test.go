@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,6 +102,22 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 		t.Errorf("Prompt: got %q, want %q", created.Prompt, "hello")
 	}
 
+	// The host must dispatch the initial prompt via OpenAndSend during
+	// the create handler. This is the contract the hub used to own
+	// (and that PR 3 silently broke until phase 6 — the symptom was
+	// "session not started" / spinning busy with no agent reply). We
+	// pin it here so the regression cannot return.
+	stub.last.mu.Lock()
+	openAndSend := stub.last.openAndSend
+	gotText := stub.last.sendOpts.Text
+	stub.last.mu.Unlock()
+	if !openAndSend {
+		t.Error("handleCreateSession did not call OpenAndSend on the backend")
+	}
+	if gotText != "hello" {
+		t.Errorf("OpenAndSend received text %q, want %q", gotText, "hello")
+	}
+
 	// GET /sessions/{id} must return SessionInfo (not the lightweight
 	// SessionSnapshot) so the TUI's Session(id).Get() works.
 	got, err := cli.Session(created.ID).Get(ctx)
@@ -128,33 +145,64 @@ func (f *fixedHostProvisioner) EnsureHost(context.Context, string) (provisioner.
 func (*fixedHostProvisioner) SuspendHost(context.Context, string) error { return nil }
 func (*fixedHostProvisioner) DestroyHost(context.Context, string) error { return nil }
 
-// stubBackendManager spawns a stubBackend on every CreateBackend.
-type stubBackendManager struct{}
-
-func (*stubBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
-func (*stubBackendManager) CreateBackend(_ context.Context, _ agent.BackendInvocation) (agent.SessionBackend, error) {
-	return &stubBackend{}, nil
+// stubBackendManager spawns a stubBackend on every CreateBackend. The
+// shared `last` field lets tests inspect what the most recently created
+// backend received (e.g. did handleCreateSession actually dispatch the
+// initial prompt via OpenAndSend?).
+type stubBackendManager struct {
+	last *stubBackend
 }
-func (*stubBackendManager) Shutdown() {}
 
-type stubBackend struct{}
-
-func (*stubBackend) Open(context.Context) error                                { return nil }
-func (*stubBackend) OpenAndSend(context.Context, agent.SendMessageOpts) error  { return nil }
-func (*stubBackend) Send(context.Context, agent.SendMessageOpts) error         { return nil }
-func (*stubBackend) Abort(context.Context) error                               { return nil }
-func (*stubBackend) Stop() error                                               { return nil }
-func (*stubBackend) Status() agent.SessionStatus                               { return agent.StatusIdle }
-func (*stubBackend) SessionID() string                                         { return "stub-ext-id" }
-func (*stubBackend) Messages(context.Context) ([]agent.MessageData, error)     { return nil, nil }
-func (*stubBackend) Revert(context.Context, string) error                      { return nil }
-func (*stubBackend) Fork(context.Context, string) (agent.ForkResult, error)    { return agent.ForkResult{}, nil }
-func (*stubBackend) RespondPermission(context.Context, string, bool) error     { return nil }
-func (*stubBackend) Events() <-chan agent.Event {
-	ch := make(chan agent.Event)
-	close(ch)
-	return ch
+func (m *stubBackendManager) Init(_ context.Context, _ func() ([]string, error)) error { return nil }
+func (m *stubBackendManager) CreateBackend(_ context.Context, _ agent.BackendInvocation) (agent.SessionBackend, error) {
+	b := &stubBackend{events: make(chan agent.Event)}
+	m.last = b
+	return b, nil
 }
+func (m *stubBackendManager) Shutdown() {}
+
+type stubBackend struct {
+	events      chan agent.Event
+	mu          sync.Mutex
+	openCalled  bool
+	sendOpts    agent.SendMessageOpts
+	openAndSend bool
+}
+
+func (b *stubBackend) Open(context.Context) error {
+	b.mu.Lock()
+	b.openCalled = true
+	b.mu.Unlock()
+	return nil
+}
+func (b *stubBackend) OpenAndSend(_ context.Context, opts agent.SendMessageOpts) error {
+	b.mu.Lock()
+	b.openCalled = true
+	b.openAndSend = true
+	b.sendOpts = opts
+	b.mu.Unlock()
+	return nil
+}
+func (b *stubBackend) Send(_ context.Context, opts agent.SendMessageOpts) error {
+	b.mu.Lock()
+	b.sendOpts = opts
+	b.mu.Unlock()
+	return nil
+}
+func (*stubBackend) Abort(context.Context) error {
+	return nil
+}
+func (b *stubBackend) Stop() error {
+	close(b.events)
+	return nil
+}
+func (*stubBackend) Status() agent.SessionStatus                            { return agent.StatusIdle }
+func (*stubBackend) SessionID() string                                      { return "stub-ext-id" }
+func (*stubBackend) Messages(context.Context) ([]agent.MessageData, error)  { return nil, nil }
+func (*stubBackend) Revert(context.Context, string) error                   { return nil }
+func (*stubBackend) Fork(context.Context, string) (agent.ForkResult, error) { return agent.ForkResult{}, nil }
+func (*stubBackend) RespondPermission(context.Context, string, bool) error  { return nil }
+func (b *stubBackend) Events() <-chan agent.Event                           { return b.events }
 
 // initTestGitRepo creates a git repo with an "origin" remote so
 // host.workDirFor accepts the LocalPath as a usable repo root.

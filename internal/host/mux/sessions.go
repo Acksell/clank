@@ -48,6 +48,25 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	// Dispatch the initial prompt. OpenAndSend is the create-and-go
+	// contract the hub used to invoke; with the hub gone the host owns
+	// it. Open is synchronous (creates the opencode session and stamps
+	// b.SessionID); Send is fire-and-forget — the prompt runs on the
+	// backend's long-lived context, not the HTTP request's. Errors
+	// here mean the LLM-side session never opened: we tear down the
+	// host-side registration so the user can retry instead of leaving
+	// a "starting" zombie.
+	if err := b.OpenAndSend(r.Context(), agent.SendMessageOpts{
+		Text:  req.Prompt,
+		Agent: req.Agent,
+		Model: req.Model,
+	}); err != nil {
+		_ = m.svc.StopSession(sessionID)
+		writeError(w, fmt.Errorf("open session: %w", err))
+		return
+	}
+
 	now := time.Now()
 	info := agent.SessionInfo{
 		ID:         sessionID,

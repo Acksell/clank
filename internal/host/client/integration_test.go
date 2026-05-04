@@ -267,15 +267,16 @@ func TestHTTPRoundTrip_SendMessageAndAbort(t *testing.T) {
 // Result: SessionBackend.SessionID() kept returning "" on the Hub even
 // after a successful Start, so the Hub persisted external_id="" on the
 // session row — causing duplicate rows to be created from
-// discoverSessions on next TUI open / daemon restart.
-//
-// The fix: Start returns a SessionSnapshot body; the client updates
-// its cached externalID and status from the response.
-func TestHTTPRoundTrip_StartPopulatesExternalID(t *testing.T) {
+// TestHTTPRoundTrip_CreatePopulatesExternalID covers the
+// post-PR-3 contract: handleCreateSession dispatches OpenAndSend itself,
+// so the externalID stamped during Open is already on the SessionInfo
+// the wire returns. Pre-PR-3 the hub split this — Create then a separate
+// Open — and a regression there would orphan the persisted ID.
+func TestHTTPRoundTrip_CreatePopulatesExternalID(t *testing.T) {
 	t.Parallel()
 
 	// Mirror how opencode's real backend only learns its sessionID
-	// after the remote session is opened inside Start().
+	// after Open is invoked inside Create.
 	stub := newStubBackend("")
 	stub.idAfterStart = "ext-late"
 	svc := host.New(host.Options{
@@ -301,19 +302,8 @@ func TestHTTPRoundTrip_StartPopulatesExternalID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	// Before Start the stub still returns "" for SessionID, so the
-	// client's cached externalID is also "".
-	if got := be.SessionID(); got != "" {
-		t.Errorf("before Start: SessionID = %q, want empty", got)
-	}
-
-	if err := be.Open(ctx); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	// After Open the host backend knows its external ID; the client
-	// must learn it from the Open response.
 	if got := be.SessionID(); got != "ext-late" {
-		t.Errorf("after Open: SessionID = %q, want ext-late", got)
+		t.Errorf("after Create: SessionID = %q, want ext-late (handleCreateSession should call OpenAndSend)", got)
 	}
 }
 
