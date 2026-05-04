@@ -84,6 +84,9 @@ func (m *SessionViewModel) updateCompose(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
+		case modelPickerConnectProviderMsg:
+			m.showModelPicker = false
+			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{} }
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)

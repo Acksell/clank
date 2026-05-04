@@ -95,6 +95,12 @@ type pendingPermissionMsg struct {
 // backToInboxMsg signals navigation back to the inbox.
 type backToInboxMsg struct{}
 
+// openProviderAuthFromSessionMsg bubbles up from the model picker's
+// "+ Connect provider…" entry. The inbox closes the session view, opens
+// settings, and surfaces the provider-auth modal (which it owns —
+// SessionViewModel doesn't render that overlay).
+type openProviderAuthFromSessionMsg struct{}
+
 // wordBackwardBinding matches the textarea's WordBackward keys (alt+left, alt+b).
 // Used to intercept the key before it reaches the textarea in cases where the
 // upstream wordLeft() implementation would infinite-loop.
@@ -592,6 +598,11 @@ func (m *SessionViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modelPickerCancelMsg:
 			m.showModelPicker = false
 			return m, m.input.Focus()
+		case modelPickerConnectProviderMsg:
+			// Close the picker and bubble up — the inbox owns the
+			// settings + provider-auth modal lifecycle.
+			m.showModelPicker = false
+			return m, func() tea.Msg { return openProviderAuthFromSessionMsg{} }
 		default:
 			var cmd tea.Cmd
 			m.modelPicker, cmd = m.modelPicker.Update(msg)
