@@ -4,29 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 )
 
-// CreateSessionRequest is the body for POST /sessions.
-//
-// SessionID is the Hub-assigned ULID under which the Host registers the
-// new SessionBackend. The Host does not generate session IDs; the Hub
-// owns that responsibility because the Hub holds the durable registry.
-type CreateSessionRequest struct {
-	SessionID string             `json:"session_id"`
-	Request   agent.StartRequest `json:"request"`
-}
-
 // SessionSnapshot summarizes a registered session for HTTP responses. It
-// is not the same as agent.SessionInfo (Hub-side metadata); it carries
-// only what the Host knows about its own backend instance.
+// is the lighter shape returned by GET /sessions/{id} and POST
+// /sessions/{id}/open — endpoints where the caller already has the full
+// agent.SessionInfo and only needs to refresh runtime fields.
 //
-// ServerURL is populated on POST /sessions responses for backends that
-// expose an HTTP server (currently only OpenCode); empty otherwise. The
-// Hub uses it for per-session shell-out (e.g. `opencode attach <url>`).
-// Other endpoints (GET /sessions/{id}) leave it empty.
+// ServerURL is populated on POST /sessions/{id}/open responses for
+// backends that expose an HTTP server (currently only OpenCode); empty
+// otherwise.
 type SessionSnapshot struct {
 	SessionID  string              `json:"session_id"`
 	ExternalID string              `json:"external_id"`
@@ -35,30 +28,71 @@ type SessionSnapshot struct {
 }
 
 // HOST
+//
+// POST /sessions accepts agent.StartRequest directly, generates a fresh
+// session ID, and returns the persisted agent.SessionInfo. The host owns
+// session ID generation post-PR-3 (the hub used to do this).
 func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	var req CreateSessionRequest
+	var req agent.StartRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if req.SessionID == "" {
-		writeJSON(w, http.StatusBadRequest, errResp{Error: "session_id is required"})
+	if err := req.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	b, serverURL, err := m.svc.CreateSession(r.Context(), req.SessionID, req.Request)
+	sessionID := ulid.Make().String()
+	b, serverURL, err := m.svc.CreateSession(r.Context(), sessionID, req)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, SessionSnapshot{
-		SessionID:  req.SessionID,
+	now := time.Now()
+	info := agent.SessionInfo{
+		ID:         sessionID,
 		ExternalID: b.SessionID(),
+		Backend:    req.Backend,
 		Status:     b.Status(),
+		Hostname:   req.Hostname,
+		GitRef:     req.GitRef,
+		Prompt:     req.Prompt,
+		TicketID:   req.TicketID,
+		Agent:      req.Agent,
 		ServerURL:  serverURL,
-	})
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	writeJSON(w, http.StatusCreated, info)
 }
 
 // HOST
+//
+// GET /sessions/{id} returns the persisted agent.SessionInfo, augmented
+// with runtime fields (status, external_id) from the live backend if one
+// is registered. Returns 404 when the session is not in the store and
+// not in the live registry.
+func (m *Mux) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	info, err := m.svc.GetSessionMetadata(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if b, ok := m.svc.Session(id); ok {
+		info.Status = b.Status()
+		if extID := b.SessionID(); extID != "" {
+			info.ExternalID = extID
+		}
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// HOST
+//
+// handleSessionSnapshot is the lightweight response shape used by
+// internal/host/client (the in-process / host-supervisor path). The
+// gateway-facing GET /sessions/{id} routes to handleGetSession instead.
 func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	b, ok := m.svc.Session(id)
