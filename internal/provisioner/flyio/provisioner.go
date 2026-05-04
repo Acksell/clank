@@ -595,41 +595,49 @@ echo "::: done"
 	return nil
 }
 
-// ensureServiceRunning registers the clank-host Service if absent.
-// On the reuse path the Service already exists and auto-restarts on
-// wake; we still re-issue UpdateURLSettings later in the caller to
-// re-publish the URL in case it was manually toggled.
+// ensureServiceRunning registers the clank-host Service if absent,
+// or recreates it when its persisted Cmd/Args drifted from what the
+// current daemon expects (e.g. a binary upgrade dropped a flag).
+//
+// Sprites' Service definition is persisted on the sprite — when the
+// VM hibernates and wakes, the saved Cmd+Args are exec'd verbatim.
+// If those args were stale (e.g. they referenced --git-sync-source,
+// removed in PR 3 phase 3c), the new clank-host binary refuses to
+// start with "flag provided but not defined", the service crash-
+// loops, and the sprite's edge serves 404 to every incoming request.
+// Detecting that drift here and recreating the service is what lets
+// existing sprites self-heal across daemon upgrades.
 func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.Sprite, authToken string) error {
-	var existing error
+	wantReq := buildServiceRequest(authToken)
+
+	var existing *sprites.ServiceWithState
+	var existingErr error
 	getErr := retryClosedConn(ctx, p.log, func() error {
-		_, err := sprite.GetService(ctx, serviceName)
-		existing = err
+		s, err := sprite.GetService(ctx, serviceName)
+		existing = s
+		existingErr = err
 		return err
 	})
-	if getErr == nil {
-		// Service already registered — auto-resumes from sprite
-		// hibernation on incoming traffic.
-		return nil
-	}
-	if !isNotFound(existing) {
+	if getErr == nil && existing != nil {
+		if serviceMatches(&existing.Service, wantReq) {
+			// Already registered with the right shape — auto-resumes
+			// from sprite hibernation on incoming traffic.
+			return nil
+		}
+		p.log.Printf("flyio provisioner: service %s args drifted; recreating", serviceName)
+		if err := retryClosedConn(ctx, p.log, func() error {
+			return sprite.DeleteService(ctx, serviceName)
+		}); err != nil {
+			return fmt.Errorf("delete drifted clank-host service: %w", err)
+		}
+	} else if getErr != nil && !isNotFound(existingErr) {
 		return fmt.Errorf("get clank-host service: %w", getErr)
 	}
 
-	port := HostPort
-	req := &sprites.ServiceRequest{
-		Cmd: installPath,
-		Args: []string{
-			"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
-			"--listen-auth-token", authToken,
-			"--git-sync-source", p.opts.HubBaseURL,
-			"--git-sync-token", p.opts.HubAuthToken,
-		},
-		HTTPPort: &port,
-	}
 	var stream *sprites.ServiceStream
 	if err := retryClosedConn(ctx, p.log, func() error {
 		var err error
-		stream, err = sprite.CreateService(ctx, serviceName, req)
+		stream, err = sprite.CreateService(ctx, serviceName, wantReq)
 		return err
 	}); err != nil {
 		return fmt.Errorf("create clank-host service: %w", err)
@@ -638,6 +646,58 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 		return fmt.Errorf("wait for clank-host service started: %w", err)
 	}
 	return nil
+}
+
+// buildServiceRequest is the canonical Service definition this
+// daemon expects. Extracted so ensureServiceRunning can compare a
+// persisted service against the same shape it would create.
+func buildServiceRequest(authToken string) *sprites.ServiceRequest {
+	port := HostPort
+	return &sprites.ServiceRequest{
+		Cmd: installPath,
+		Args: []string{
+			"--listen", fmt.Sprintf("tcp://[::]:%d", HostPort),
+			"--listen-auth-token", authToken,
+		},
+		HTTPPort: &port,
+	}
+}
+
+// serviceMatches reports whether a persisted Service shape matches
+// what we'd create now. Auth-token args are wildcarded — token value
+// rotates per daemon-cluster restart but the service is still
+// reachable through the existing token saved in the store, so
+// recreating just because the token changed is wasteful.
+func serviceMatches(have *sprites.Service, want *sprites.ServiceRequest) bool {
+	if have.Cmd != want.Cmd {
+		return false
+	}
+	if (have.HTTPPort == nil) != (want.HTTPPort == nil) {
+		return false
+	}
+	if have.HTTPPort != nil && want.HTTPPort != nil && *have.HTTPPort != *want.HTTPPort {
+		return false
+	}
+	return argsEquivalent(have.Args, want.Args)
+}
+
+// argsEquivalent compares two arg slices, treating
+// --listen-auth-token <value> as a wildcard so a token rotation
+// doesn't trigger a service recreate. Every other arg must match
+// exactly and in order.
+func argsEquivalent(have, want []string) bool {
+	if len(have) != len(want) {
+		return false
+	}
+	for i := 0; i < len(have); i++ {
+		if i > 0 && want[i-1] == "--listen-auth-token" {
+			continue // wildcarded value
+		}
+		if have[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // waitForServiceStarted drains a Service log stream until the

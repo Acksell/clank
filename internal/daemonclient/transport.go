@@ -65,7 +65,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 				return fmt.Errorf("daemon: %s", msg)
 			}
 		}
-		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, respBody)
+		return fmt.Errorf("daemon returned status %d: %s", resp.StatusCode, summarizeBody(resp.Header.Get("Content-Type"), respBody))
 	}
 
 	if out != nil && len(respBody) > 0 {
@@ -74,6 +74,52 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		}
 	}
 	return nil
+}
+
+// summarizeBody returns a short, single-line error summary suitable
+// for surfacing in TUI error banners. Without it a sprites/cloudflare
+// 404 page (~6KB of HTML) gets dumped verbatim into the inbox's
+// error banner — the entire stylesheet and SVG show up as render
+// noise in the user's terminal.
+//
+// We extract just the <title> for HTML responses, snip oversized
+// bodies to 240 chars, and collapse runs of whitespace to single
+// spaces so the message fits on one line.
+func summarizeBody(contentType string, body []byte) string {
+	const maxLen = 240
+	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	switch ct {
+	case "text/html", "application/xhtml+xml":
+		if title := htmlTitle(body); title != "" {
+			return title
+		}
+	}
+	s := strings.Join(strings.Fields(string(body)), " ")
+	if len(s) > maxLen {
+		s = s[:maxLen] + "…"
+	}
+	return s
+}
+
+// htmlTitle is a deliberately tiny <title>X</title> extractor — good
+// enough for "404 | Sprites" or "Bad Gateway" pages without dragging
+// in an HTML parser.
+func htmlTitle(body []byte) string {
+	s := string(body)
+	lo := strings.Index(strings.ToLower(s), "<title")
+	if lo < 0 {
+		return ""
+	}
+	gt := strings.Index(s[lo:], ">")
+	if gt < 0 {
+		return ""
+	}
+	start := lo + gt + 1
+	end := strings.Index(strings.ToLower(s[start:]), "</title>")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[start : start+end])
 }
 
 // openSSE opens an SSE GET on a no-timeout client. Caller closes resp.Body.
@@ -101,7 +147,12 @@ func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, erro
 		return nil, fmt.Errorf("connect to event stream: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
 		resp.Body.Close()
+		summary := summarizeBody(resp.Header.Get("Content-Type"), body)
+		if summary != "" {
+			return nil, fmt.Errorf("event stream returned status %d: %s", resp.StatusCode, summary)
+		}
 		return nil, fmt.Errorf("event stream returned status %d", resp.StatusCode)
 	}
 	return resp, nil
