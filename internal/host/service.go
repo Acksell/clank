@@ -674,12 +674,99 @@ func (s *Service) tryLocalPath(path string) localPathResult {
 }
 
 // Session returns the SessionBackend registered under id, or nil and
-// false if there is no such session.
+// false if there is no such session in the live registry. Does NOT
+// rehydrate from store — callers that need to operate on a session
+// across daemon restarts should use ResumeSession.
 func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	s.mu.RLock()
 	b, ok := s.sessions[id]
 	s.mu.RUnlock()
 	return b, ok
+}
+
+// ResumeSession returns the live SessionBackend for id, lazily
+// rehydrating it from the persisted store row if the live registry
+// missed. The host's in-memory registry is empty at startup; without
+// this, every session-op handler (Send, Messages, Abort, …) would
+// 404 the user's whole inbox until they explicitly recreated each
+// session.
+//
+// Returns ErrNotFound when the id is in neither the live registry
+// nor the store. Returns the underlying error when rehydration fails
+// (e.g. opencode subprocess can't start in the persisted project
+// directory). Caller surfaces those to the user as-is.
+func (s *Service) ResumeSession(ctx context.Context, id string) (agent.SessionBackend, error) {
+	if b, ok := s.Session(id); ok {
+		return b, nil
+	}
+	if s.sessionsStore == nil {
+		return nil, ErrNotFound
+	}
+	info, err := s.sessionsStore.GetSession(ctx, id)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+
+	// Reuse CreateSession to rehydrate. Pass info.ExternalID via the
+	// StartRequest so the backend attaches to the existing remote
+	// session instead of creating a fresh one. Prompt is empty —
+	// CreateSession's handler-side OpenAndSend dispatch is bypassed
+	// because we go directly through Service.CreateSession (not the
+	// HTTP handler), and we explicitly call Open below.
+	mgr, ok := s.backendManagers[info.Backend]
+	if !ok {
+		return nil, fmt.Errorf("resume session %s: no backend manager for %s", id, info.Backend)
+	}
+	s.mu.Lock()
+	if b, ok := s.sessions[id]; ok {
+		// Lost the race — another caller beat us to it. Return the
+		// winner's backend.
+		s.mu.Unlock()
+		return b, nil
+	}
+	if s.closed {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("resume session %s: host is shut down", id)
+	}
+	s.mu.Unlock()
+
+	workDir, err := s.workDirFor(ctx, info.GitRef)
+	if err != nil {
+		return nil, fmt.Errorf("resume session %s: %w", id, err)
+	}
+	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
+		WorkDir:          workDir,
+		ResumeExternalID: info.ExternalID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resume session %s: %w", id, err)
+	}
+
+	s.mu.Lock()
+	if existing, ok := s.sessions[id]; ok {
+		s.mu.Unlock()
+		// Race lost between CreateBackend (which can be slow) and a
+		// concurrent ResumeSession or CreateSession. Tear down the
+		// backend we just spawned.
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend lost-race for %s: %v", id, stopErr)
+		}
+		return existing, nil
+	}
+	if s.closed {
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend after shutdown for %s: %v", id, stopErr)
+		}
+		return nil, fmt.Errorf("resume session %s: host is shut down", id)
+	}
+	s.sessions[id] = b
+	s.mu.Unlock()
+
+	s.wg.Add(1)
+	go s.relayBackendEvents(id, b)
+
+	return b, nil
 }
 
 // StopSession stops the SessionBackend registered under id and removes

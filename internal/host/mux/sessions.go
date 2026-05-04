@@ -9,7 +9,6 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 )
 
 // SessionSnapshot summarizes a registered session for HTTP responses. It
@@ -114,9 +113,9 @@ func (m *Mux) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // gateway-facing GET /sessions/{id} routes to handleGetSession instead.
 func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, SessionSnapshot{
@@ -129,9 +128,9 @@ func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	if err := b.Open(r.Context()); err != nil {
@@ -152,9 +151,9 @@ func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	var opts agent.SendMessageOpts
@@ -172,9 +171,9 @@ func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	var opts agent.SendMessageOpts
@@ -202,9 +201,9 @@ func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	if err := b.Abort(r.Context()); err != nil {
@@ -222,9 +221,9 @@ type RevertRequest struct {
 // HOST
 func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	var req RevertRequest
@@ -251,9 +250,9 @@ type ForkRequest struct {
 // HOST
 func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	var req ForkRequest
@@ -274,9 +273,9 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	msgs, err := b.Messages(r.Context())
@@ -305,8 +304,11 @@ type PermissionReplyRequest struct {
 // EventPermission. A persistent snapshot lives behind a future PR.
 func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := m.svc.Session(id); !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	// Use GetSessionMetadata (store-only, no rehydrate) — listing
+	// pending perms shouldn't spawn an opencode subprocess just to
+	// return an empty array.
+	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, []any{})
@@ -316,9 +318,9 @@ func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
 func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	permID := r.PathValue("permID")
-	b, ok := m.svc.Session(id)
-	if !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	b, err := m.svc.ResumeSession(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	var req PermissionReplyRequest
@@ -356,8 +358,12 @@ func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 // Each event is encoded as `event: <type>\ndata: <json>\n\n`.
 func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := m.svc.Session(id); !ok {
-		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+	// Subscribe-only: just confirm the session exists (in store or
+	// live registry) — don't rehydrate the backend on the SSE path.
+	// Events for resumed sessions only flow once another caller
+	// invokes Send/Messages/etc, which triggers the rehydrate.
+	if _, err := m.svc.GetSessionMetadata(r.Context(), id); err != nil {
+		writeError(w, err)
 		return
 	}
 
