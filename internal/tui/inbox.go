@@ -538,11 +538,7 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 			draft := strings.TrimSpace(m.sessionView.DraftText())
 			go m.client.Session(m.activeConnID).SetDraft(context.Background(), draft)
 		}
-		// Mark the session as read on close to capture any activity
-		// that occurred while the user was viewing it.
-		if m.activeConnID != "" {
-			go m.client.Session(m.activeConnID).MarkRead(context.Background())
-		}
+		closingID := m.activeConnID
 		m.screen = screenInbox
 		m.sessionView = nil
 		m.activeConnID = ""
@@ -552,7 +548,25 @@ func (m *InboxModel) updateSessionView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would spawn a duplicate chain on every nav round-trip — leading
 		// to K parallel pollers after K nav round-trips, which fan out to
 		// expensive git subprocesses in clank-host's ListBranches.
-		return m, tea.Batch(m.loadDataCmd(), m.sidebar.loadBranches())
+		//
+		// Mark-read happens *before* the list refresh inside a single
+		// command using tea.Sequence so the subsequent List sees the
+		// updated LastReadAt. A previous goroutine + tea.Batch raced
+		// the List call against the in-flight POST, so the inbox kept
+		// rendering the row as unread until the next autoRefresh tick.
+		markRead := tea.Cmd(nil)
+		if closingID != "" {
+			markRead = func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = m.client.Session(closingID).MarkRead(ctx)
+				return nil
+			}
+		}
+		return m, tea.Batch(
+			tea.Sequence(markRead, m.loadDataCmd()),
+			m.sidebar.loadBranches(),
+		)
 
 	case openForkedSessionMsg:
 		forkMsg := msg.(openForkedSessionMsg)

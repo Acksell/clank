@@ -490,32 +490,38 @@ func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
 // here the row would stay at ExternalID="" until Open returns. If the
 // daemon dies in between, the binding is lost forever and a TUI
 // restart can't resume the session.
+//
+// UpdatedAt only bumps when something USER-VISIBLE actually changes
+// (status delta, title delta, OR a first-time ExternalID stamp).
+// Without that gate every backend event would re-bump UpdatedAt and
+// SessionInfo.Unread would flip back to true a moment after the user
+// hit MarkRead — which was the second symptom of the "mark-read
+// doesn't stick" report.
 func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 	if s.sessionsStore == nil {
 		return
 	}
-	var updates []func(*agent.SessionInfo)
-	if evt.ExternalID != "" {
-		extID := evt.ExternalID
-		updates = append(updates, func(info *agent.SessionInfo) {
-			if info.ExternalID == "" {
-				info.ExternalID = extID
-			}
-		})
-	}
-	switch evt.Type {
-	case agent.EventStatusChange:
+	hasExternalID := evt.ExternalID != ""
+	hasStatus := false
+	var statusValue agent.SessionStatus
+	if evt.Type == agent.EventStatusChange {
 		if d, ok := evt.Data.(agent.StatusChangeData); ok {
-			updates = append(updates, func(info *agent.SessionInfo) { info.Status = d.NewStatus })
-		}
-	case agent.EventTitleChange:
-		if d, ok := evt.Data.(agent.TitleChangeData); ok {
-			updates = append(updates, func(info *agent.SessionInfo) { info.Title = d.Title })
+			hasStatus = true
+			statusValue = d.NewStatus
 		}
 	}
-	if len(updates) == 0 {
+	hasTitle := false
+	var titleValue string
+	if evt.Type == agent.EventTitleChange {
+		if d, ok := evt.Data.(agent.TitleChangeData); ok {
+			hasTitle = true
+			titleValue = d.Title
+		}
+	}
+	if !hasExternalID && !hasStatus && !hasTitle {
 		return
 	}
+
 	ctx := context.Background()
 	info, err := s.sessionsStore.GetSession(ctx, sessionID)
 	if err != nil {
@@ -524,8 +530,22 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 		// about, so a miss here means an out-of-band session.
 		return
 	}
-	for _, fn := range updates {
-		fn(&info)
+
+	dirty := false
+	if hasExternalID && info.ExternalID == "" {
+		info.ExternalID = evt.ExternalID
+		dirty = true
+	}
+	if hasStatus && info.Status != statusValue {
+		info.Status = statusValue
+		dirty = true
+	}
+	if hasTitle && info.Title != titleValue {
+		info.Title = titleValue
+		dirty = true
+	}
+	if !dirty {
+		return
 	}
 	info.UpdatedAt = time.Now()
 	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
