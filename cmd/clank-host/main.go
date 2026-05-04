@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -35,6 +36,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/host"
 	hostmux "github.com/acksell/clank/internal/host/mux"
+	hoststore "github.com/acksell/clank/internal/host/store"
 	"github.com/acksell/clank/internal/socketutil"
 )
 
@@ -44,6 +46,7 @@ func main() {
 	gitSyncSource := flag.String("git-sync-source", "", "Cloud-hub base URL to clone from instead of GitHub (e.g. http://hub.internal:7878). Empty = clone from RemoteURL directly. Used by sandboxes.")
 	gitSyncToken := flag.String("git-sync-token", "", "Bearer token paired with --git-sync-source. Injected as Authorization header on clone.")
 	listenAuthToken := flag.String("listen-auth-token", os.Getenv("CLANK_HOST_AUTH_TOKEN"), "Bearer token required on every HTTP request. Empty disables the check (laptop-local mode). Defaults to $CLANK_HOST_AUTH_TOKEN.")
+	dataDir := flag.String("data-dir", os.Getenv("CLANK_HOST_DATA_DIR"), "Directory for host-side persistent state (host.db). Defaults to $CLANK_HOST_DATA_DIR; if neither is set, falls back to $HOME/.clank-host. PR 3+ stores session metadata here.")
 	flag.Parse()
 
 	if *socket == "" && *listen == "" {
@@ -59,20 +62,54 @@ func main() {
 	if addr == "" {
 		addr = "unix://" + *socket
 	}
-	if err := run(addr, *gitSyncSource, *gitSyncToken, *listenAuthToken); err != nil {
+	if err := run(addr, *gitSyncSource, *gitSyncToken, *listenAuthToken, *dataDir); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
 }
 
+// resolveDataDir returns the host's persistent data directory.
+// Resolution: explicit flag > $CLANK_HOST_DATA_DIR (handled by flag
+// default) > $HOME/.clank-host. Creates the directory if missing.
+func resolveDataDir(dataDir string) (string, error) {
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home dir: %w", err)
+		}
+		dataDir = filepath.Join(home, ".clank-host")
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return "", fmt.Errorf("create data dir %s: %w", dataDir, err)
+	}
+	return dataDir, nil
+}
+
 // run binds the listener for addr (a "tcp://host:port" or "unix:///path"
 // URL) and serves the host API on it until SIGINT/SIGTERM.
-func run(addr, gitSyncSource, gitSyncToken, listenAuthToken string) error {
+func run(addr, gitSyncSource, gitSyncToken, listenAuthToken, dataDirOpt string) error {
 	lg := log.New(os.Stderr, "[clank-host] ", log.LstdFlags)
 
 	ln, kind, sockPath, err := openListener(addr)
 	if err != nil {
 		return err
 	}
+
+	// PR 3: open the host's persistent SQLite for session metadata.
+	// Crash on init failure — running without persistence would
+	// silently lose session state. The host store lives separately
+	// from the daemon's clank.db (which is the provisioner's host
+	// registry).
+	resolvedDataDir, err := resolveDataDir(dataDirOpt)
+	if err != nil {
+		return fmt.Errorf("resolve data dir: %w", err)
+	}
+	dbPath := filepath.Join(resolvedDataDir, "host.db")
+	hostStore, err := hoststore.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open host store %s: %w", dbPath, err)
+	}
+	defer hostStore.Close()
+	lg.Printf("host store opened at %s", dbPath)
 
 	svc := host.New(host.Options{
 		BackendManagers: map[agent.BackendType]agent.BackendManager{
@@ -82,6 +119,7 @@ func run(addr, gitSyncSource, gitSyncToken, listenAuthToken string) error {
 		Log:           lg,
 		GitSyncSource: gitSyncSource,
 		GitSyncToken:  gitSyncToken,
+		SessionsStore: hostStore,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

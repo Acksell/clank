@@ -251,7 +251,16 @@ func (s *Service) Shutdown() {
 	// Wait for the event-relay goroutines to finish draining each
 	// backend's Events() channel before closing subscribers — closing
 	// while a Broadcast is in flight would race the channel close.
-	s.wg.Wait()
+	// Bounded wait: a misbehaving backend that doesn't close its
+	// channel must not hang the daemon's shutdown forever. Process
+	// exit garbage-collects any leaked goroutines.
+	relayDone := make(chan struct{})
+	go func() { s.wg.Wait(); close(relayDone) }()
+	select {
+	case <-relayDone:
+	case <-time.After(2 * time.Second):
+		s.log.Printf("warning: event-relay goroutines did not drain within 2s; continuing shutdown")
+	}
 	if s.subscribers != nil {
 		s.subscribers.CloseAll()
 	}
