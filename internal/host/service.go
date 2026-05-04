@@ -704,18 +704,28 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 	return b, ok
 }
 
-// ResumeSession returns the live SessionBackend for id, lazily
-// rehydrating it from the persisted store row if the live registry
-// missed. The host's in-memory registry is empty at startup; without
-// this, every session-op handler (Send, Messages, Abort, …) would
-// 404 the user's whole inbox until they explicitly recreated each
-// session.
+// ensureBackend returns the live SessionBackend for id, lazily
+// rebuilding the wrapper from the persisted store row if the live
+// registry missed. The host's in-memory registry is empty at startup;
+// without this every session-op (Send, Messages, Abort, …) would 404
+// the user's whole inbox after a daemon restart until they manually
+// recreated each session.
+//
+// "Rebuild" here means recreate the Go-side OpenCodeBackend (or
+// ClaudeBackend) struct that wraps the SDK client and event channel.
+// The opencode subprocess and its session DB are unaffected; we just
+// hand the wrapper the existing remote session ID via
+// BackendInvocation.ResumeExternalID so it points at the conversation
+// already on disk in opencode instead of allocating a fresh one.
 //
 // Returns ErrNotFound when the id is in neither the live registry
-// nor the store. Returns the underlying error when rehydration fails
+// nor the store. Returns the underlying error when rebuild fails
 // (e.g. opencode subprocess can't start in the persisted project
 // directory). Caller surfaces those to the user as-is.
-func (s *Service) ResumeSession(ctx context.Context, id string) (agent.SessionBackend, error) {
+//
+// Private — service-level callers use the typed methods (SendMessage,
+// AbortSession, …) below instead of poking at the backend directly.
+func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBackend, error) {
 	if b, ok := s.Session(id); ok {
 		return b, nil
 	}
@@ -727,47 +737,34 @@ func (s *Service) ResumeSession(ctx context.Context, id string) (agent.SessionBa
 		return nil, ErrNotFound
 	}
 
-	// Reuse CreateSession to rehydrate. Pass info.ExternalID via the
-	// StartRequest so the backend attaches to the existing remote
-	// session instead of creating a fresh one. Prompt is empty —
-	// CreateSession's handler-side OpenAndSend dispatch is bypassed
-	// because we go directly through Service.CreateSession (not the
-	// HTTP handler), and we explicitly call Open below.
 	mgr, ok := s.backendManagers[info.Backend]
 	if !ok {
-		return nil, fmt.Errorf("resume session %s: no backend manager for %s", id, info.Backend)
+		return nil, fmt.Errorf("ensure backend %s: no backend manager for %s", id, info.Backend)
 	}
-	s.mu.Lock()
-	if b, ok := s.sessions[id]; ok {
-		// Lost the race — another caller beat us to it. Return the
-		// winner's backend.
-		s.mu.Unlock()
-		return b, nil
+	s.mu.RLock()
+	closedBeforeWork := s.closed
+	s.mu.RUnlock()
+	if closedBeforeWork {
+		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
 	}
-	if s.closed {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("resume session %s: host is shut down", id)
-	}
-	s.mu.Unlock()
 
 	workDir, err := s.workDirFor(ctx, info.GitRef)
 	if err != nil {
-		return nil, fmt.Errorf("resume session %s: %w", id, err)
+		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
 	}
 	b, err := mgr.CreateBackend(ctx, agent.BackendInvocation{
 		WorkDir:          workDir,
 		ResumeExternalID: info.ExternalID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("resume session %s: %w", id, err)
+		return nil, fmt.Errorf("ensure backend %s: %w", id, err)
 	}
 
 	s.mu.Lock()
 	if existing, ok := s.sessions[id]; ok {
 		s.mu.Unlock()
-		// Race lost between CreateBackend (which can be slow) and a
-		// concurrent ResumeSession or CreateSession. Tear down the
-		// backend we just spawned.
+		// Lost the race against a concurrent ensureBackend or
+		// CreateSession. Tear down the backend we just spawned.
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend lost-race for %s: %v", id, stopErr)
 		}
@@ -778,13 +775,26 @@ func (s *Service) ResumeSession(ctx context.Context, id string) (agent.SessionBa
 		if stopErr := b.Stop(); stopErr != nil {
 			s.log.Printf("warning: stop backend after shutdown for %s: %v", id, stopErr)
 		}
-		return nil, fmt.Errorf("resume session %s: host is shut down", id)
+		return nil, fmt.Errorf("ensure backend %s: host is shut down", id)
 	}
 	s.sessions[id] = b
 	s.mu.Unlock()
 
 	s.wg.Add(1)
 	go s.relayBackendEvents(id, b)
+
+	// Open the backend so its SSE listener attaches to the remote
+	// session's event stream. Without this, Messages/Send still work
+	// (they go through the SDK directly) but the host's relay never
+	// observes streaming PartUpdates and the TUI sees a frozen
+	// conversation. Mirrors what the deleted hub.activateBackend did.
+	if err := b.Open(ctx); err != nil {
+		s.log.Printf("ensure backend %s: open: %v", id, err)
+		// Don't tear the backend down on Open failure — Send/Messages
+		// can still recover via the SDK's own resolver retry, and a
+		// teardown here would be more disruptive than living without
+		// the SSE listener.
+	}
 
 	return b, nil
 }
@@ -802,6 +812,96 @@ func (s *Service) StopSession(id string) error {
 	delete(s.sessions, id)
 	s.mu.Unlock()
 	return b.Stop()
+}
+
+// --- Live session ops ---------------------------------------------------
+//
+// These are the host's "controllable session interface" — every action
+// that needs the in-memory backend wrapper (Send, Messages, Abort, …)
+// goes through one of these, and ensureBackend lazily rebuilds the
+// wrapper from the persisted SessionInfo on first use after a daemon
+// restart. The mux/HTTP layer never touches s.sessions directly.
+
+// SendMessage dispatches opts to the session's live backend.
+func (s *Service) SendMessage(ctx context.Context, id string, opts agent.SendMessageOpts) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Send(ctx, opts)
+}
+
+// AbortSession asks the agent to stop streaming.
+func (s *Service) AbortSession(ctx context.Context, id string) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Abort(ctx)
+}
+
+// RevertSession truncates the conversation at messageID.
+func (s *Service) RevertSession(ctx context.Context, id, messageID string) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.Revert(ctx, messageID)
+}
+
+// ForkSession creates a sibling session forked off messageID.
+func (s *Service) ForkSession(ctx context.Context, id, messageID string) (agent.ForkResult, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return agent.ForkResult{}, err
+	}
+	return b.Fork(ctx, messageID)
+}
+
+// SessionMessages returns the conversation history.
+func (s *Service) SessionMessages(ctx context.Context, id string) ([]agent.MessageData, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return b.Messages(ctx)
+}
+
+// OpenSession ensures the backend is live and its SSE listener is
+// attached. Returns the post-Open snapshot (status, external session
+// id) — async-init backends like Claude only learn their session id
+// inside Open. Idempotent.
+func (s *Service) OpenSession(ctx context.Context, id string) (agent.SessionStatus, string, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if err := b.Open(ctx); err != nil {
+		return "", "", err
+	}
+	return b.Status(), b.SessionID(), nil
+}
+
+// OpenAndSend opens the backend and dispatches opts as the initial
+// turn (or a follow-up after resume).
+func (s *Service) OpenAndSend(ctx context.Context, id string, opts agent.SendMessageOpts) (agent.SessionStatus, string, error) {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if err := b.OpenAndSend(ctx, opts); err != nil {
+		return "", "", err
+	}
+	return b.Status(), b.SessionID(), nil
+}
+
+// RespondPermission replies to a pending tool-use permission prompt.
+func (s *Service) RespondPermission(ctx context.Context, id, permissionID string, allow bool) error {
+	b, err := s.ensureBackend(ctx, id)
+	if err != nil {
+		return err
+	}
+	return b.RespondPermission(ctx, permissionID, allow)
 }
 
 // --- Worktree / branch ops ----------------------------------------------

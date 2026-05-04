@@ -101,7 +101,8 @@ func (s *Service) SetSessionDraft(ctx context.Context, id, draft string) error {
 }
 
 // ToggleSessionFollowUp flips the follow_up flag and returns the new
-// session state.
+// session state. Does NOT bump UpdatedAt — see mutateSessionMeta for
+// the rationale.
 func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.SessionInfo, error) {
 	if s.sessionsStore == nil {
 		return agent.SessionInfo{}, SessionStoreNotConfigured
@@ -114,7 +115,6 @@ func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.S
 		return agent.SessionInfo{}, err
 	}
 	info.FollowUp = !info.FollowUp
-	info.UpdatedAt = time.Now()
 	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
 		return agent.SessionInfo{}, err
 	}
@@ -124,6 +124,14 @@ func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.S
 // mutateSessionMeta is the read-modify-write helper used by the
 // single-field setters above. Returns ErrNotFound if the session
 // doesn't exist.
+//
+// Critically: does NOT bump UpdatedAt. UpdatedAt tracks agent-driven
+// activity (status/title changes from the relay's
+// applyEventToMetadata) — bumping it here would re-hoist a session
+// to the top of the inbox every time the user marked it read or
+// flipped its visibility, which broke "open chat → close chat" by
+// making the session perpetually "newest". User-owned metadata
+// changes are intentionally invisible to the inbox sort order.
 func (s *Service) mutateSessionMeta(ctx context.Context, id string, mutate func(*agent.SessionInfo)) error {
 	if s.sessionsStore == nil {
 		return SessionStoreNotConfigured
@@ -136,7 +144,6 @@ func (s *Service) mutateSessionMeta(ctx context.Context, id string, mutate func(
 		return err
 	}
 	mutate(&info)
-	info.UpdatedAt = time.Now()
 	return s.sessionsStore.UpsertSession(ctx, info)
 }
 

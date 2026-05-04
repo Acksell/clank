@@ -136,6 +136,83 @@ func TestMarkRead_StaysReadAfterDuplicateExternalIDStamp(t *testing.T) {
 	}
 }
 
+// TestMarkRead_DoesNotBumpUpdatedAt is the regression test for the
+// "opening a chat hoists the session to the top" bug: MarkRead used
+// to bump UpdatedAt on top of LastReadAt, so old sessions would
+// appear newest in the inbox just because the user clicked them.
+// UpdatedAt is owned by agent activity (status/title from the relay),
+// not by user metadata mutations.
+func TestMarkRead_DoesNotBumpUpdatedAt(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, _ := td.CreateOpenCodeSession(t, "task")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	before, err := td.Store.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	// Wait long enough that a stray time.Now() bump would be detectable.
+	time.Sleep(50 * time.Millisecond)
+
+	if err := td.Client.Session(info.ID).MarkRead(ctx); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	after, err := td.Store.GetSession(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Get after MarkRead: %v", err)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("MarkRead bumped UpdatedAt: before=%v after=%v (would hoist the session to top of inbox)", before.UpdatedAt, after.UpdatedAt)
+	}
+	if after.LastReadAt.IsZero() {
+		t.Error("MarkRead did not set LastReadAt")
+	}
+}
+
+// TestMarkRead_VisibilityAndDraftAndFollowUpDoNotBump pins the same
+// invariant for the other user-owned metadata setters. Each of them
+// was bumping UpdatedAt via mutateSessionMeta / ToggleSessionFollowUp
+// before the fix.
+func TestMarkRead_VisibilityAndDraftAndFollowUpDoNotBump(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	info, _ := td.CreateOpenCodeSession(t, "task")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	before, _ := td.Store.GetSession(ctx, info.ID)
+
+	time.Sleep(20 * time.Millisecond)
+	if err := td.Client.Session(info.ID).SetVisibility(ctx, agent.VisibilityDone); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	got, _ := td.Store.GetSession(ctx, info.ID)
+	if !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("SetVisibility bumped UpdatedAt: before=%v after=%v", before.UpdatedAt, got.UpdatedAt)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if err := td.Client.Session(info.ID).SetDraft(ctx, "wip"); err != nil {
+		t.Fatalf("SetDraft: %v", err)
+	}
+	got, _ = td.Store.GetSession(ctx, info.ID)
+	if !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("SetDraft bumped UpdatedAt: before=%v after=%v", before.UpdatedAt, got.UpdatedAt)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if _, err := td.Client.Session(info.ID).ToggleFollowUp(ctx); err != nil {
+		t.Fatalf("ToggleFollowUp: %v", err)
+	}
+	got, _ = td.Store.GetSession(ctx, info.ID)
+	if !got.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("ToggleFollowUp bumped UpdatedAt: before=%v after=%v", before.UpdatedAt, got.UpdatedAt)
+	}
+}
+
 // TestMarkRead_BumpsOnRealStatusChange confirms we still detect a
 // genuine state change. A regression that made every event a no-op
 // would silently break "session went idle" and "title arrived"

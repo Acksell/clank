@@ -42,25 +42,26 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := ulid.Make().String()
-	b, serverURL, err := m.svc.CreateSession(r.Context(), sessionID, req)
+	_, serverURL, err := m.svc.CreateSession(r.Context(), sessionID, req)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
-	// Dispatch the initial prompt. OpenAndSend is the create-and-go
-	// contract the hub used to invoke; with the hub gone the host owns
-	// it. Open is synchronous (creates the opencode session and stamps
-	// b.SessionID); Send is fire-and-forget — the prompt runs on the
-	// backend's long-lived context, not the HTTP request's. Errors
-	// here mean the LLM-side session never opened: we tear down the
-	// host-side registration so the user can retry instead of leaving
-	// a "starting" zombie.
-	if err := b.OpenAndSend(r.Context(), agent.SendMessageOpts{
+	// Dispatch the initial prompt via the service. OpenAndSend is the
+	// create-and-go contract the hub used to invoke; with the hub
+	// gone the host owns it. Open is synchronous (creates the
+	// opencode session and stamps the external ID); Send is
+	// fire-and-forget — the prompt runs on the backend's long-lived
+	// context, not the HTTP request's. Errors here mean the LLM-side
+	// session never opened: we tear down the host-side registration
+	// so the user can retry instead of leaving a "starting" zombie.
+	status, extID, err := m.svc.OpenAndSend(r.Context(), sessionID, agent.SendMessageOpts{
 		Text:  req.Prompt,
 		Agent: req.Agent,
 		Model: req.Model,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = m.svc.StopSession(sessionID)
 		writeError(w, fmt.Errorf("open session: %w", err))
 		return
@@ -69,9 +70,9 @@ func (m *Mux) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	info := agent.SessionInfo{
 		ID:         sessionID,
-		ExternalID: b.SessionID(),
+		ExternalID: extID,
 		Backend:    req.Backend,
-		Status:     b.Status(),
+		Status:     status,
 		Hostname:   req.Hostname,
 		GitRef:     req.GitRef,
 		Prompt:     req.Prompt,
@@ -113,27 +114,23 @@ func (m *Mux) handleGetSession(w http.ResponseWriter, r *http.Request) {
 // gateway-facing GET /sessions/{id} routes to handleGetSession instead.
 func (m *Mux) handleSessionSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
+	status, extID, err := m.svc.OpenSession(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		ExternalID: extID,
+		Status:     status,
 	})
 }
 
 // HOST
 func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
+	status, extID, err := m.svc.OpenSession(r.Context(), id)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := b.Open(r.Context()); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -143,25 +140,20 @@ func (m *Mux) handleOpenSession(w http.ResponseWriter, r *http.Request) {
 	// later via Event.ExternalID on the SSE stream.
 	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		ExternalID: extID,
+		Status:     status,
 	})
 }
 
 // HOST
 func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	var opts agent.SendMessageOpts
 	if err := decodeJSON(r.Body, &opts); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.Send(r.Context(), opts); err != nil {
+	if err := m.svc.SendMessage(r.Context(), id, opts); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -171,17 +163,13 @@ func (m *Mux) handleSendSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	var opts agent.SendMessageOpts
 	if err := decodeJSON(r.Body, &opts); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.OpenAndSend(r.Context(), opts); err != nil {
+	status, extID, err := m.svc.OpenAndSend(r.Context(), id, opts)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -189,24 +177,19 @@ func (m *Mux) handleOpenAndSendSession(w http.ResponseWriter, r *http.Request) {
 	// its cached ExternalID/Status. Some backends (opencode) learn
 	// their sessionID inside Open synchronously; without this the
 	// client keeps the empty ExternalID it received from POST
-	// /sessions and persists external_id="" on the Hub. Async-init
+	// /sessions and persists external_id="" on the host. Async-init
 	// backends (claude) still rely on Event.ExternalID.
 	writeJSON(w, http.StatusOK, SessionSnapshot{
 		SessionID:  id,
-		ExternalID: b.SessionID(),
-		Status:     b.Status(),
+		ExternalID: extID,
+		Status:     status,
 	})
 }
 
 // HOST
 func (m *Mux) handleAbortSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := b.Abort(r.Context()); err != nil {
+	if err := m.svc.AbortSession(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -221,11 +204,6 @@ type RevertRequest struct {
 // HOST
 func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	var req RevertRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
@@ -235,7 +213,7 @@ func (m *Mux) handleRevertSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: "message_id is required"})
 		return
 	}
-	if err := b.Revert(r.Context(), req.MessageID); err != nil {
+	if err := m.svc.RevertSession(r.Context(), id, req.MessageID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -250,11 +228,6 @@ type ForkRequest struct {
 // HOST
 func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	var req ForkRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
@@ -262,7 +235,7 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Empty MessageID is valid: it forks the entire session from
 	// scratch. Backends interpret it as "no truncation point".
-	res, err := b.Fork(r.Context(), req.MessageID)
+	res, err := m.svc.ForkSession(r.Context(), id, req.MessageID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -273,12 +246,7 @@ func (m *Mux) handleForkSession(w http.ResponseWriter, r *http.Request) {
 // HOST
 func (m *Mux) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	msgs, err := b.Messages(r.Context())
+	msgs, err := m.svc.SessionMessages(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -318,17 +286,12 @@ func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
 func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	permID := r.PathValue("permID")
-	b, err := m.svc.ResumeSession(r.Context(), id)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	var req PermissionReplyRequest
 	if err := decodeJSON(r.Body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{Error: err.Error()})
 		return
 	}
-	if err := b.RespondPermission(r.Context(), permID, req.Allow); err != nil {
+	if err := m.svc.RespondPermission(r.Context(), id, permID, req.Allow); err != nil {
 		writeError(w, err)
 		return
 	}
