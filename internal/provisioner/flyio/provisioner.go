@@ -150,6 +150,19 @@ func New(opts Options, st *store.Store, lg *log.Logger) (*Provisioner, error) {
 func (p *Provisioner) Stop() {}
 
 // EnsureHost implements provisioner.Provisioner.
+//
+// Detaches from the caller's cancellation: the binary upload alone is
+// ~17MB and a cold install runs 30–90s for opencode setup, so a TUI
+// request that times out at 10s used to cancel the install partway,
+// leaving an unwritable ETXTBSY binary and triggering a reinstall
+// storm on every subsequent retry. We use context.WithoutCancel +
+// our own ProvisionTimeout so the work runs to completion (or its
+// own timeout) regardless of whether the original caller is still
+// listening — subsequent requests hit the cache.
+//
+// The per-userID mutex still serializes concurrent callers; they
+// share the same in-flight provision rather than starting parallel
+// ones that would race the same sprite.
 func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisioner.HostRef, error) {
 	if userID == "" {
 		return provisioner.HostRef{}, fmt.Errorf("flyio provisioner: userID is required")
@@ -158,7 +171,9 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	mu.Lock()
 	defer mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(ctx, p.opts.ProvisionTimeout)
+	// Detach from the caller's cancellation; we still bound work
+	// with our own ProvisionTimeout.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.opts.ProvisionTimeout)
 	defer cancel()
 
 	// Fast path: in-memory cache from a prior EnsureHost in this
@@ -349,34 +364,71 @@ func (p *Provisioner) installAndStart(ctx context.Context, sprite *sprites.Sprit
 // size is already there — the binary is ~17MB and uploading it on
 // every daemon start would dominate provisioning time.
 //
+// When a stale binary needs replacement, we unlink the old file
+// FIRST and only then write. The previous file may still be running
+// (clank-host is a sprite Service; the running process is exec'd from
+// /usr/local/bin/clank-host), and Linux returns ETXTBSY if you try to
+// write to a busy executable. unlink+write works because POSIX keeps
+// the old inode alive for the running process while the path now
+// resolves to the new file — a standard "atomic binary replacement"
+// pattern. The next service restart picks up the new binary; until
+// then the running one keeps using its (now-anonymous) inode.
+//
 // Wrapped in retryClosedConn because the SDK's filesystem ops use
 // the same racy control-WebSocket pool as exec; a stale conn in the
 // pool surfaces as "use of closed network connection" on the first
 // op against a freshly-woken sprite.
 func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites.Sprite) error {
 	fsys := sprite.Filesystem()
+	wf, ok := fsys.(spriteFSWriter)
+	if !ok {
+		return fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
+	}
+	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary)
+}
 
+// spriteFSWriter is the duck-typed subset of the sprites SDK
+// filesystem we need for atomic binary replacement. Extracted so
+// tests can inject a stub without standing up a full sprite.
+type spriteFSWriter interface {
+	WriteFileContext(ctx context.Context, name string, data []byte, perm fs.FileMode) error
+	RemoveContext(ctx context.Context, name string) error
+}
+
+// ensureBinaryInstalledOn is the testable core of ensureBinaryInstalled.
+// stat is the read-only handle for the size probe; wf is the
+// write/remove handle for the replacement.
+func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte) error {
 	var info fs.FileInfo
 	statErr := retryClosedConn(ctx, p.log, func() error {
 		var err error
-		info, err = fs.Stat(fsys, strings.TrimPrefix(installPath, "/"))
+		info, err = fs.Stat(stat, strings.TrimPrefix(path, "/"))
 		return err
 	})
-	if statErr == nil && info.Size() == int64(len(clankHostBinary)) {
+	if statErr == nil && info.Size() == int64(len(want)) {
 		return nil
 	}
 	if statErr == nil {
-		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); reinstalling", info.Size(), len(clankHostBinary))
+		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
 	}
 
-	wf, ok := fsys.(interface {
-		WriteFileContext(ctx context.Context, name string, data []byte, perm fs.FileMode) error
+	// Best-effort unlink before write. ENOENT is fine (cold install).
+	// We don't gate on the Stat result because a concurrent removal
+	// between probe and write would otherwise leave us trying
+	// WriteFile on a path that's still ETXTBSY.
+	_ = retryClosedConn(ctx, p.log, func() error {
+		err := wf.RemoveContext(ctx, path)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		// Surface non-ENOENT errors but don't fail the install on
+		// them — WriteFile may still succeed in some edge cases.
+		p.log.Printf("flyio provisioner: pre-write remove of %s: %v (continuing)", path, err)
+		return nil
 	})
-	if !ok {
-		return fmt.Errorf("sprites filesystem does not support WriteFileContext (SDK API drift)")
-	}
+
 	return retryClosedConn(ctx, p.log, func() error {
-		if err := wf.WriteFileContext(ctx, installPath, clankHostBinary, 0o755); err != nil {
+		if err := wf.WriteFileContext(ctx, path, want, 0o755); err != nil {
 			return fmt.Errorf("install clank-host binary: %w", err)
 		}
 		return nil

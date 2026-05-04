@@ -178,7 +178,13 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	mu.Lock()
 	defer mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(ctx, p.opts.ProvisionTimeout)
+	// Detach from the caller's cancellation. A daytona cold-create or
+	// resume can take 10-90s; if the TUI's request context times out
+	// the work would abort partway, the cache stays empty, and the
+	// next request restarts from scratch. With WithoutCancel, the
+	// in-flight provision finishes (or times out via ProvisionTimeout)
+	// and subsequent callers hit the cache.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), p.opts.ProvisionTimeout)
 	defer cancel()
 
 	// Fast path: in-memory cache from a previous EnsureHost in this
