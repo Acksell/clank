@@ -187,6 +187,13 @@ func (s *Service) ID() Hostname { return s.id }
 // Init does NOT block — initialization kicks off reconciler goroutines that
 // live for the duration of ctx.
 func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([]string, error)) error {
+	// Normalize stale runtime statuses left over from the previous
+	// daemon run. A session that was busy/starting when the daemon
+	// got killed has no live backend in this run and isn't going
+	// anywhere on its own; without this sweep the inbox would show
+	// it as a forever-spinner. Mirrors what hub.Run did on main.
+	s.normalizeStaleSessionStatus(ctx)
+
 	for bt, mgr := range s.backendManagers {
 		bt := bt
 		fn := func() ([]string, error) {
@@ -200,6 +207,44 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 		}
 	}
 	return nil
+}
+
+// normalizeStaleSessionStatus sweeps the persisted store and rewrites
+// any session sitting at `busy`, `starting`, or `dead` (statuses that
+// require a live backend to keep advancing) back to `idle`. Best-
+// effort — failures are logged but not surfaced to callers.
+//
+// Sessions in `idle` or `error` are left alone: those are stable
+// terminal-ish states that don't depend on a live backend. The user
+// can open them and decide what to do.
+func (s *Service) normalizeStaleSessionStatus(ctx context.Context) {
+	if s.sessionsStore == nil {
+		return
+	}
+	sessions, err := s.sessionsStore.ListSessions(ctx)
+	if err != nil {
+		s.log.Printf("warning: list sessions for status sweep: %v", err)
+		return
+	}
+	var fixed int
+	for _, info := range sessions {
+		switch info.Status {
+		case agent.StatusBusy, agent.StatusStarting, agent.StatusDead:
+			info.Status = agent.StatusIdle
+			// Don't bump UpdatedAt — this is a cleanup, not new
+			// activity. Hoisting every recovered session to the top
+			// of the inbox would be a worse UX than the original
+			// stale-spinner bug.
+			if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+				s.log.Printf("warning: normalize status for %s: %v", info.ID, err)
+				continue
+			}
+			fixed++
+		}
+	}
+	if fixed > 0 {
+		s.log.Printf("normalized %d stale session status(es) to idle", fixed)
+	}
 }
 
 // Shutdown stops all live SessionBackends and then shuts down all

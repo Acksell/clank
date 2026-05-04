@@ -125,14 +125,110 @@ func TestPersistence_DiscoverMergePreservesUserFields(t *testing.T) {
 	t.Skip("TODO: host-side discover-merge not implemented yet — re-enable once UpsertSession preserves user-owned fields on conflict")
 }
 
-// TestPersistence_StaleBusyStatusNormalizedOnReopen pins the
-// inbox-ergonomics contract: a session persisted as 'busy' from a
-// previous daemon run should come back as idle when a fresh daemon
-// opens the same DB. Without this, the inbox shows an infinite
-// spinner for sessions interrupted by a kill.
+// TestPersistence_StaleBusyStatusNormalizedOnInit pins the
+// inbox-ergonomics contract: a session persisted as busy/starting/dead
+// from a previous daemon run should come back as idle once Init runs
+// on a fresh daemon. Without this, the inbox shows an infinite
+// spinner for sessions interrupted by a kill — the symptom on main
+// before its hub.Run started doing the same sweep.
 //
-// Like the discover-merge test above, this is currently aspirational —
-// the host does not normalize status on Open. Skipped with a TODO.
-func TestPersistence_StaleBusyStatusNormalizedOnReopen(t *testing.T) {
-	t.Skip("TODO: host doesn't normalize stale 'busy'/'starting' on Open yet — re-enable when host.New does the sweep")
+// We seed the store directly with a stale row, then call Init, then
+// read the row back. The status must have been rewritten to idle
+// without bumping UpdatedAt (a bump would re-hoist every recovered
+// session to the top of the inbox).
+func TestPersistence_StaleBusyStatusNormalizedOnInit(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+
+	staleStatuses := []agent.SessionStatus{
+		agent.StatusBusy,
+		agent.StatusStarting,
+		agent.StatusDead,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type seeded struct {
+		id        string
+		updatedAt time.Time
+	}
+	rows := make([]seeded, 0, len(staleStatuses))
+	for i, s := range staleStatuses {
+		id := "01STALE000" + string(rune('A'+i))
+		now := time.Now().Add(-time.Hour) // older than wall-clock
+		err := td.Store.UpsertSession(ctx, agent.SessionInfo{
+			ID:        id,
+			Backend:   agent.BackendOpenCode,
+			Status:    s,
+			GitRef:    agent.GitRef{LocalPath: "/tmp/whatever"},
+			Prompt:    "stale",
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+		rows = append(rows, seeded{id: id, updatedAt: now})
+	}
+
+	// Init runs the sweep. We call it via the Service directly here
+	// since the helper newTestDaemon already constructed the service
+	// and the seeded rows were inserted post-construction.
+	if err := td.Service.Init(ctx, nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	for _, r := range rows {
+		got, err := td.Store.GetSession(ctx, r.id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", r.id, err)
+		}
+		if got.Status != agent.StatusIdle {
+			t.Errorf("session %s: status = %q, want idle (sweep should have normalized)", r.id, got.Status)
+		}
+		if !got.UpdatedAt.Equal(r.updatedAt) {
+			t.Errorf("session %s: UpdatedAt bumped during sweep (would hoist all recovered sessions to top of inbox): before=%v after=%v", r.id, r.updatedAt, got.UpdatedAt)
+		}
+	}
+}
+
+// TestPersistence_TerminalStatusesPreservedOnInit confirms the sweep
+// only touches transitional statuses. An idle or error session
+// reflects a stable user-facing state that the user might want to
+// see preserved (e.g. "this one errored, don't quietly hide that").
+func TestPersistence_TerminalStatusesPreservedOnInit(t *testing.T) {
+	t.Parallel()
+	td := newTestDaemon(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	preserve := []agent.SessionStatus{agent.StatusIdle, agent.StatusError}
+	for i, s := range preserve {
+		id := "01KEEP000" + string(rune('A'+i))
+		err := td.Store.UpsertSession(ctx, agent.SessionInfo{
+			ID:      id,
+			Backend: agent.BackendOpenCode,
+			Status:  s,
+			GitRef:  agent.GitRef{LocalPath: "/tmp/whatever"},
+			Prompt:  "stable",
+		})
+		if err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	if err := td.Service.Init(ctx, nil); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	for i, want := range preserve {
+		id := "01KEEP000" + string(rune('A'+i))
+		got, err := td.Store.GetSession(ctx, id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if got.Status != want {
+			t.Errorf("session %s: status = %q, want preserved %q", id, got.Status, want)
+		}
+	}
 }
