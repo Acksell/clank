@@ -179,11 +179,20 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	defer cancel()
 
 	// Fast path: in-memory cache from a prior EnsureHost in this
-	// process. Sprites auto-wake on traffic, so we don't pre-probe;
-	// the next request from upstream callers flows through the public
-	// URL and Sprites' edge handles wake transparently.
+	// process. Cached entries still need a readiness probe before we
+	// hand them to upstream callers — Sprites auto-hibernates idle
+	// VMs and serves an edge 404 page during the wake window. Without
+	// the probe, the gateway's first proxy hit after hibernation
+	// lands on that 404 and the user sees "Sprites: 404" verbatim.
+	// On a warm sprite the probe is one /status GET (~50ms); on a
+	// cold-wake it polls until clank-host binds.
 	if c := p.cacheGet(userID); c != nil {
-		return p.refToHost(c), nil
+		if err := waitForSpriteReady(ctx, c.url, c.transport, p.log); err != nil {
+			p.log.Printf("flyio provisioner: cached sprite for %s not responding (%v); dropping cache and re-provisioning", userID, err)
+			p.cacheDrop(userID)
+		} else {
+			return p.refToHost(c), nil
+		}
 	}
 
 	spriteName := p.spriteNameFor(userID)
@@ -243,13 +252,13 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	return p.refToHost(cached), nil
 }
 
-// waitForSpriteReady polls the sprite's public URL with a HEAD on
-// /status (cheap, authenticated) until clank-host responds with a
-// non-edge status code. The Sprites edge serves a stable 404 HTML
-// page when no service is bound to the routed port — we treat that
-// as "still warming up" and keep polling until the real host
-// responds (200 OK on a configured listener, 401 if auth missing,
-// etc — anything that's clearly the host's mux talking).
+// waitForSpriteReady polls the sprite's public URL with /status
+// (cheap, authenticated) until clank-host responds with a non-edge
+// status code. The Sprites edge serves a stable 404 HTML page when
+// no service is bound to the routed port — we treat that as "still
+// warming up" and keep polling until the real host responds
+// (200 OK on a configured listener, 401 if auth missing, etc —
+// anything that's clearly the host's mux talking).
 func waitForSpriteReady(ctx context.Context, baseURL string, transport http.RoundTripper, lg *log.Logger) error {
 	deadline := time.NewTimer(60 * time.Second)
 	defer deadline.Stop()
@@ -258,9 +267,16 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 
 	client := &http.Client{Transport: transport}
 	url := strings.TrimRight(baseURL, "/") + "/status"
-	var lastBody string
-	var lastStatus int
+	start := time.Now()
+	var (
+		lastBody    string
+		lastStatus  int
+		lastErr     error
+		probes      int
+		loggedFirst bool
+	)
 	for {
+		probes++
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
 		resp, err := client.Do(req)
@@ -270,22 +286,35 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 			resp.Body.Close()
 			lastBody = string(body)
+			lastErr = nil
 			// Anything other than the Sprites edge 404 page means
 			// the host's mux is responding. A real clank-host
 			// returns 200 on /status; 401/403 also indicate the mux
 			// is up (auth path firing).
 			if !isSpritesEdge404(resp.StatusCode, body) {
+				if probes > 1 || lg != nil {
+					lg.Printf("flyio provisioner: sprite ready after %d probe(s) in %s (status=%d)", probes, time.Since(start).Truncate(10*time.Millisecond), resp.StatusCode)
+				}
 				return nil
+			}
+			if !loggedFirst {
+				lg.Printf("flyio provisioner: sprite at %s warming up (status=%d, edge 404); polling…", baseURL, resp.StatusCode)
+				loggedFirst = true
+			}
+		} else {
+			lastErr = err
+			if !loggedFirst {
+				lg.Printf("flyio provisioner: sprite at %s probe failed (%v); polling…", baseURL, err)
+				loggedFirst = true
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("ctx done (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
+			return fmt.Errorf("ctx done after %d probes (last status=%d, last err=%v, body snippet=%q)", probes, lastStatus, lastErr, snippet(lastBody))
 		case <-deadline.C:
-			return fmt.Errorf("timed out waiting for sprite to bind (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
+			return fmt.Errorf("timed out after %d probes (last status=%d, last err=%v, body snippet=%q)", probes, lastStatus, lastErr, snippet(lastBody))
 		case <-t.C:
 		}
-		_ = lg // reserved for future debug logging
 	}
 }
 
