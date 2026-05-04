@@ -1,4 +1,4 @@
-package hubclient
+package daemonclient
 
 // Hub-side auth proxy: TUI/CLI calls these; the hub forwards to the
 // host's auth handler in the appropriate sandbox. All flows are

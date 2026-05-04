@@ -12,7 +12,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	hub "github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // TestE2E_HubHostOpenCode_StartsSession is the only test in the repo that
@@ -103,7 +103,7 @@ func TestE2E_HubHostOpenCode_StartsSession(t *testing.T) {
 	})
 
 	// Wait for hub.sock to be reachable.
-	hc, err := hubclient.NewDefaultClient()
+	hc, err := daemonclient.NewDefaultClient()
 	if err != nil {
 		t.Fatalf("NewDefaultClient: %v", err)
 	}

@@ -16,7 +16,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -77,7 +77,7 @@ type ServerOptions struct {
 // RunStart starts the daemon, either in foreground or as a background process.
 // Exported so that ensureDaemon in the clank binary can call it directly.
 func RunStart(foreground bool, opts ServerOptions) error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -182,7 +182,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	// local socket here — we just spawned a local daemon. NewLocalClient
 	// (rather than NewDefaultClient) keeps this immune to ActiveHub
 	// flipping the user-facing transport to a remote hub.
-	client, err := hubclient.NewLocalClient()
+	client, err := daemonclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
@@ -206,7 +206,7 @@ func RunStart(foreground bool, opts ServerOptions) error {
 
 // runStop sends SIGTERM to the running daemon.
 func runStop() error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -229,7 +229,7 @@ func runStop() error {
 	defer cancel()
 
 	for {
-		stillRunning, _, _ := hubclient.IsRunning()
+		stillRunning, _, _ := daemonclient.IsRunning()
 		if !stillRunning {
 			fmt.Printf("Daemon stopped (was pid=%d)\n", pid)
 			return nil
@@ -245,7 +245,7 @@ func runStop() error {
 
 // runStatus shows daemon info and managed sessions.
 func runStatus() error {
-	running, pid, err := hubclient.IsRunning()
+	running, pid, err := daemonclient.IsRunning()
 	if err != nil {
 		return fmt.Errorf("check daemon: %w", err)
 	}
@@ -257,7 +257,7 @@ func runStatus() error {
 	// `clankd status` reports on the local daemon — IsRunning already
 	// checked the local PID file, so the client must target the local
 	// socket too even when ActiveHub points at a remote hub.
-	client, err := hubclient.NewLocalClient()
+	client, err := daemonclient.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}

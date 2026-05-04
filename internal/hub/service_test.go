@@ -17,7 +17,7 @@ import (
 	hostclient "github.com/acksell/clank/internal/host/client"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	"github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
 	"github.com/acksell/clank/internal/store"
 )
@@ -279,7 +279,7 @@ func shortTempDir(t *testing.T) string {
 // Returns a connected client, the socket path (so persistence tests
 // can restart on the same path via startHubAtSocket), and a cleanup
 // function that stops the daemon and waits for Run to return.
-func startHubOnSocket(t *testing.T, s *hub.Service) (*hubclient.Client, string, func()) {
+func startHubOnSocket(t *testing.T, s *hub.Service) (*daemonclient.Client, string, func()) {
 	t.Helper()
 	dir := shortTempDir(t)
 	sockPath := filepath.Join(dir, "test.sock")
@@ -293,7 +293,7 @@ func startHubOnSocket(t *testing.T, s *hub.Service) (*hubclient.Client, string, 
 // it in an httptest.Server through hostmux, and registers the resulting
 // *hostclient.HTTP — preserving the production wire shape (Hub→HTTP→Host)
 // without adding a fake or in-process shortcut on the Hub side.
-func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient.Client, func()) {
+func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*daemonclient.Client, func()) {
 	t.Helper()
 
 	// Spin a real host.Service behind an httptest server when the
@@ -313,7 +313,7 @@ func startHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.Run(listener, hubmux.New(s, nil).Handler()) }()
 
-	client := hubclient.NewClient(sockPath)
+	client := daemonclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	cleanup := func() {
@@ -390,7 +390,7 @@ func ensureHostFixture(t *testing.T, s *hub.Service) *hostTestFixture {
 // connected client, and a cleanup function. Tests that issue
 // CreateSession can use the package-level testRemoteURL constant
 // without having to set up the repo themselves.
-func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
+func testDaemon(t *testing.T) (*hub.Service, *daemonclient.Client, func()) {
 	t.Helper()
 
 	s := hub.New()
@@ -405,7 +405,7 @@ func testDaemon(t *testing.T) (*hub.Service, *hubclient.Client, func()) {
 
 // --- Tests ---
 
-func testDaemonWithBackendAccess(t *testing.T) (*hub.Service, *hubclient.Client, func() *mockBackend, func()) {
+func testDaemonWithBackendAccess(t *testing.T) (*hub.Service, *daemonclient.Client, func() *mockBackend, func()) {
 	t.Helper()
 
 	s := hub.New()
@@ -448,7 +448,7 @@ func eventTypes(events []agent.Event) []string {
 	return types
 }
 
-func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *hubclient.Client, func() *mockBackend, string, func()) {
+func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*hub.Service, *daemonclient.Client, func() *mockBackend, string, func()) {
 	t.Helper()
 
 	s := hub.New()
@@ -480,7 +480,7 @@ func testDaemonWithDiscover(t *testing.T, snapshots []agent.SessionSnapshot) (*h
 // PID file path is intentionally NOT returned: hub.Service no longer
 // touches a PID file (Phase 2F lifted that into daemoncli), so tests
 // have nothing to clean up there.
-func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubclient.Client, sockPath, dbPath, repoDir string, cleanup func()) {
+func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *daemonclient.Client, sockPath, dbPath, repoDir string, cleanup func()) {
 	t.Helper()
 
 	if dir == "" {
@@ -507,7 +507,7 @@ func testDaemonWithStore(t *testing.T, dir string) (s *hub.Service, client *hubc
 	return
 }
 
-func waitForDaemon(t *testing.T, client *hubclient.Client) {
+func waitForDaemon(t *testing.T, client *daemonclient.Client) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

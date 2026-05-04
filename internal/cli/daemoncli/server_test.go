@@ -23,7 +23,7 @@ import (
 	locallauncher "github.com/acksell/clank/internal/host/launcher/local"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	hub "github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/store"
 	clanksync "github.com/acksell/clank/internal/sync"
 )
@@ -47,11 +47,11 @@ func TestRunHubServer_ManagesSocketAndPIDFiles(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(home) })
 	t.Setenv("HOME", home)
 
-	sockPath, err := hubclient.SocketPath()
+	sockPath, err := daemonclient.SocketPath()
 	if err != nil {
 		t.Fatalf("SocketPath: %v", err)
 	}
-	pidPath, err := hubclient.PIDPath()
+	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		t.Fatalf("PIDPath: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestRunHubServer_ManagesSocketAndPIDFiles(t *testing.T) {
 	}
 
 	// Sanity: the live hub answers a simple wire request.
-	client := hubclient.NewClient(sockPath)
+	client := daemonclient.NewClient(sockPath)
 	pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Ping(pingCtx); err != nil {
@@ -185,7 +185,7 @@ func TestRunHubServer_TCPMode(t *testing.T) {
 	}()
 
 	// Wait for the listener to be reachable.
-	pidPath, err := hubclient.PIDPath()
+	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		t.Fatalf("PIDPath: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunHubServer_TCPMode(t *testing.T) {
 		t.Fatalf("pid file %s not created: %v", pidPath, err)
 	}
 	// Unix socket must NOT be created in TCP mode.
-	sockPath, _ := hubclient.SocketPath()
+	sockPath, _ := daemonclient.SocketPath()
 	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
 		t.Errorf("Unix socket %s should not exist in TCP mode (stat err=%v)", sockPath, err)
 	}

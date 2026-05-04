@@ -52,7 +52,7 @@ func initRepoForHub(t *testing.T) string {
 }
 
 // TestHubWorktreesEndToEnd exercises the §7 path-free wire shape:
-// hubclient.Host(h).{ListBranches,ResolveWorktree,RemoveWorktree}
+// daemonclient.Host(h).{ListBranches,ResolveWorktree,RemoveWorktree}
 // → hub mux → *hostclient.HTTP → httptest server → hostmux →
 // host.Service.workDirFor → real git. The host registry is gone — refs
 // resolve via local path or deterministic clone path with no AddRepo call.

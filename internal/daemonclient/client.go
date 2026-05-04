@@ -28,7 +28,7 @@
 // hub multiplexes hosts and picks the host internally for these queries.
 // Decision: Session(id).Get(ctx) lives on the id-bound handle (not on
 // Sessions()) for symmetry with all other id-bound ops.
-package hubclient
+package daemonclient
 
 import (
 	"context"

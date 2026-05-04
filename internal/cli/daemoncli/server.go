@@ -18,7 +18,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/gateway"
 	hub "github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
 	"github.com/acksell/clank/internal/provisioner"
 	"github.com/acksell/clank/internal/socketutil"
@@ -31,7 +31,7 @@ import (
 // the orchestration concerns out of the Hub plane.
 //
 // Two listening modes:
-//   - Unix socket (default): listens on hubclient.SocketPath(), chmod 0600.
+//   - Unix socket (default): listens on daemonclient.SocketPath(), chmod 0600.
 //     No HTTP auth — file mode is the gate. Used by laptop hubs talking to
 //     local TUI/CLI clients.
 //   - TCP (opts.Listen = "tcp://addr:port"): listens on TCP, wraps the
@@ -39,10 +39,10 @@ import (
 //     Preferences.RemoteHub.AuthToken. Used by "remote hubs" that accept
 //     hub-to-hub sync calls and external clients (mobile).
 //
-// Both modes write the PID file at hubclient.PIDPath() so `clankd stop`
+// Both modes write the PID file at daemonclient.PIDPath() so `clankd stop`
 // works uniformly.
 func runHubServer(s *hub.Service, opts ServerOptions) error {
-	pidPath, err := hubclient.PIDPath()
+	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		return fmt.Errorf("pid path: %w", err)
 	}
@@ -112,7 +112,7 @@ func openHubListener(opts ServerOptions) (net.Listener, func(), error) {
 }
 
 func openUnixListener() (net.Listener, func(), error) {
-	sockPath, err := hubclient.SocketPath()
+	sockPath, err := daemonclient.SocketPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("socket path: %w", err)
 	}
@@ -211,10 +211,10 @@ func buildSyncReceiver(s *hub.Service) (*clanksync.Receiver, error) {
 //     before the request reaches the gateway's own PermissiveAuth
 //     (no-op until PR 4 lands real JWT).
 //
-// Both modes write the PID file at hubclient.PIDPath() so existing
+// Both modes write the PID file at daemonclient.PIDPath() so existing
 // `clankd stop` keeps working.
 func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
-	pidPath, err := hubclient.PIDPath()
+	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
 		return fmt.Errorf("pid path: %w", err)
 	}

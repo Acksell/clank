@@ -20,7 +20,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -63,7 +63,7 @@ type inboxGroup struct {
 // It uses a sidebar + main layout: sidebar shows branches, main area shows
 // sessions. In narrow terminals, only the session pane is shown.
 type InboxModel struct {
-	client *hubclient.Client
+	client *daemonclient.Client
 
 	// Two-pane layout state.
 	pane          inboxPane    // which pane has keyboard focus
@@ -107,7 +107,7 @@ type InboxModel struct {
 	projectFilter bool   // when true, only show sessions whose canonical GitRef matches gitRef
 
 	// Repo identity for branch/worktree ops. Resolved from cwd at startup
-	// via hubclient.ResolveRepo. If resolution failed (e.g. cwd not in a
+	// via daemonclient.ResolveRepo. If resolution failed (e.g. cwd not in a
 	// git repo with an origin remote), these stay zero and the sidebar will
 	// surface the underlying load error.
 	hostname host.Hostname
@@ -188,7 +188,7 @@ func resolveLocalRepo(cwd string) (host.Hostname, agent.GitRef) {
 }
 
 // NewInboxModel creates the inbox TUI connected to the given daemon client.
-func NewInboxModel(client *hubclient.Client) *InboxModel {
+func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// Apply the user's persisted color scheme (if any) before any styles
 	// are constructed for this session. Unknown names silently fall back
 	// to the default scheme so a corrupt preferences file can't brick the

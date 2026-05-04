@@ -147,7 +147,7 @@ type Preferences struct {
 	//   "remote"  — talk to RemoteHub.URL with RemoteHub.AuthToken
 	//               over TCP. Requires RemoteHub to be set.
 	//
-	// Used by hubclient.NewDefaultClient to pick the transport. Only
+	// Used by daemonclient.NewDefaultClient to pick the transport. Only
 	// affects clients (TUI, clankcli); the local clankd daemon always
 	// listens on its own socket regardless of this value.
 	ActiveHub string `json:"active_hub,omitempty"`

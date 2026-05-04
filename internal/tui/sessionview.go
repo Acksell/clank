@@ -20,7 +20,7 @@ import (
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
 	"github.com/acksell/clank/internal/host"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // sessionEventMsg wraps a daemon event delivered to the TUI.
@@ -119,7 +119,7 @@ func wordLeftWouldHang(ta textarea.Model) bool {
 // It also handles the "composing" mode where no session exists yet —
 // the user types their first prompt and the session is created on send.
 type SessionViewModel struct {
-	client    *hubclient.Client
+	client    *daemonclient.Client
 	sessionID string
 	info      *agent.SessionInfo
 
@@ -337,7 +337,7 @@ const (
 const inputReservedLines = 6
 
 // NewSessionViewModel creates a session detail TUI for an existing session.
-func NewSessionViewModel(client *hubclient.Client, sessionID string) *SessionViewModel {
+func NewSessionViewModel(client *daemonclient.Client, sessionID string) *SessionViewModel {
 	ta := newPromptTextarea("Type a follow-up message...", 3)
 	sp := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),

@@ -16,7 +16,7 @@ import (
 	hostclient "github.com/acksell/clank/internal/host/client"
 	hostmux "github.com/acksell/clank/internal/host/mux"
 	"github.com/acksell/clank/internal/hub"
-	hubclient "github.com/acksell/clank/internal/hub/client"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	hubmux "github.com/acksell/clank/internal/hub/mux"
 	"github.com/acksell/clank/internal/store"
 )
@@ -166,7 +166,7 @@ func TestPersistence_HealsMistaggedClaudeSessionAcrossRestart(t *testing.T) {
 // directly. We avoid the standard helper because we don't want the
 // implicit registerTestRepo seeding (this test uses a Local GitRef, not
 // the canonical testRemoteURL).
-func startClaudeHostHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*hubclient.Client, func()) {
+func startClaudeHostHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (*daemonclient.Client, func()) {
 	t.Helper()
 
 	clonesDir := t.TempDir()
@@ -186,7 +186,7 @@ func startClaudeHostHubAtSocket(t *testing.T, s *hub.Service, sockPath string) (
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.Run(ln, hubmux.New(s, nil).Handler()) }()
 
-	client := hubclient.NewClient(sockPath)
+	client := daemonclient.NewClient(sockPath)
 	waitForDaemon(t, client)
 
 	cleanup := func() {
