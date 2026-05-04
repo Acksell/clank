@@ -327,29 +327,100 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 }
 
 // diagnoseInSprite curl's the running clank-host from inside the
-// sprite and logs each route's status. Bypasses the Sprites edge so
-// we can distinguish "running binary doesn't register the route"
-// from "edge is intercepting the request". Best-effort — failures
-// are logged but never propagate. Runs once per cold provision; the
-// fast cache-hit path skips it.
+// sprite AND from outside via the public URL. The two probes side-
+// by-side distinguish three failure modes:
+//
+//	in-sprite OK + public OK  → all good
+//	in-sprite OK + public 404 → Sprites edge is mishandling the path
+//	in-sprite 404 + ...       → running binary doesn't register the route
+//
+// SSE endpoints like /events stream forever; we cap each probe at
+// 2s and treat curl exit-28 (CURLE_OPERATION_TIMEDOUT) as success
+// since hitting the timeout proves the response started flowing.
+//
+// Best-effort — failures are logged, never propagated. Runs once
+// per cold provision; the fast cache-hit path skips it.
 func (p *Provisioner) diagnoseInSprite(ctx context.Context, sprite *sprites.Sprite, authToken string) {
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	// Need the public URL for the second leg. Re-read the sprite
+	// here rather than threading it from EnsureHost — diagnose runs
+	// from a code path that already has the sprite reference.
+	fresh, err := p.client.GetSprite(probeCtx, sprite.Name())
+	if err != nil {
+		p.log.Printf("flyio diagnose: get sprite for public URL: %v (skipping public-URL leg)", err)
+	}
+	publicURL := ""
+	if fresh != nil {
+		publicURL = strings.TrimRight(fresh.URL, "/")
+	}
+
 	for _, route := range []string{"/ping", "/status", "/events"} {
-		// curl with very short timeouts and -o /dev/null so we don't
-		// stream forever on /events. -w writes the status code on
-		// stdout regardless of response shape.
-		// Bearer auth so the host's middleware doesn't 401 us.
+		// In-sprite probe: curl localhost:8080.
+		// -w writes status code; --max-time 2 caps SSE streams.
 		out, err := runInSpriteCmd(probeCtx, sprite,
 			"sh", "-c",
 			fmt.Sprintf(`curl -s -o /dev/null --max-time 2 -w '%%{http_code}' -H 'Authorization: Bearer %s' http://localhost:%d%s`, authToken, HostPort, route))
-		if err != nil {
-			p.log.Printf("flyio diagnose: in-sprite curl %s failed: %v", route, err)
+		switch interpretCurl(out, err) {
+		case curlOK:
+			p.log.Printf("flyio diagnose: in-sprite  %-7s → HTTP %s", route, strings.TrimSpace(out))
+		case curlSSEOK:
+			p.log.Printf("flyio diagnose: in-sprite  %-7s → streaming (timed out at 2s — SSE alive)", route)
+		case curlFail:
+			p.log.Printf("flyio diagnose: in-sprite  %-7s → curl failed: %v (out=%q)", route, err, strings.TrimSpace(out))
+		}
+
+		// Public-URL probe: same request, but through the edge.
+		if publicURL == "" {
 			continue
 		}
-		p.log.Printf("flyio diagnose: in-sprite GET localhost:%d%s → %s", HostPort, route, strings.TrimSpace(out))
+		out2, err2 := runInSpriteCmd(probeCtx, sprite,
+			"sh", "-c",
+			fmt.Sprintf(`curl -s -o /dev/null --max-time 4 -w '%%{http_code}' -H 'Authorization: Bearer %s' '%s%s'`, authToken, publicURL, route))
+		switch interpretCurl(out2, err2) {
+		case curlOK:
+			p.log.Printf("flyio diagnose: public-url %-7s → HTTP %s", route, strings.TrimSpace(out2))
+		case curlSSEOK:
+			p.log.Printf("flyio diagnose: public-url %-7s → streaming (timed out at 4s — SSE alive)", route)
+		case curlFail:
+			p.log.Printf("flyio diagnose: public-url %-7s → curl failed: %v (out=%q)", route, err2, strings.TrimSpace(out2))
+		}
 	}
+}
+
+type curlResult int
+
+const (
+	curlOK curlResult = iota
+	curlSSEOK            // exit 28 (timeout) — SSE was streaming
+	curlFail
+)
+
+// interpretCurl reads the result of an in-sprite `curl -w '%{http_code}'`
+// invocation. Exit status 28 = CURLE_OPERATION_TIMEDOUT, which on a
+// streaming endpoint means the request succeeded and clank-host is
+// holding the connection open (good). Anything else with a non-zero
+// exit is a real failure.
+func interpretCurl(out string, err error) curlResult {
+	if err == nil {
+		return curlOK
+	}
+	if isExitStatus(err, 28) {
+		return curlSSEOK
+	}
+	return curlFail
+}
+
+// isExitStatus tests whether err is a process exit with the given
+// code. The sprites SDK wraps the error similarly to os/exec: the
+// underlying *exec.ExitError's String() ends with "exit status N".
+func isExitStatus(err error, code int) bool {
+	if err == nil {
+		return false
+	}
+	want := fmt.Sprintf("exit status %d", code)
+	return strings.Contains(err.Error(), want)
 }
 
 // runInSpriteCmd executes a command inside the sprite and returns
