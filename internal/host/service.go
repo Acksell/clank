@@ -23,6 +23,7 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
+	"github.com/acksell/clank/internal/host/store"
 	clanksync "github.com/acksell/clank/internal/sync"
 )
 
@@ -76,6 +77,22 @@ type Service struct {
 	// worktree (DiffStat + CommitsAhead) and one of them runs
 	// `git diff --numstat HEAD` which stat()s the working tree.
 	branches *branchCache
+
+	// sessionsStore (PR 3) persists session metadata (visibility,
+	// last_read_at, draft, follow_up, status, title, …) on the host.
+	// Nil for legacy callers / tests that don't need persistence;
+	// production wiring always provides one.
+	sessionsStore *store.Store
+
+	// subscribers (PR 3) is the event fan-out registry. Each session's
+	// event-relay goroutine calls Broadcast for every event from the
+	// backend; SSE/WebSocket handlers subscribe to receive the stream.
+	subscribers *subscriberRegistry
+
+	// wg tracks event-relay goroutines (one per active session) so
+	// Shutdown can wait for them to finish draining before closing
+	// the subscriber registry.
+	wg sync.WaitGroup
 }
 
 // Options configures a Service at construction time.
@@ -107,6 +124,13 @@ type Options struct {
 	// inject a controllable clock to assert cache hit/miss behavior
 	// without sleeping. Nil means time.Now.
 	Now func() time.Time
+
+	// SessionsStore (PR 3) persists session metadata on the host.
+	// Optional in tests; required in production wiring (clank-host's
+	// main wires it from --data-dir/host.db). When nil, the host
+	// service still serves backend lifecycle but session-metadata
+	// methods return SessionStoreNotConfigured.
+	SessionsStore *store.Store
 }
 
 // New creates a Service. Panics if opts.BackendManagers is nil — the Host
@@ -134,6 +158,8 @@ func New(opts Options) *Service {
 		gitSyncSource:   opts.GitSyncSource,
 		gitSyncToken:    opts.GitSyncToken,
 		branches:        newBranchCache(opts.BranchCacheTTL, opts.Now),
+		sessionsStore:   opts.SessionsStore,
+		subscribers:     newSubscriberRegistry(),
 	}
 	if s.clonesDir == "" {
 		// Best-effort default; if the home dir lookup fails the field
@@ -199,6 +225,14 @@ func (s *Service) Init(ctx context.Context, knownDirs func(agent.BackendType) ([
 // BackendManagers. Safe to call multiple times — subsequent calls are
 // no-ops. After Shutdown returns, CreateSession will reject new
 // registrations rather than leaking backends into a torn-down service.
+//
+// Order matters:
+//  1. Mark closed so new CreateSession calls fail fast.
+//  2. Stop each live backend — this closes its Events() channel,
+//     which causes the per-session event-relay goroutine to exit.
+//  3. Wait for relay goroutines to drain (s.wg).
+//  4. Close all event subscribers.
+//  5. Shut down backend managers.
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	if s.closed {
@@ -213,6 +247,13 @@ func (s *Service) Shutdown() {
 		if err := b.Stop(); err != nil {
 			s.log.Printf("warning: stop session %s: %v", id, err)
 		}
+	}
+	// Wait for the event-relay goroutines to finish draining each
+	// backend's Events() channel before closing subscribers — closing
+	// while a Broadcast is in flight would race the channel close.
+	s.wg.Wait()
+	if s.subscribers != nil {
+		s.subscribers.CloseAll()
 	}
 	for bt, mgr := range s.backendManagers {
 		s.log.Printf("shutting down %s backend manager", bt)
@@ -385,6 +426,36 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	s.sessions[sessionID] = b
 	s.mu.Unlock()
 
+	// Persist initial session metadata (PR 3). Nil-store is treated
+	// as "this service was constructed without persistence" — common
+	// in tests. Errors are logged but do not fail the create; the
+	// backend is already running and rolling it back would be worse
+	// UX than an unpersisted row.
+	if s.sessionsStore != nil {
+		now := time.Now()
+		info := agent.SessionInfo{
+			ID:         sessionID,
+			ExternalID: req.SessionID, // empty for fresh; populated for resume
+			Backend:    req.Backend,
+			Status:     agent.StatusStarting,
+			GitRef:     req.GitRef,
+			Prompt:     req.Prompt,
+			TicketID:   req.TicketID,
+			Agent:      req.Agent,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+			s.log.Printf("warning: persist session %s metadata: %v", sessionID, err)
+		}
+	}
+
+	// Spawn the event-relay goroutine. It owns the sole drain on
+	// b.Events(); SSE/WebSocket handlers subscribe to s.subscribers
+	// instead so multiple consumers can fan out from one source.
+	s.wg.Add(1)
+	go s.relayBackendEvents(sessionID, b)
+
 	// Resolve per-session serverURL for backends that expose one. Only
 	// OpenCode currently does; iterate ListServers (no fresh start —
 	// CreateBackend already ensured a server exists for workDir).
@@ -399,6 +470,59 @@ func (s *Service) CreateSession(ctx context.Context, sessionID string, req agent
 	}
 
 	return b, serverURL, nil
+}
+
+// relayBackendEvents is the per-session goroutine that drains
+// backend.Events() and fans them out via the subscriber registry.
+// Also applies side-effects to persisted session metadata for the
+// event types that change user-visible state (status, title).
+//
+// Exits when backend.Events() closes — typically because Stop was
+// called on the backend. Wait-group tracking lets Shutdown wait for
+// every relay to finish before closing subscribers.
+func (s *Service) relayBackendEvents(sessionID string, b agent.SessionBackend) {
+	defer s.wg.Done()
+	for evt := range b.Events() {
+		evt.SessionID = sessionID
+		s.subscribers.Broadcast(evt)
+		s.applyEventToMetadata(sessionID, evt)
+	}
+}
+
+// applyEventToMetadata translates events that modify visible state
+// (status, title) into store updates. Best-effort — failures are
+// logged but do not interrupt the event flow.
+func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
+	if s.sessionsStore == nil {
+		return
+	}
+	var update func(*agent.SessionInfo)
+	switch evt.Type {
+	case agent.EventStatusChange:
+		if d, ok := evt.Data.(agent.StatusChangeData); ok {
+			update = func(info *agent.SessionInfo) { info.Status = d.NewStatus }
+		}
+	case agent.EventTitleChange:
+		if d, ok := evt.Data.(agent.TitleChangeData); ok {
+			update = func(info *agent.SessionInfo) { info.Title = d.Title }
+		}
+	}
+	if update == nil {
+		return
+	}
+	ctx := context.Background()
+	info, err := s.sessionsStore.GetSession(ctx, sessionID)
+	if err != nil {
+		// Session not in store (e.g. tests that don't pre-persist) —
+		// silently skip. CreateSession persists every session it knows
+		// about, so a miss here means an out-of-band session.
+		return
+	}
+	update(&info)
+	info.UpdatedAt = time.Now()
+	if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+		s.log.Printf("warning: update session %s metadata for %s event: %v", sessionID, evt.Type, err)
+	}
 }
 
 // workDirFor resolves a GitRef to an absolute working directory on this

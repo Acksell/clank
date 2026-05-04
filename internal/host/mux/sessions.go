@@ -273,17 +273,18 @@ func (m *Mux) handleStopSession(w http.ResponseWriter, r *http.Request) {
 
 // HOST
 //
-// handleSessionEvents bridges SessionBackend.Events() to Server-Sent
-// Events. The handler holds the response open until either the client
-// disconnects (ctx done) or the backend's Events channel closes.
+// handleSessionEvents bridges agent events to Server-Sent Events,
+// filtered to a single session id. PR 3 changed the underlying
+// source: previously this read directly from SessionBackend.Events(),
+// but now the host's per-session relay goroutine is the sole consumer
+// of that channel. We subscribe to the global broadcast and filter
+// client-side instead, which lets multiple consumers (this SSE, the
+// global /events WebSocket, future watchers) all receive the stream.
 //
-// Each event is encoded as `event: <type>\ndata: <json>\n\n`. The HTTP
-// adapter on the Hub side reconstructs an agent.Event channel from this
-// stream.
+// Each event is encoded as `event: <type>\ndata: <json>\n\n`.
 func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	b, ok := m.svc.Session(id)
-	if !ok {
+	if _, ok := m.svc.Session(id); !ok {
 		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
 		return
 	}
@@ -299,7 +300,9 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ch := b.Events()
+	subID, ch := m.svc.Subscribe()
+	defer m.svc.Unsubscribe(subID)
+
 	ctx := r.Context()
 	for {
 		select {
@@ -307,10 +310,13 @@ func (m *Mux) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				// Backend stopped — signal end of stream and return.
+				// Subscriber channel closed (host shutting down).
 				fmt.Fprintf(w, "event: end\ndata: {}\n\n")
 				flusher.Flush()
 				return
+			}
+			if ev.SessionID != id {
+				continue
 			}
 			data, err := json.Marshal(ev)
 			if err != nil {
