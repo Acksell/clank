@@ -294,6 +294,25 @@ type PermissionReplyRequest struct {
 }
 
 // HOST
+//
+// GET /sessions/{id}/pending-permission returns permission requests
+// the agent is currently blocked on. Pre-PR-3 the hub kept these in
+// memory; the TUI used the endpoint to recover after a reconnect.
+//
+// The host doesn't currently snapshot pending perms — the SSE stream
+// is the canonical source. We return an empty list so the TUI's recovery
+// path doesn't 404; live permission prompts arrive via /events as
+// EventPermission. A persistent snapshot lives behind a future PR.
+func (m *Mux) handlePendingPermissions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := m.svc.Session(id); !ok {
+		writeError(w, fmt.Errorf("session %s: %w", id, host.ErrNotFound))
+		return
+	}
+	writeJSON(w, http.StatusOK, []any{})
+}
+
+// HOST
 func (m *Mux) handlePermissionReply(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	permID := r.PathValue("permID")

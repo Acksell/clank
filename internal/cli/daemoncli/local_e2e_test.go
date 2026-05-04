@@ -130,6 +130,21 @@ func TestLocalE2E_TUICreatesSession_AndFetches(t *testing.T) {
 	if got.Backend != agent.BackendOpenCode {
 		t.Errorf("Backend round-trip: got %q, want %q", got.Backend, agent.BackendOpenCode)
 	}
+
+	// Host-scoped routes go through /hosts/{hostname}/... in the TUI's
+	// HostClient. The gateway must strip that prefix before forwarding,
+	// otherwise the host returns 404 "page not found" — that was the
+	// symptom for the "connect provider" modal failing in the wild.
+	// The stub backend doesn't wire up an opencode auth manager so the
+	// handler itself errors with "auth manager is not configured" — but
+	// reaching that error proves routing through /hosts/{name}/auth
+	// succeeded (the alternative is a generic 404 from the mux).
+	_, authErr := cli.Host("local").ListAuthProviders(ctx)
+	if authErr == nil {
+		t.Error("expected an error from stub host (no auth manager wired)")
+	} else if strings.Contains(authErr.Error(), "404 page not found") {
+		t.Errorf("gateway did not strip /hosts/{name} prefix; got 404: %v", authErr)
+	}
 }
 
 // fixedHostProvisioner returns the same HostRef on every EnsureHost. The

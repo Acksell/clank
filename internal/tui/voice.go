@@ -44,12 +44,23 @@ func voiceHeaderBadge(_ voiceState) string { return "" }
 func voiceHelpItem(_ voiceState) string    { return "" }
 func isVoiceEvent(_ agent.Event) bool      { return false }
 
+// newVoiceEnabledView (legacy name) builds the standard inbox/session
+// View with AltScreen turned on so the TUI restores the user's terminal
+// buffer on exit. The "voice-enabled" naming is historical — voice was
+// removed in PR 3 — but the alt-screen + keyboard-enhancements wiring
+// is what kept the inbox feel right and is preserved here.
 func newVoiceEnabledView(content string) tea.View {
-	return tea.NewView(content)
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.KeyboardEnhancements = tea.KeyboardEnhancements{ReportEventTypes: true}
+	return v
 }
 
+// newVoiceEnabledViewWithMouse is like newVoiceEnabledView but also
+// enables cell-motion mouse mode (used by the session view).
 func newVoiceEnabledViewWithMouse(content string) tea.View {
-	v := tea.NewView(content)
+	v := newVoiceEnabledView(content)
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 

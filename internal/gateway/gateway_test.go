@@ -217,3 +217,66 @@ var errSimulated = stubError("simulated")
 type stubError string
 
 func (e stubError) Error() string { return string(e) }
+
+// TestProxy_StripsHostsPrefix pins the rewrite that turns
+// /hosts/{name}/foo into /foo before forwarding to the host plane.
+// The TUI's HostClient prepends /hosts/{hostname} to every host-scoped
+// call (worktrees, auth) — this segment was a hub-era routing hint and
+// the host's mux registers bare paths.
+func TestProxy_StripsHostsPrefix(t *testing.T) {
+	t.Parallel()
+	gotPath := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL, Transport: http.DefaultTransport}}
+	g, _ := NewGateway(Config{Provisioner: prov}, nil)
+	srv := httptest.NewServer(g.Handler())
+	t.Cleanup(srv.Close)
+
+	cases := []struct {
+		name   string
+		in     string
+		expect string
+	}{
+		{"auth-providers", "/hosts/local/auth/providers", "/auth/providers"},
+		{"auth-apikey", "/hosts/local/auth/openai/apikey", "/auth/openai/apikey"},
+		{"worktrees", "/hosts/local/worktrees/list-branches", "/worktrees/list-branches"},
+		{"no-prefix-untouched", "/sessions", "/sessions"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + c.in)
+			if err != nil {
+				t.Fatalf("GET %s: %v", c.in, err)
+			}
+			resp.Body.Close()
+			got := <-gotPath
+			if got != c.expect {
+				t.Errorf("upstream got %q, want %q (in: %q)", got, c.expect, c.in)
+			}
+		})
+	}
+}
+
+func TestStripHostsPrefix_Unit(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"":                              "",
+		"/sessions":                     "/sessions",
+		"/hosts/local":                  "/",
+		"/hosts/local/":                 "/",
+		"/hosts/local/auth/providers":   "/auth/providers",
+		"/hosts/x-y-z/worktrees/resolve": "/worktrees/resolve",
+		"/hostsfoo":                     "/hostsfoo", // doesn't start with /hosts/
+	}
+	for in, want := range cases {
+		if got := stripHostsPrefix(in); got != want {
+			t.Errorf("stripHostsPrefix(%q) = %q; want %q", in, got, want)
+		}
+	}
+}

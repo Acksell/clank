@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 )
 
 // proxyToHost is the catch-all handler: every route not served by
@@ -60,6 +61,15 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 			// host is irrelevant to the host's HTTP handlers — they
 			// route by path, not authority.
 			pr.Out.Host = pr.In.Host
+			// Strip the /hosts/{hostname} prefix the TUI's
+			// HostClient prepends — the host plane is single-user
+			// and serves bare paths (/auth/..., /worktrees/...).
+			// The hostname segment was a routing hint for the old
+			// hub; the gateway already resolved (userID → host) by
+			// the time we get here, so the segment is informational
+			// only.
+			pr.Out.URL.Path = stripHostsPrefix(pr.Out.URL.Path)
+			pr.Out.URL.RawPath = stripHostsPrefix(pr.Out.URL.RawPath)
 		},
 		Transport: ref.Transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
@@ -68,4 +78,21 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// stripHostsPrefix turns "/hosts/{name}/foo/bar" into "/foo/bar". A path
+// not under /hosts/ is returned unchanged. The empty input is preserved
+// so we don't have to special-case RawPath (which is "" when the URL
+// has no encoded segments).
+func stripHostsPrefix(p string) string {
+	if p == "" || !strings.HasPrefix(p, "/hosts/") {
+		return p
+	}
+	rest := p[len("/hosts/"):]
+	// rest is "{name}/..." — drop the first segment.
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[i:]
+	}
+	// "/hosts/{name}" with no trailing path → "/".
+	return "/"
 }

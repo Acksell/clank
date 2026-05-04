@@ -100,6 +100,7 @@ func (m *Mux) register(mx *http.ServeMux) {
 	mx.HandleFunc("DELETE /sessions/{id}", m.handleDeleteSession)
 	mx.HandleFunc("GET /sessions/{id}/messages", m.handleGetMessages)
 	mx.HandleFunc("GET /sessions/{id}/events", m.handleSessionEvents)
+	mx.HandleFunc("GET /sessions/{id}/pending-permission", m.handlePendingPermissions)
 	mx.HandleFunc("POST /sessions/{id}/permissions/{permID}/reply", m.handlePermissionReply)
 	mx.HandleFunc("POST /sessions/{id}/stop", m.handleStopSession)
 	mx.HandleFunc("GET /sessions/{id}", m.handleGetSession)
