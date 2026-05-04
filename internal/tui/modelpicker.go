@@ -212,6 +212,13 @@ func (m modelPickerModel) Update(msg tea.Msg) (modelPickerModel, tea.Cmd) {
 }
 
 // applyFilter rebuilds the filtered list from the query and resets cursor.
+//
+// The "+ Connect provider…" action is always pinned to the bottom of
+// the filtered results regardless of query. Its whole reason to exist
+// is that the user is searching for a model that isn't there yet
+// because their auth.json is missing or stale — hiding it on a
+// non-matching search defeats the point. The "(default)" entry
+// behaves like a model and is filtered normally.
 func (m *modelPickerModel) applyFilter() {
 	q := strings.ToLower(m.search.Value())
 	if q == "" {
@@ -219,8 +226,17 @@ func (m *modelPickerModel) applyFilter() {
 	} else {
 		m.filtered = nil
 		for _, item := range m.items {
+			if item.index == modelPickerIndexConnectProvider {
+				continue // re-appended below so it stays last
+			}
 			if strings.Contains(strings.ToLower(item.display), q) {
 				m.filtered = append(m.filtered, item)
+			}
+		}
+		for _, item := range m.items {
+			if item.index == modelPickerIndexConnectProvider {
+				m.filtered = append(m.filtered, item)
+				break
 			}
 		}
 	}

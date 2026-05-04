@@ -113,3 +113,41 @@ func TestModelPicker_HintReferencesConnectProviderEntry(t *testing.T) {
 		t.Errorf("picker hint should reference the Connect provider entry; got:\n%s", view)
 	}
 }
+
+// TestModelPicker_ConnectProviderSurvivesFilter pins the contract that
+// the Connect-provider row is pinned to the bottom of the filtered
+// results regardless of query. The whole point of the entry is to
+// rescue users whose search returns nothing because their auth.json
+// is missing or stale; filtering it out on a non-matching query
+// defeats that.
+func TestModelPicker_ConnectProviderSurvivesFilter(t *testing.T) {
+	t.Parallel()
+	p := newModelPicker(sampleModels(3), -1, agent.BackendOpenCode)
+
+	// A query that matches none of the model IDs ("m-a", "m-b", "m-c").
+	p.search.SetValue("nothingmatches")
+	p.applyFilter()
+
+	if len(p.filtered) == 0 {
+		t.Fatalf("filter wiped everything; Connect-provider entry should remain")
+	}
+	last := p.filtered[len(p.filtered)-1]
+	if last.index != modelPickerIndexConnectProvider {
+		t.Errorf("Connect-provider entry should be pinned to the bottom; got last index %d", last.index)
+	}
+	// And it should be the only entry, since no models matched.
+	if len(p.filtered) != 1 {
+		t.Errorf("expected only the Connect-provider entry to survive a non-matching query; got %d entries", len(p.filtered))
+	}
+
+	// A query that matches one model should keep that match plus the
+	// Connect-provider entry.
+	p.search.SetValue("m-b")
+	p.applyFilter()
+	if len(p.filtered) != 2 {
+		t.Fatalf("expected match + Connect-provider; got %d entries: %+v", len(p.filtered), p.filtered)
+	}
+	if p.filtered[len(p.filtered)-1].index != modelPickerIndexConnectProvider {
+		t.Error("Connect-provider entry should still be last after a partial match")
+	}
+}
