@@ -11,11 +11,13 @@
 package flyio
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -213,6 +215,17 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	transport := &bearerInjector{token: authToken}
 	hostname := host.Hostname("flyio-" + safeHostnameSuffix(spriteName))
 
+	// Probe the sprite's public URL until clank-host actually answers.
+	// Sprites' "started" event in waitForServiceStarted only means the
+	// process is running; the HTTP server inside clank-host may not
+	// have bound its port yet, and Sprites' edge serves a 404 page
+	// for that gap. Without this probe we'd cache the HostRef and
+	// every subsequent proxy hit would 404 until the user retried
+	// long enough for the bind to land.
+	if err := waitForSpriteReady(ctx, fresh.URL, transport, p.log); err != nil {
+		return provisioner.HostRef{}, fmt.Errorf("sprite %s never reached ready: %w", spriteName, err)
+	}
+
 	hostID, err := p.persistRow(ctx, userID, spriteName, string(hostname), fresh.URL, authToken, isNew)
 	if err != nil {
 		return provisioner.HostRef{}, fmt.Errorf("persist host row: %w", err)
@@ -228,6 +241,74 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 	p.cacheSet(userID, cached)
 	return p.refToHost(cached), nil
+}
+
+// waitForSpriteReady polls the sprite's public URL with a HEAD on
+// /status (cheap, authenticated) until clank-host responds with a
+// non-edge status code. The Sprites edge serves a stable 404 HTML
+// page when no service is bound to the routed port — we treat that
+// as "still warming up" and keep polling until the real host
+// responds (200 OK on a configured listener, 401 if auth missing,
+// etc — anything that's clearly the host's mux talking).
+func waitForSpriteReady(ctx context.Context, baseURL string, transport http.RoundTripper, lg *log.Logger) error {
+	deadline := time.NewTimer(60 * time.Second)
+	defer deadline.Stop()
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+
+	client := &http.Client{Transport: transport}
+	url := strings.TrimRight(baseURL, "/") + "/status"
+	var lastBody string
+	var lastStatus int
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
+		resp, err := client.Do(req)
+		cancel()
+		if err == nil {
+			lastStatus = resp.StatusCode
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+			resp.Body.Close()
+			lastBody = string(body)
+			// Anything other than the Sprites edge 404 page means
+			// the host's mux is responding. A real clank-host
+			// returns 200 on /status; 401/403 also indicate the mux
+			// is up (auth path firing).
+			if !isSpritesEdge404(resp.StatusCode, body) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("ctx done (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for sprite to bind (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
+		case <-t.C:
+		}
+		_ = lg // reserved for future debug logging
+	}
+}
+
+// isSpritesEdge404 distinguishes a "no service bound" response from
+// a "real host returned 404 for an unknown path". The edge page
+// includes "Sprites" in its title; a clank-host 404 (which
+// shouldn't happen for /status anyway) wouldn't.
+func isSpritesEdge404(status int, body []byte) bool {
+	if status != http.StatusNotFound {
+		return false
+	}
+	return bytes.Contains(body, []byte("<title>404 | Sprites"))
+}
+
+// snippet trims a body string to a short single-line preview for
+// timeout error messages.
+func snippet(s string) string {
+	const max = 120
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
 }
 
 func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
