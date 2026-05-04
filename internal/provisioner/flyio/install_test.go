@@ -3,34 +3,24 @@ package flyio
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
 	"log"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// sha256Hex returns the hex sha256 of b. Helper for the install
-// tests to produce expected sha values matching the runtime ones.
-func sha256Hex(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
 // stubFS records the order of fs ops so tests can pin
 // "remove-before-write" for atomic binary replacement.
 type stubFS struct {
 	mu    sync.Mutex
 	files map[string][]byte
-	calls []string // "Remove:/p", "Write:/p:N", in order
+	calls []string // "Remove:/p", "Write:/p", in order
 	// onWrite (when set) overrides the default "succeed and store"
-	// behavior — used to simulate ETXTBSY on the first attempt.
+	// behavior — used to simulate write failures.
 	onWrite func(name string, data []byte) error
 }
 
@@ -48,9 +38,7 @@ func (s *stubFS) Open(name string) (fs.File, error) {
 	return &stubFile{name: name, r: bytes.NewReader(data), size: int64(len(data))}, nil
 }
 
-// stubFile is a tiny fs.File over a []byte. Only fs.Stat goes
-// through Open()→Stat() in our tests (when stubFS.Stat isn't called
-// directly), so this is just enough to make fs.Stat happy.
+// stubFile is a tiny fs.File over a []byte; just enough for fs.Stat.
 type stubFile struct {
 	name string
 	size int64
@@ -65,7 +53,7 @@ func (f *stubFile) Close() error               { return nil }
 
 var _ io.Reader = (*stubFile)(nil)
 
-// Stat satisfies fs.StatFS so fs.Stat can find files.
+// Stat satisfies fs.StatFS so fs.Stat hits stubFS directly.
 func (s *stubFS) Stat(name string) (fs.FileInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,17 +75,6 @@ func (s *stubFS) WriteFileContext(_ context.Context, name string, data []byte, _
 	s.files[stripLeadingSlash(name)] = append([]byte(nil), data...)
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *stubFS) ReadFileContext(_ context.Context, name string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls = append(s.calls, "Read:"+name)
-	data, ok := s.files[stripLeadingSlash(name)]
-	if !ok {
-		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
-	}
-	return append([]byte(nil), data...), nil
 }
 
 func (s *stubFS) RemoveContext(_ context.Context, name string) error {
@@ -156,79 +133,40 @@ func (tw testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestEnsureBinaryInstalled_SkipsOnSHAMatch is the fast path: when
-// the sprite already has a binary AND a sha sidecar matching what
-// we want to install, we don't touch it. The upload is ~17MB; doing
-// it on every daemon start would dominate provisioning time.
-func TestEnsureBinaryInstalled_SkipsOnSHAMatch(t *testing.T) {
+// TestEnsureBinaryInstalled_SkipsOnSizeMatch is the fast path: when
+// the sprite already has a binary of the right size we don't touch
+// it — the upload is ~17MB, doing it on every daemon start would
+// dominate provisioning time.
+func TestEnsureBinaryInstalled_SkipsOnSizeMatch(t *testing.T) {
 	t.Parallel()
 	want := []byte("hello world binary contents")
-	wantSHA := sha256Hex(want)
 	stub := newStubFS()
 	stub.seed("usr/local/bin/clank-host", want)
-	stub.seed("usr/local/bin/clank-host.sha256", []byte(wantSHA+"\n"))
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, stub, "/usr/local/bin/clank-host", want, wantSHA); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	got := stub.ops()
-	for _, op := range got {
-		if strings.HasPrefix(op, "Write:") || strings.HasPrefix(op, "Remove:") {
-			t.Errorf("unexpected mutating op on sha-match fast path: %v", got)
-			break
-		}
+	if got := stub.ops(); len(got) != 0 {
+		t.Errorf("unexpected fs ops on size-match fast path: %v", got)
 	}
 }
 
-// TestEnsureBinaryInstalled_DriftDetectedBySHA pins the sha-based
-// check: when the sidecar's sha differs from the embedded binary's
-// sha, force a reinstall — even if the file sizes happen to match.
-// Production has hit silent stale-binary cases where size collided
-// across rebuilds; sha eliminates that class.
-func TestEnsureBinaryInstalled_DriftDetectedBySHA(t *testing.T) {
-	t.Parallel()
-	stale := []byte("OLD binary, exact length matching the new")
-	want := []byte("NEW binary, exact length matching the old")
-	if len(stale) != len(want) {
-		t.Fatal("test fixtures must have equal length to exercise the sha-vs-size distinction")
-	}
-	stub := newStubFS()
-	stub.seed("usr/local/bin/clank-host", stale)
-	stub.seed("usr/local/bin/clank-host.sha256", []byte(sha256Hex(stale)+"\n"))
-
-	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, stub, "/usr/local/bin/clank-host", want, sha256Hex(want)); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	// Binary and sidecar should both be replaced with the new content.
-	if got := stub.files["usr/local/bin/clank-host"]; string(got) != string(want) {
-		t.Errorf("binary not replaced: have %q, want %q", got, want)
-	}
-	if got := strings.TrimSpace(string(stub.files["usr/local/bin/clank-host.sha256"])); got != sha256Hex(want) {
-		t.Errorf("sha sidecar not refreshed: have %q, want %q", got, sha256Hex(want))
-	}
-}
-
-// TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSHA verifies
-// that on a fresh sprite (no prior file, no sidecar) we install
-// both — binary first, then the sha sidecar so the next call can
-// short-circuit.
-func TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSHA(t *testing.T) {
+// TestEnsureBinaryInstalled_ColdInstallWritesOnly verifies that on a
+// fresh sprite (no prior file), we proceed straight to write. Remove
+// runs first as a no-op safety net (returns ENOENT and we move on).
+func TestEnsureBinaryInstalled_ColdInstallWritesOnly(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
 	want := []byte("fresh binary")
-	wantSHA := sha256Hex(want)
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, stub, "/usr/local/bin/clank-host", want, wantSHA); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if got, ok := stub.files["usr/local/bin/clank-host"]; !ok || string(got) != string(want) {
-		t.Errorf("binary not written: ok=%v got=%q", ok, got)
-	}
-	if got, ok := stub.files["usr/local/bin/clank-host.sha256"]; !ok || strings.TrimSpace(string(got)) != wantSHA {
-		t.Errorf("sha sidecar not written: ok=%v got=%q", ok, got)
+	got := stub.ops()
+	if len(got) != 2 || got[0] != "Remove:/usr/local/bin/clank-host" || got[1] != "Write:/usr/local/bin/clank-host" {
+		t.Errorf("ops = %v, want [Remove:/usr/…, Write:/usr/…]", got)
 	}
 }
 
@@ -236,37 +174,26 @@ func TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSHA(t *testing.T) {
 // regression: when a stale binary needs replacement, the Remove
 // must precede the Write. Without that, Linux returns ETXTBSY
 // because the sprite's clank-host service is currently exec'd from
-// /usr/local/bin/clank-host. The production symptom was an
-// infinite reinstall storm.
+// /usr/local/bin/clank-host.
 func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
-	stub.seed("usr/local/bin/clank-host", []byte("old binary"))
-	stub.seed("usr/local/bin/clank-host.sha256", []byte("aaaa\n"))
-	want := []byte("new binary")
-	wantSHA := sha256Hex(want)
+	stub.seed("usr/local/bin/clank-host", []byte("old binary, smaller"))
+	want := []byte("new binary, larger payload")
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, stub, "/usr/local/bin/clank-host", want, wantSHA); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	// Find Remove and Write of the binary — Read of the sha sidecar
-	// runs first, then Remove and Write of the binary follow.
 	got := stub.ops()
-	var removeIdx, writeIdx = -1, -1
-	for i, op := range got {
-		if op == "Remove:/usr/local/bin/clank-host" {
-			removeIdx = i
-		}
-		if op == "Write:/usr/local/bin/clank-host" {
-			writeIdx = i
-		}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 ops (Remove, Write), got %v", got)
 	}
-	if removeIdx < 0 || writeIdx < 0 {
-		t.Fatalf("expected Remove and Write of binary; got %v", got)
+	if got[0] != "Remove:/usr/local/bin/clank-host" {
+		t.Errorf("first op should be Remove (avoid ETXTBSY); got %q", got[0])
 	}
-	if removeIdx > writeIdx {
-		t.Errorf("Remove must precede Write (avoid ETXTBSY); ops = %v", got)
+	if got[1] != "Write:/usr/local/bin/clank-host" {
+		t.Errorf("second op should be Write; got %q", got[1])
 	}
 }
 
@@ -280,10 +207,6 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	stub.seed("usr/local/bin/clank-host", []byte("old"))
 	want := []byte("new binary")
 
-	// Override Remove to always return EACCES — not ENOENT, so we
-	// hit the "log and continue" branch.
-	originalRemove := stub.RemoveContext
-	stub.calls = nil
 	calls := []string{}
 	wfStub := stubWF{
 		write: stub.WriteFileContext,
@@ -292,17 +215,14 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 			return &fs.PathError{Op: "remove", Path: name, Err: syscall.EACCES}
 		},
 	}
-	_ = originalRemove
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, wfStub, "/usr/local/bin/clank-host", want, sha256Hex(want)); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, wfStub, "/usr/local/bin/clank-host", want); err != nil {
 		t.Fatalf("install: %v (Write should have proceeded despite Remove failure)", err)
 	}
 	if len(calls) != 1 || calls[0] != "Remove:/usr/local/bin/clank-host" {
 		t.Errorf("Remove not called once: %v", calls)
 	}
-	// stub.calls should now contain the Write that succeeded after
-	// the failed Remove.
 	got := stub.ops()
 	hasWrite := false
 	for _, op := range got {
@@ -317,7 +237,7 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 }
 
 // TestEnsureBinaryInstalled_WriteErrorPropagates pins that an actual
-// write failure is surfaced — it's not silently swallowed.
+// write failure is surfaced — not silently swallowed.
 func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -325,8 +245,7 @@ func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	stub.onWrite = func(_ string, _ []byte) error { return bang }
 
 	p := newTestProvisioner(t)
-	want := []byte("data")
-	err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, stub, "/usr/local/bin/clank-host", want, sha256Hex(want))
+	err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", []byte("data"))
 	if err == nil {
 		t.Fatal("expected write error to surface, got nil")
 	}
@@ -347,7 +266,7 @@ func (s stubWF) WriteFileContext(ctx context.Context, name string, data []byte, 
 func (s stubWF) RemoveContext(ctx context.Context, name string) error { return s.remove(ctx, name) }
 
 // contains is a tiny strings.Contains wrapper to keep the test file
-// import list short — strings is already pulled in elsewhere.
+// import list short.
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -356,4 +275,3 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
-

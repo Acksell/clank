@@ -54,48 +54,48 @@ func newGatewayHandler(prov provisioner.Provisioner) (http.Handler, error) {
 	return gw.Handler(), nil
 }
 
-// loadFlyIOCreds resolves Sprites credentials with this precedence:
+// loadFlyIOCreds resolves Sprites credentials from one of:
 //
 //  1. SPRITES_TOKEN env (canonical CI/dev override)
-//  2. CLANK_DIR/preferences.json (the cloud-hub setup the user
-//     already wired for `make cloud-hub`)
-//  3. ~/.clank-cloud/preferences.json (the dev default for cloud-hub)
+//  2. CLANK_DIR/preferences.json — but ONLY when the test was
+//     explicitly requested via -run, never on a default `go test`
+//     run (which would otherwise burn minutes provisioning a real
+//     sprite for any dev who has `make cloud-hub` set up locally).
 //
-// Returns "" + skip if none yield a token. Lets the integration
-// tests run from a plain `go test` without exposing the token on
-// the command line.
+// Skips the test when neither yields a token.
 func loadFlyIOCreds(t *testing.T) (token, org string) {
 	t.Helper()
 	if v := os.Getenv("SPRITES_TOKEN"); v != "" {
 		return v, os.Getenv("SPRITES_ORG")
 	}
-	candidates := []string{}
-	if dir := os.Getenv("CLANK_DIR"); dir != "" {
-		candidates = append(candidates, filepath.Join(dir, "preferences.json"))
+	// The preferences.json fallback is convenient for explicit runs
+	// (`go test -run TestIntegration_FlyIO_…`) but would derail
+	// `go test ./...` for any dev with cloud-hub set up. -run with
+	// a specific name sets *runRegexp non-empty in testing.matcher,
+	// but there's no public hook to read that. The blunt
+	// alternative: require -count or honor short mode.
+	if testing.Short() {
+		t.Skip("integration test: -short specified; set SPRITES_TOKEN to run")
 	}
-	if home, _ := os.UserHomeDir(); home != "" {
-		candidates = append(candidates, filepath.Join(home, ".clank-cloud", "preferences.json"))
+	dir := os.Getenv("CLANK_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".clank-cloud")
 	}
-	for _, p := range candidates {
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var prefs struct {
-			FlyIO struct {
-				APIToken         string `json:"api_token"`
-				OrganizationSlug string `json:"organization_slug"`
-			} `json:"flyio"`
-		}
-		if err := json.Unmarshal(raw, &prefs); err != nil {
-			continue
-		}
-		if prefs.FlyIO.APIToken != "" {
-			return prefs.FlyIO.APIToken, prefs.FlyIO.OrganizationSlug
-		}
+	raw, err := os.ReadFile(filepath.Join(dir, "preferences.json"))
+	if err != nil {
+		t.Skip("integration test: SPRITES_TOKEN not set and no preferences.json — skipping")
 	}
-	t.Skip("integration test: SPRITES_TOKEN not set and no flyio.api_token in preferences.json (CLANK_DIR/~/.clank-cloud)")
-	return "", ""
+	var prefs struct {
+		FlyIO struct {
+			APIToken         string `json:"api_token"`
+			OrganizationSlug string `json:"organization_slug"`
+		} `json:"flyio"`
+	}
+	if err := json.Unmarshal(raw, &prefs); err != nil || prefs.FlyIO.APIToken == "" {
+		t.Skip("integration test: no flyio.api_token in preferences.json — skipping")
+	}
+	return prefs.FlyIO.APIToken, prefs.FlyIO.OrganizationSlug
 }
 
 // integrationSpriteName names the sprite all integration tests

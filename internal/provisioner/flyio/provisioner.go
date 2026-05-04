@@ -179,20 +179,13 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	defer cancel()
 
 	// Fast path: in-memory cache from a prior EnsureHost in this
-	// process. Cached entries still need a readiness probe before we
-	// hand them to upstream callers — Sprites auto-hibernates idle
-	// VMs and serves an edge 404 page during the wake window. Without
-	// the probe, the gateway's first proxy hit after hibernation
-	// lands on that 404 and the user sees "Sprites: 404" verbatim.
-	// On a warm sprite the probe is one /status GET (~50ms); on a
-	// cold-wake it polls until clank-host binds.
+	// process. Sprites auto-wake on traffic — when the VM hibernates
+	// and the next request comes in, the edge handles wake
+	// transparently. We don't pre-probe here because that would tax
+	// every request with a /status round-trip; the cold-path probe
+	// (after installAndStart) is the only time we wait for binding.
 	if c := p.cacheGet(userID); c != nil {
-		if err := waitForSpriteReady(ctx, c.url, c.transport, p.log); err != nil {
-			p.log.Printf("flyio provisioner: cached sprite for %s not responding (%v); dropping cache and re-provisioning", userID, err)
-			p.cacheDrop(userID)
-		} else {
-			return p.refToHost(c), nil
-		}
+		return p.refToHost(c), nil
 	}
 
 	spriteName := p.spriteNameFor(userID)
@@ -211,13 +204,6 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 	_ = isNew // retained on resolveOrCreate's return for future callers
 
-	// Curl the running clank-host from INSIDE the sprite — bypassing
-	// the Sprites edge — so we can prove which routes the actual
-	// running binary registers. When the public URL 404s on a route
-	// we know the embedded binary should serve, this in-sprite probe
-	// is the only way to tell whether the running process is stale
-	// (different binary version) or whether the edge is interfering.
-	p.diagnoseInSprite(ctx, sprite, authToken)
 
 	// Re-read the sprite to pick up the URL field populated after
 	// public-mode is set.
@@ -267,7 +253,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 // warming up" and keep polling until the real host responds
 // (200 OK on a configured listener, 401 if auth missing, etc —
 // anything that's clearly the host's mux talking).
-func waitForSpriteReady(ctx context.Context, baseURL string, transport http.RoundTripper, lg *log.Logger) error {
+func waitForSpriteReady(ctx context.Context, baseURL string, transport http.RoundTripper, _ *log.Logger) error {
 	deadline := time.NewTimer(60 * time.Second)
 	defer deadline.Stop()
 	t := time.NewTicker(500 * time.Millisecond)
@@ -275,16 +261,11 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 
 	client := &http.Client{Transport: transport}
 	url := strings.TrimRight(baseURL, "/") + "/status"
-	start := time.Now()
 	var (
-		lastBody    string
-		lastStatus  int
-		lastErr     error
-		probes      int
-		loggedFirst bool
+		lastBody   string
+		lastStatus int
 	)
 	for {
-		probes++
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
 		resp, err := client.Do(req)
@@ -294,165 +275,22 @@ func waitForSpriteReady(ctx context.Context, baseURL string, transport http.Roun
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
 			resp.Body.Close()
 			lastBody = string(body)
-			lastErr = nil
 			// Anything other than the Sprites edge 404 page means
 			// the host's mux is responding. A real clank-host
 			// returns 200 on /status; 401/403 also indicate the mux
 			// is up (auth path firing).
 			if !isSpritesEdge404(resp.StatusCode, body) {
-				if probes > 1 || lg != nil {
-					lg.Printf("flyio provisioner: sprite ready after %d probe(s) in %s (status=%d)", probes, time.Since(start).Truncate(10*time.Millisecond), resp.StatusCode)
-				}
 				return nil
-			}
-			if !loggedFirst {
-				lg.Printf("flyio provisioner: sprite at %s warming up (status=%d, edge 404); polling…", baseURL, resp.StatusCode)
-				loggedFirst = true
-			}
-		} else {
-			lastErr = err
-			if !loggedFirst {
-				lg.Printf("flyio provisioner: sprite at %s probe failed (%v); polling…", baseURL, err)
-				loggedFirst = true
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("ctx done after %d probes (last status=%d, last err=%v, body snippet=%q)", probes, lastStatus, lastErr, snippet(lastBody))
+			return fmt.Errorf("ctx done (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
 		case <-deadline.C:
-			return fmt.Errorf("timed out after %d probes (last status=%d, last err=%v, body snippet=%q)", probes, lastStatus, lastErr, snippet(lastBody))
+			return fmt.Errorf("timed out waiting for sprite (last status=%d, body snippet=%q)", lastStatus, snippet(lastBody))
 		case <-t.C:
 		}
 	}
-}
-
-// logURLSettings prints the sprite's URL configuration so we can
-// distinguish "edge auth strips SSE" from "edge has no entry for
-// this path" from "URL is in private mode". The user's existing
-// sprite may have stale settings that cause /events to 404 even
-// though /status returns 200; a freshly-created sprite has the
-// settings we explicitly write via UpdateURLSettings.
-func (p *Provisioner) logURLSettings(ctx context.Context, sprite *sprites.Sprite) {
-	fresh, err := p.client.GetSprite(ctx, sprite.Name())
-	if err != nil || fresh == nil {
-		p.log.Printf("flyio diagnose: get sprite for url-settings: %v", err)
-		return
-	}
-	if fresh.URLSettings == nil {
-		p.log.Printf("flyio diagnose: sprite %s URL=%q url_settings=<nil>", sprite.Name(), fresh.URL)
-		return
-	}
-	p.log.Printf("flyio diagnose: sprite %s URL=%q url_settings.auth=%q url_settings.private_access=%q",
-		sprite.Name(), fresh.URL, fresh.URLSettings.Auth, fresh.URLSettings.PrivateAccess)
-}
-
-// diagnoseInSprite curl's the running clank-host from inside the
-// sprite AND from outside via the public URL. The two probes side-
-// by-side distinguish three failure modes:
-//
-//	in-sprite OK + public OK  → all good
-//	in-sprite OK + public 404 → Sprites edge is mishandling the path
-//	in-sprite 404 + ...       → running binary doesn't register the route
-//
-// SSE endpoints like /events stream forever; we cap each probe at
-// 2s and treat curl exit-28 (CURLE_OPERATION_TIMEDOUT) as success
-// since hitting the timeout proves the response started flowing.
-//
-// Best-effort — failures are logged, never propagated. Runs once
-// per cold provision; the fast cache-hit path skips it.
-func (p *Provisioner) diagnoseInSprite(ctx context.Context, sprite *sprites.Sprite, authToken string) {
-	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	p.logURLSettings(probeCtx, sprite)
-
-	// Need the public URL for the second leg. Re-read the sprite
-	// here rather than threading it from EnsureHost — diagnose runs
-	// from a code path that already has the sprite reference.
-	fresh, err := p.client.GetSprite(probeCtx, sprite.Name())
-	if err != nil {
-		p.log.Printf("flyio diagnose: get sprite for public URL: %v (skipping public-URL leg)", err)
-	}
-	publicURL := ""
-	if fresh != nil {
-		publicURL = strings.TrimRight(fresh.URL, "/")
-	}
-
-	for _, route := range []string{"/ping", "/status", "/events"} {
-		// In-sprite probe: curl localhost:8080.
-		// -w writes status code; --max-time 2 caps SSE streams.
-		out, err := runInSpriteCmd(probeCtx, sprite,
-			"sh", "-c",
-			fmt.Sprintf(`curl -s -o /dev/null --max-time 2 -w '%%{http_code}' -H 'Authorization: Bearer %s' http://localhost:%d%s`, authToken, HostPort, route))
-		switch interpretCurl(out, err) {
-		case curlOK:
-			p.log.Printf("flyio diagnose: in-sprite  %-7s → HTTP %s", route, strings.TrimSpace(out))
-		case curlSSEOK:
-			p.log.Printf("flyio diagnose: in-sprite  %-7s → streaming (timed out at 2s — SSE alive)", route)
-		case curlFail:
-			p.log.Printf("flyio diagnose: in-sprite  %-7s → curl failed: %v (out=%q)", route, err, strings.TrimSpace(out))
-		}
-
-		// Public-URL probe: same request, but through the edge.
-		if publicURL == "" {
-			continue
-		}
-		out2, err2 := runInSpriteCmd(probeCtx, sprite,
-			"sh", "-c",
-			fmt.Sprintf(`curl -s -o /dev/null --max-time 4 -w '%%{http_code}' -H 'Authorization: Bearer %s' '%s%s'`, authToken, publicURL, route))
-		switch interpretCurl(out2, err2) {
-		case curlOK:
-			p.log.Printf("flyio diagnose: public-url %-7s → HTTP %s", route, strings.TrimSpace(out2))
-		case curlSSEOK:
-			p.log.Printf("flyio diagnose: public-url %-7s → streaming (timed out at 4s — SSE alive)", route)
-		case curlFail:
-			p.log.Printf("flyio diagnose: public-url %-7s → curl failed: %v (out=%q)", route, err2, strings.TrimSpace(out2))
-		}
-	}
-}
-
-type curlResult int
-
-const (
-	curlOK curlResult = iota
-	curlSSEOK            // exit 28 (timeout) — SSE was streaming
-	curlFail
-)
-
-// interpretCurl reads the result of an in-sprite `curl -w '%{http_code}'`
-// invocation. Exit status 28 = CURLE_OPERATION_TIMEDOUT, which on a
-// streaming endpoint means the request succeeded and clank-host is
-// holding the connection open (good). Anything else with a non-zero
-// exit is a real failure.
-func interpretCurl(out string, err error) curlResult {
-	if err == nil {
-		return curlOK
-	}
-	if isExitStatus(err, 28) {
-		return curlSSEOK
-	}
-	return curlFail
-}
-
-// isExitStatus tests whether err is a process exit with the given
-// code. The sprites SDK wraps the error similarly to os/exec: the
-// underlying *exec.ExitError's String() ends with "exit status N".
-func isExitStatus(err error, code int) bool {
-	if err == nil {
-		return false
-	}
-	want := fmt.Sprintf("exit status %d", code)
-	return strings.Contains(err.Error(), want)
-}
-
-// runInSpriteCmd executes a command inside the sprite and returns
-// its captured stdout. Used by diagnoseInSprite — production code
-// uses sprite.CommandContext directly because it doesn't need the
-// captured output.
-func runInSpriteCmd(ctx context.Context, sprite *sprites.Sprite, name string, args ...string) (string, error) {
-	cmd := sprite.CommandContext(ctx, name, args...)
-	out, err := cmd.Output()
-	return string(out), err
 }
 
 // isSpritesEdge404 distinguishes a "no service bound" response from
@@ -631,8 +469,7 @@ func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites
 	if !ok {
 		return fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
 	}
-	rd, _ := fsys.(spriteFSReader)
-	return p.ensureBinaryInstalledOn(ctx, fsys, rd, wf, installPath, clankHostBinary, clankHostBinarySHA())
+	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary)
 }
 
 // spriteFSWriter is the duck-typed subset of the sprites SDK
@@ -643,68 +480,23 @@ type spriteFSWriter interface {
 	RemoveContext(ctx context.Context, name string) error
 }
 
-// spriteFSReader adds ReadFileContext for callers that need to read
-// the sha sidecar to detect binary drift across daemon versions.
-type spriteFSReader interface {
-	ReadFileContext(ctx context.Context, name string) ([]byte, error)
-}
-
-// installPathSHA is where we write the hex sha256 of the binary at
-// installPath. ensureBinaryInstalled compares the embedded binary's
-// sha against this sidecar — far more reliable than size, which can
-// collide across rebuilds and hide a stale binary on the sprite.
-const installPathSHA = installPath + ".sha256"
-
 // ensureBinaryInstalledOn is the testable core of ensureBinaryInstalled.
-// stat is the read-only handle for stat/sha-sidecar reads; rd reads
-// the sha sidecar (may be nil — we fall back to size-only); wf is
-// the write/remove handle for the replacement.
-//
-// The drift check is sha256 over a tiny sidecar file at
-// path + ".sha256" — written alongside the binary on every install.
-// Falls back to size match when the sidecar is missing (first
-// install on a sprite that predates this scheme). Size-collision
-// across rebuilds is the bug class this guards against: production
-// has hit silent stale-binary cases where the file size happened to
-// match across two unrelated builds.
-func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, rd spriteFSReader, wf spriteFSWriter, path string, want []byte, wantSHA string) error {
-	shaPath := path + ".sha256"
-	if rd != nil {
-		var have []byte
-		readErr := retryClosedConn(ctx, p.log, func() error {
-			b, err := rd.ReadFileContext(ctx, shaPath)
-			if err != nil {
-				return err
-			}
-			have = b
-			return nil
-		})
-		if readErr == nil {
-			haveSHA := strings.TrimSpace(string(have))
-			if haveSHA == wantSHA {
-				p.log.Printf("flyio provisioner: clank-host binary sha match (%s); skipping upload", shortSHA(wantSHA))
-				return nil
-			}
-			p.log.Printf("flyio provisioner: clank-host binary sha drift (have %s, want %s); replacing", shortSHA(haveSHA), shortSHA(wantSHA))
-		} else {
-			p.log.Printf("flyio provisioner: clank-host sha sidecar absent (%v); falling back to size check", readErr)
-		}
-	}
-
-	// Sidecar absent or unreadable. On a legacy sprite we'll
-	// reinstall once to drop the sidecar in place; on a cold sprite
-	// this is the first install. Log which case so production
-	// debugging is unambiguous.
+// stat is the read-only handle for the size probe; wf is the
+// write/remove handle for the replacement.
+func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte) error {
 	var info fs.FileInfo
 	statErr := retryClosedConn(ctx, p.log, func() error {
 		var err error
 		info, err = fs.Stat(stat, strings.TrimPrefix(path, "/"))
 		return err
 	})
-	if statErr != nil {
-		p.log.Printf("flyio provisioner: clank-host not present on sprite (%v); installing (%d bytes)", statErr, len(want))
+	if statErr == nil && info.Size() == int64(len(want)) {
+		return nil
+	}
+	if statErr == nil {
+		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
 	} else {
-		p.log.Printf("flyio provisioner: clank-host present (%d bytes) but sidecar missing/unreadable; replacing to plant sha sidecar", info.Size())
+		p.log.Printf("flyio provisioner: clank-host not present on sprite (%v); installing (%d bytes)", statErr, len(want))
 	}
 
 	// Best-effort unlink before write. ENOENT is fine (cold install).
@@ -720,34 +512,12 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, r
 		return nil
 	})
 
-	if err := retryClosedConn(ctx, p.log, func() error {
+	return retryClosedConn(ctx, p.log, func() error {
 		if err := wf.WriteFileContext(ctx, path, want, 0o755); err != nil {
 			return fmt.Errorf("install clank-host binary: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-
-	// Plant the sha sidecar so the next EnsureHost can short-circuit
-	// reliably. Best-effort: a failure here just means next call
-	// re-uploads, no correctness loss.
-	_ = retryClosedConn(ctx, p.log, func() error {
-		if err := wf.WriteFileContext(ctx, shaPath, []byte(wantSHA+"\n"), 0o644); err != nil {
-			p.log.Printf("flyio provisioner: write sha sidecar at %s: %v (next install will re-upload)", shaPath, err)
-		}
-		return nil
 	})
-	return nil
-}
-
-// shortSHA returns the first 12 hex chars of a sha256 for log
-// readability. The full 64-char hash is impractical inline.
-func shortSHA(s string) string {
-	if len(s) > 12 {
-		return s[:12]
-	}
-	return s
 }
 
 // ensureOpenCodeInstalled probes for opencode at the canonical
@@ -934,7 +704,6 @@ func (p *Provisioner) ensureServiceRunning(ctx context.Context, sprite *sprites.
 		return err
 	})
 	if getErr == nil && existing != nil {
-		p.log.Printf("flyio provisioner: existing service %s cmd=%q args=%v port=%v", serviceName, existing.Cmd, existing.Args, existing.HTTPPort)
 		if serviceMatches(&existing.Service, wantReq) {
 			// Already registered with the right shape — auto-resumes
 			// from sprite hibernation on incoming traffic.
