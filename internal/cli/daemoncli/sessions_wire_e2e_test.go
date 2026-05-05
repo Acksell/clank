@@ -45,6 +45,7 @@ func TestWire_SendMessageToNonexistentSessionIs404(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error sending to nonexistent session, got nil")
 	}
+	assertNotFound(t, err)
 }
 
 func TestWire_AbortSession(t *testing.T) {
@@ -116,9 +117,24 @@ func TestWire_DeleteSession(t *testing.T) {
 	if err := td.Client.Session(info.ID).Delete(ctx); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// GET should now fail with not-found.
-	if _, err := td.Client.Session(info.ID).Get(ctx); err == nil {
-		t.Errorf("expected error fetching deleted session, got nil")
+	// GET should now fail with not-found specifically — accepting any
+	// error would let a 5xx regression sneak through.
+	_, err := td.Client.Session(info.ID).Get(ctx)
+	if err == nil {
+		t.Fatal("expected error fetching deleted session, got nil")
+	}
+	assertNotFound(t, err)
+}
+
+// assertNotFound fails the test if err's message doesn't look like a
+// 404 / not-found response. The wire format puts the HTTP status into
+// the message, so a substring match is enough — a 502/timeout/etc
+// would not contain either token.
+func assertNotFound(t *testing.T, err error) {
+	t.Helper()
+	low := strings.ToLower(err.Error())
+	if !strings.Contains(low, "404") && !strings.Contains(low, "not found") {
+		t.Fatalf("expected 404/not-found error, got: %v", err)
 	}
 }
 

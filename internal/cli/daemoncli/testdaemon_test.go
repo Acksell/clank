@@ -39,10 +39,17 @@ type testDaemon struct {
 // t.Cleanup so callers don't have to defer.
 func newTestDaemon(t *testing.T) *testDaemon {
 	t.Helper()
+	return newTestDaemonAt(t, filepath.Join(t.TempDir(), "host.db"))
+}
+
+// newTestDaemonAt is newTestDaemon but at a caller-provided dbPath.
+// Used by restart-simulation tests that build a second daemon pointing
+// at the same SQLite file as a torn-down first one.
+func newTestDaemonAt(t *testing.T, dbPath string) *testDaemon {
+	t.Helper()
 
 	stub := &stubBackendManager{}
 
-	dbPath := filepath.Join(t.TempDir(), "host.db")
 	hs, err := hoststore.Open(dbPath)
 	if err != nil {
 		t.Fatalf("hoststore.Open: %v", err)

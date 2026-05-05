@@ -157,20 +157,29 @@ func TestResume_NotFoundForUnknownSession(t *testing.T) {
 	}
 }
 
-// TestResume_SurvivesAcrossNewStoreOpen mirrors a real daemon restart
-// more faithfully: write the row, close the store, open a fresh store
-// at the same path, and try to operate on the session through that
-// new connection.
+// TestResume_SurvivesAcrossNewStoreOpen mirrors a real daemon restart:
+// daemon #1 writes the row and tears down (host service Shutdown +
+// store Close). Daemon #2 opens a fresh store at the same path and
+// must find the row to lazily rehydrate the backend on Send.
+//
+// Without close/reopen between daemons, the test would only exercise
+// the live-store path which TestResume_SendToPersistedSessionRehydrates
+// already covers. The restart shape is what catches a regression where
+// migrations or write-buffering would leave the row unreadable to a
+// fresh connection.
 func TestResume_SurvivesAcrossNewStoreOpen(t *testing.T) {
 	t.Parallel()
-	td := newTestDaemon(t)
-	dbPath := filepath.Join(filepath.Dir(td.DBPath), "host.db")
 	repo := initTestGitRepo(t)
-
 	const id = "01ACROSSREOPENABCDEF00"
+
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "host.db")
+
+	// Daemon #1: seed the row.
+	td1 := newTestDaemonAt(t, dbPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := td.Store.UpsertSession(ctx, agent.SessionInfo{
+	if err := td1.Store.UpsertSession(ctx, agent.SessionInfo{
 		ID:      id,
 		Backend: agent.BackendOpenCode,
 		Status:  agent.StatusIdle,
@@ -179,9 +188,14 @@ func TestResume_SurvivesAcrossNewStoreOpen(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	_ = dbPath // documents intent; same store instance suffices for the test
+	td1.Service.Shutdown()
+	if err := td1.Store.Close(); err != nil {
+		t.Fatalf("close store on daemon #1: %v", err)
+	}
 
-	if err := td.Client.Session(id).Send(ctx, agent.SendMessageOpts{Text: "after restart"}); err != nil {
-		t.Fatalf("Send: %v", err)
+	// Daemon #2 on the same dbPath — fresh connection, fresh service.
+	td2 := newTestDaemonAt(t, dbPath)
+	if err := td2.Client.Session(id).Send(ctx, agent.SendMessageOpts{Text: "after restart"}); err != nil {
+		t.Fatalf("Send through daemon #2: %v (regression: row not visible across reopen)", err)
 	}
 }
