@@ -56,6 +56,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Refuse to start with a non-loopback TCP listener and no auth
+	// token — that combo would expose every clank-host endpoint to
+	// the network. LocalLauncher uses 127.0.0.1; in-sprite uses an
+	// explicit token, so production paths are unaffected.
+	if *listen != "" && *listenAuthToken == "" {
+		if err := requireLoopbackTCP(*listen); err != nil {
+			fmt.Fprintln(os.Stderr, "clank-host:", err)
+			os.Exit(2)
+		}
+	}
+
 	addr := *listen
 	if addr == "" {
 		addr = "unix://" + *socket
@@ -63,6 +74,54 @@ func main() {
 	if err := run(addr, *listenAuthToken, *dataDir); err != nil {
 		log.Fatalf("clank-host: %v", err)
 	}
+}
+
+// requireLoopbackTCP returns an error when the parsed --listen address
+// is a non-loopback TCP bind. unix://, host==loopback, and host==""
+// (which net.Listen treats as 0.0.0.0 — disallowed here without a
+// token) are the cases callers care about.
+func requireLoopbackTCP(listen string) error {
+	if !strings.HasPrefix(listen, "tcp://") {
+		// Non-tcp schemes (unix://) are gated by file mode, not auth.
+		return nil
+	}
+	hostPort := strings.TrimPrefix(listen, "tcp://")
+	host, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return fmt.Errorf("invalid --listen %q: %w", listen, err)
+	}
+	if isLoopbackHost(host) {
+		return nil
+	}
+	return fmt.Errorf("--listen tcp://%s requires --listen-auth-token (or $CLANK_HOST_AUTH_TOKEN); refusing to expose unauthenticated host on a non-loopback bind", hostPort)
+}
+
+// isLoopbackHost reports whether host resolves to a loopback address.
+// Empty host means "all interfaces" (0.0.0.0/::), which we treat as
+// non-loopback to refuse anonymous wide-open binds.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	// Hostname that isn't "localhost" — resolve to play it safe. Skip
+	// the resolution if it would block startup on a flaky DNS; reject
+	// instead.
+	addrs, err := net.LookupIP(host)
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		if !a.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveDataDir returns the host's persistent data directory.
