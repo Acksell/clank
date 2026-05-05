@@ -76,15 +76,10 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 	return nil
 }
 
-// summarizeBody returns a short, single-line error summary suitable
-// for surfacing in TUI error banners. Without it a sprites/cloudflare
-// 404 page (~6KB of HTML) gets dumped verbatim into the inbox's
-// error banner — the entire stylesheet and SVG show up as render
-// noise in the user's terminal.
-//
-// We extract just the <title> for HTML responses, snip oversized
-// bodies to 240 chars, and collapse runs of whitespace to single
-// spaces so the message fits on one line.
+// summarizeBody returns a single-line error summary fit for a TUI
+// banner: <title> for HTML, otherwise the body collapsed to one line
+// and capped at 240 chars. Prevents dumping a 6KB 404 page into the
+// inbox's error banner.
 func summarizeBody(contentType string, body []byte) string {
 	const maxLen = 240
 	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
@@ -101,9 +96,8 @@ func summarizeBody(contentType string, body []byte) string {
 	return s
 }
 
-// htmlTitle is a deliberately tiny <title>X</title> extractor — good
-// enough for "404 | Sprites" or "Bad Gateway" pages without dragging
-// in an HTML parser.
+// htmlTitle is a tiny <title>X</title> extractor — enough for
+// "404 | Sprites" / "Bad Gateway" without an HTML parser.
 func htmlTitle(body []byte) string {
 	s := string(body)
 	lo := strings.Index(strings.ToLower(s), "<title")
@@ -122,9 +116,9 @@ func htmlTitle(body []byte) string {
 	return strings.TrimSpace(s[start : start+end])
 }
 
-// openSSE opens an SSE GET on a no-timeout client. Caller closes resp.Body.
-// Fresh transport per call so c.httpClient's request timeouts can't kill
-// long-lived event streams. Cloning DefaultTransport keeps Proxy/Idle/TLS defaults.
+// openSSE GETs path on a no-timeout client so request timeouts can't
+// kill long-lived streams. Cloning DefaultTransport keeps Proxy/Idle/
+// TLS defaults. Caller closes resp.Body.
 func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if c.sockPath != "" {
@@ -158,9 +152,8 @@ func (c *Client) openSSE(ctx context.Context, path string) (*http.Response, erro
 	return resp, nil
 }
 
-// parseSSEStream reads SSE events from r and sends them to ch. Uses
-// bufio.Reader instead of bufio.Scanner to avoid the hard line-length cap
-// (Scanner permanently fails on session snapshots for long conversations).
+// parseSSEStream reads SSE events from r into ch. Uses bufio.Reader
+// (not Scanner) to avoid the line-length cap that bites long sessions.
 func parseSSEStream(r io.Reader, ch chan<- agent.Event) {
 	reader := bufio.NewReader(r)
 	var eventType string

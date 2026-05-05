@@ -1,20 +1,9 @@
 package flyio_test
 
 // Real-sprite integration tests. Skipped unless SPRITES_TOKEN is in
-// the env so CI / local `go test ./...` stays fast and sandbox-free.
-// Run explicitly with:
+// the env so default `go test ./...` stays fast and sandbox-free.
 //
 //   SPRITES_TOKEN=$YOUR_TOKEN go test -count=1 -run TestIntegration_FlyIO ./internal/provisioner/flyio/...
-//
-// These were added to iterate on a production bug where the gateway
-// proxied /events to a sprite and the sprite returned
-// "404 | Sprites" (the Sprites edge "no service bound" page) — even
-// though /status on the same sprite returned 200. The unit tests in
-// install_test.go and ready_test.go pass, but the bug only reproduces
-// against a real sprite; the in-sprite probe added in
-// diagnoseInSprite logs each route's status when running, so we can
-// tell whether the running clank-host actually registers /events or
-// the Sprites edge is intercepting it.
 
 import (
 	"context"
@@ -37,11 +26,8 @@ import (
 	"github.com/acksell/clank/internal/store"
 )
 
-// newGatewayHandler builds a real gateway.Gateway in front of prov
-// so the test can exercise the same proxy path the cloud-hub
-// daemoncli mounts. PermissiveAuth lets every request through;
-// ResolveUserID hardcodes "local" because that's the user the cloud-
-// hub flow uses (see internal/cli/daemoncli/server.go).
+// newGatewayHandler builds a real gateway.Gateway in front of prov so
+// the test exercises the same proxy path daemoncli mounts.
 func newGatewayHandler(prov provisioner.Provisioner) (http.Handler, error) {
 	gw, err := gateway.NewGateway(gateway.Config{
 		Provisioner:   prov,
@@ -54,26 +40,16 @@ func newGatewayHandler(prov provisioner.Provisioner) (http.Handler, error) {
 	return gw.Handler(), nil
 }
 
-// loadFlyIOCreds resolves Sprites credentials from one of:
-//
-//  1. SPRITES_TOKEN env (canonical CI/dev override)
-//  2. CLANK_DIR/preferences.json — but ONLY when the test was
-//     explicitly requested via -run, never on a default `go test`
-//     run (which would otherwise burn minutes provisioning a real
-//     sprite for any dev who has `make cloud-hub` set up locally).
-//
-// Skips the test when neither yields a token.
+// loadFlyIOCreds returns Sprites creds from SPRITES_TOKEN, falling
+// back to CLANK_DIR/preferences.json on non-short runs. Skips when
+// neither yields a token.
 func loadFlyIOCreds(t *testing.T) (token, org string) {
 	t.Helper()
 	if v := os.Getenv("SPRITES_TOKEN"); v != "" {
 		return v, os.Getenv("SPRITES_ORG")
 	}
-	// The preferences.json fallback is convenient for explicit runs
-	// (`go test -run TestIntegration_FlyIO_…`) but would derail
-	// `go test ./...` for any dev with cloud-hub set up. -run with
-	// a specific name sets *runRegexp non-empty in testing.matcher,
-	// but there's no public hook to read that. The blunt
-	// alternative: require -count or honor short mode.
+	// Skip the preferences.json fallback in short mode so default
+	// `go test ./...` stays fast for devs with cloud-hub set up.
 	if testing.Short() {
 		t.Skip("integration test: -short specified; set SPRITES_TOKEN to run")
 	}
@@ -98,17 +74,13 @@ func loadFlyIOCreds(t *testing.T) (token, org string) {
 	return prefs.FlyIO.APIToken, prefs.FlyIO.OrganizationSlug
 }
 
-// integrationSpriteName names the sprite all integration tests
-// share. We adopt-or-recreate it per test run rather than minting a
-// new one each time — leaks would pile up on the user's account.
+// Shared sprite name across integration tests — adopt-or-recreate
+// rather than minting fresh ones that would leak on the account.
 const integrationUserID = "test"
 const integrationSpriteName = "clank-host-test"
 
-// newIntegrationProvisioner constructs a flyio.Provisioner against a
-// real Sprites account using credentials from env or
-// preferences.json. Cleans up any orphan sprite from a previous run
-// (the test DB is fresh each time, so resolveOrCreate would
-// otherwise fail with "name already exists").
+// newIntegrationProvisioner builds a flyio.Provisioner against a real
+// Sprites account, deleting any orphan sprite from a previous run.
 func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 	t.Helper()
 	token, org := loadFlyIOCreds(t)
@@ -119,8 +91,7 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	// Best-effort upfront cleanup. A leftover sprite from a previous
-	// test run would block resolveOrCreate.
+	// Best-effort cleanup; a leftover sprite would block resolveOrCreate.
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	rawClient := sprites.New(token)
@@ -140,17 +111,10 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 	return prov
 }
 
-// TestIntegration_FlyIO_EventsRouteIsReachable is the headline
-// regression: provisions (or reuses) a sprite, then GETs /events on
-// the public URL with the auth token. The expected response is HTTP
-// 200 with a `Content-Type: text/event-stream` header — clank-host
-// always emits an `event: connected` frame as the first thing on
-// /events, so a quick read confirms the route is alive.
-//
-// If the public URL returns "404 | Sprites" but /status returns 200
-// (the production symptom), this test FAILS. We then look at the
-// daemon logs (diagnoseInSprite output) to learn whether the running
-// binary is missing the route or the edge is intercepting it.
+// TestIntegration_FlyIO_EventsRouteIsReachable provisions a sprite
+// and verifies GET /events returns 200 + text/event-stream + a
+// `event: connected` frame. Fails when the Sprites edge intercepts
+// /events with its own 404 page (the production regression).
 func TestIntegration_FlyIO_EventsRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
@@ -166,14 +130,12 @@ func TestIntegration_FlyIO_EventsRouteIsReachable(t *testing.T) {
 		t.Fatal("EnsureHost returned empty URL")
 	}
 
-	// Probe /status first to confirm we're hitting the host's mux.
+	// /status first — isolates "host mux up" from "/events working".
 	statusOK, statusBody := getRoute(t, ref, "/status")
 	if statusOK != http.StatusOK {
 		t.Fatalf("/status: HTTP %d, body=%q (host mux not responding)", statusOK, statusBody)
 	}
 
-	// Now probe /events. Read the first chunk to verify it's a real
-	// SSE stream, not an HTML 404 page from the Sprites edge.
 	body, status, ct := getRouteStream(t, ref, "/events", 3*time.Second)
 	if status != http.StatusOK {
 		t.Errorf("/events: HTTP %d (expected 200), Content-Type=%q, body=%q", status, ct, snippet(string(body), 240))
@@ -186,10 +148,9 @@ func TestIntegration_FlyIO_EventsRouteIsReachable(t *testing.T) {
 	}
 }
 
-// TestIntegration_FlyIO_StatusRouteIsReachable is a sanity check for
-// the integration setup itself: if even /status fails, every other
-// test will fail and the failure mode is uninformative. This isolates
-// "can the test reach the sprite at all" from "does /events work".
+// TestIntegration_FlyIO_StatusRouteIsReachable sanity-checks the
+// integration setup itself; isolates "test can reach sprite" from
+// route-specific failures.
 func TestIntegration_FlyIO_StatusRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
@@ -207,10 +168,9 @@ func TestIntegration_FlyIO_StatusRouteIsReachable(t *testing.T) {
 	}
 }
 
-// TestIntegration_FlyIO_PingRouteIsReachable confirms /ping works
-// too. /ping returns the running clank-host's version + PID so the
-// test output identifies which version is responding (helpful when
-// chasing stale-binary bugs).
+// TestIntegration_FlyIO_PingRouteIsReachable: /ping returns the
+// running clank-host's version+PID — helpful when chasing stale-
+// binary bugs.
 func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 	prov := newIntegrationProvisioner(t)
 	t.Cleanup(prov.Stop)
@@ -229,17 +189,9 @@ func TestIntegration_FlyIO_PingRouteIsReachable(t *testing.T) {
 	t.Logf("/ping body: %s", body)
 }
 
-// TestIntegration_FlyIO_RealSpriteEventsRoute exercises the user's
-// actual cloud-hub sprite (clank-host-local) without recreating it.
-// This is the exact thing the TUI hits — including any stale URL
-// settings or routing rules that may have accumulated on it across
-// previous daemon versions.
-//
-// Skipped automatically when the sprite doesn't exist or when there's
-// no host row for "local" in the user's clank.db. Run with the same
-// SPRITES_TOKEN credential the other integration tests use.
-//
-// Useful runs:
+// TestIntegration_FlyIO_RealSpriteEventsRoute hits the user's actual
+// cloud-hub sprite (clank-host-local) without recreating it — picks
+// up whatever URL settings have accumulated across daemon versions.
 //
 //	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_RealSpriteEventsRoute -v ./internal/provisioner/flyio/...
 func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
@@ -286,8 +238,7 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 	}
 }
 
-// getRoute does a short-timeout GET against ref.URL+path using the
-// HostRef's transport (so auth is applied). Returns status and body.
+// getRoute issues a short-timeout authenticated GET via ref.Transport.
 func getRoute(t *testing.T, ref provisioner.HostRef, path string) (int, string) {
 	t.Helper()
 	cli := &http.Client{Transport: ref.Transport, Timeout: 10 * time.Second}
@@ -301,9 +252,8 @@ func getRoute(t *testing.T, ref provisioner.HostRef, path string) (int, string) 
 	return resp.StatusCode, string(body)
 }
 
-// getRouteStream is like getRoute but caps the body read at a short
-// duration — for SSE endpoints that hold the connection open
-// indefinitely, we just want enough to verify the first frame.
+// getRouteStream is getRoute for SSE: caps body reads at dur so we
+// don't block on connections held open for streaming.
 func getRouteStream(t *testing.T, ref provisioner.HostRef, path string, dur time.Duration) (body []byte, status int, contentType string) {
 	t.Helper()
 	cli := &http.Client{Transport: ref.Transport}
@@ -314,7 +264,7 @@ func getRouteStream(t *testing.T, ref provisioner.HostRef, path string, dur time
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := cli.Do(req)
 	if err != nil {
-		// Timeout reading the body is OK — we got the response start.
+		// Body-read timeout is OK; we already have the response start.
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, 0, ""
 		}
@@ -327,7 +277,7 @@ func getRouteStream(t *testing.T, ref provisioner.HostRef, path string, dur time
 	return body, status, contentType
 }
 
-// snippet trims body strings for log readability.
+// snippet shortens body strings for log readability.
 func snippet(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > max {
@@ -337,19 +287,10 @@ func snippet(s string, max int) string {
 }
 
 // TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents reproduces the
-// TUI bug as faithfully as possible without standing up cloudflared:
-// it mounts our actual gateway in front of the user's real flyio
-// provisioner, then SSE-subscribes through the gateway and reads
-// the first frame.
-//
-// Failure modes the gateway path could introduce that the direct
-// sprite test wouldn't see:
-//   - httputil.ReverseProxy buffering the SSE response
-//   - The gateway's stripHostsPrefix mangling /events
-//   - The bearerInjector chain breaking when called via Rewrite
-//   - WithoutCancel context not propagating something needed
-//
-// Run with:
+// TUI bug without cloudflared: mounts the real gateway in front of
+// the real flyio provisioner and SSE-subscribes through it. Catches
+// gateway-only failure modes (Host header, prefix stripping, transport
+// chain, etc.) that the direct-sprite test doesn't.
 //
 //	CLANK_DIR=$HOME/.clank-cloud go test -count=1 -run TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents -v ./internal/provisioner/flyio/...
 func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
@@ -405,6 +346,5 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 	}
 }
 
-// _ guards against the linter complaining about unused sprites
-// import — kept for future tests that need direct SDK access.
+// Keep the SDK import live for future tests that need direct access.
 var _ = sprites.Sprite{}

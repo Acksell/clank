@@ -21,8 +21,8 @@ import (
 	"github.com/acksell/clank/internal/socketutil"
 )
 
-// openHubListener creates the appropriate listener for the configured
-// mode and returns a cleanup func that removes any on-disk artifacts.
+// openHubListener creates the listener for the configured mode and a
+// cleanup func that removes on-disk artifacts.
 func openHubListener(opts ServerOptions) (net.Listener, func(), error) {
 	if opts.Listen == "" {
 		return openUnixListener()
@@ -39,9 +39,7 @@ func openUnixListener() (net.Listener, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("socket path: %w", err)
 	}
-	// Refuse to start if a live daemon is answering on the socket.
-	// RemoveStale is safe (it refuses non-sockets) but probing first
-	// avoids unlinking an active peer's listener.
+	// Probe before unlink so we don't yank an active peer's listener.
 	if conn, dialErr := net.DialTimeout("unix", sockPath, 200*time.Millisecond); dialErr == nil {
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("clankd already running on %s", sockPath)
@@ -90,9 +88,9 @@ func parseTCPListen(s string) (string, error) {
 	return s, nil
 }
 
-// tcpAuthToken loads the bearer token from preferences. TCP mode without
-// a configured token is refused — a TCP listener with no auth would be a
-// trivial way to expose every Clank session to anyone on the network.
+// tcpAuthToken returns the configured bearer or refuses startup —
+// an unauthenticated TCP listener would expose every session to the
+// network.
 func tcpAuthToken() (string, error) {
 	prefs, err := config.LoadPreferences()
 	if err != nil {
@@ -104,21 +102,14 @@ func tcpAuthToken() (string, error) {
 	return prefs.RemoteHub.AuthToken, nil
 }
 
-// runGatewayServer mounts the gateway on opts.Listen. PR 3 replaces
-// runHubServer for the public listener; the gateway is a thin reverse
-// proxy that authenticates requests, resolves the user to a host
-// (single-user laptop hardcodes userID="local"), and forwards
-// HTTP/WebSocket traffic via the provisioner-supplied transport.
+// runGatewayServer mounts the gateway on opts.Listen.
 //
-// Listening modes match runHubServer for parity:
-//   - Unix socket (default): no in-app auth; file mode is the gate.
-//   - TCP (opts.Listen non-empty): wraps the gateway with the same
-//     bearer-token middleware the hub used. The bearer is checked
-//     before the request reaches the gateway's own PermissiveAuth
-//     (no-op until PR 4 lands real JWT).
+// Modes:
+//   - Unix socket (default): file mode is the gate.
+//   - TCP (opts.Listen non-empty): wraps with bearer-token middleware,
+//     enforced before reaching the gateway's own auth.
 //
-// Both modes write the PID file at daemonclient.PIDPath() so existing
-// `clankd stop` keeps working.
+// Both modes write the PID file at daemonclient.PIDPath().
 func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	pidPath, err := daemonclient.PIDPath()
 	if err != nil {
@@ -129,7 +120,7 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		Provisioner: prov,
 		Auth:        gateway.PermissiveAuth{},
 		ResolveUserID: func(*http.Request) string {
-			return "local" // multi-tenant lands in PR 4
+			return "local" // single-user laptop today
 		},
 	}, log.Default())
 	if err != nil {
@@ -189,9 +180,8 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	return nil
 }
 
-// bearerAuthMiddleware enforces a static bearer token on all requests.
-// Constant-time comparison so the token isn't trivially leaked through
-// timing. A mismatch returns 401 without further detail.
+// bearerAuthMiddleware enforces a static bearer with constant-time
+// comparison. A mismatch returns 401 without further detail.
 func bearerAuthMiddleware(next http.Handler, token string) http.Handler {
 	expected := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

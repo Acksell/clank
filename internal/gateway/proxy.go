@@ -7,25 +7,10 @@ import (
 	"strings"
 )
 
-// proxyToHost is the catch-all handler: every route not served by
-// the gateway itself proxies to the user's persistent host.
-//
-// For each request we:
-//  1. Run the Authenticator. A non-nil error returns 401.
-//  2. Resolve the userID via the configured callback.
-//  3. Call Provisioner.EnsureHost(userID). The provisioner caches
-//     the HostRef in-process so repeat calls are cheap; the first
-//     call after a daemon start may incur a ~100ms-2s wake or
-//     create-fresh latency.
-//  4. Construct an httputil.ReverseProxy targeting the host's URL
-//     and using the HostRef.Transport so per-request auth headers
-//     (Daytona's x-daytona-preview-token, Sprites' Authorization
-//     bearer, etc.) are injected by the same RoundTripper that
-//     PR 1+2 already wired up.
-//
-// httputil.ReverseProxy supports HTTP/1.1 protocol upgrades since
-// Go 1.20, including WebSocket — /events flows through this same
-// path with no separate code.
+// proxyToHost authenticates, resolves the userID, asks the provisioner
+// for the user's HostRef, and reverse-proxies through. HostRef.Transport
+// injects per-request upstream auth. ReverseProxy upgrades HTTP/1.1
+// natively, so WebSocket (/events) flows through this same path.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	if _, err := g.cfg.Auth.Verify(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
@@ -56,23 +41,12 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			// Use the upstream's Host (from target). Some upstream
-			// edges — Sprites in particular — route requests by
-			// Host header, and forwarding the client's Host (a
-			// cloudflare quick-tunnel hostname or a localhost
-			// listener) made them serve their own 404 page instead
-			// of routing to the sprite's service. The host plane
-			// itself doesn't care about Host; only the edge does.
-			// pr.SetURL already sets pr.Out.URL.Host to target.Host;
-			// pr.Out.Host gets cleared by the rewrite to match.
+			// Forward the upstream Host: Sprites' edge routes by Host
+			// header, and the client's Host (a tunnel hostname or
+			// localhost) makes the edge serve its own 404 page.
 			pr.Out.Host = target.Host
-			// Strip the /hosts/{hostname} prefix the TUI's
-			// HostClient prepends — the host plane is single-user
-			// and serves bare paths (/auth/..., /worktrees/...).
-			// The hostname segment was a routing hint for the old
-			// hub; the gateway already resolved (userID → host) by
-			// the time we get here, so the segment is informational
-			// only.
+			// Strip the /hosts/{hostname} prefix the HostClient
+			// prepends — single-user host plane serves bare paths.
 			pr.Out.URL.Path = stripHostsPrefix(pr.Out.URL.Path)
 			pr.Out.URL.RawPath = stripHostsPrefix(pr.Out.URL.RawPath)
 		},
@@ -85,19 +59,16 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// stripHostsPrefix turns "/hosts/{name}/foo/bar" into "/foo/bar". A path
-// not under /hosts/ is returned unchanged. The empty input is preserved
-// so we don't have to special-case RawPath (which is "" when the URL
-// has no encoded segments).
+// stripHostsPrefix turns "/hosts/{name}/foo/bar" into "/foo/bar". A
+// path not under /hosts/ (or an empty input) is returned unchanged so
+// the RawPath case ("" when no encoded segments) needs no special-case.
 func stripHostsPrefix(p string) string {
 	if p == "" || !strings.HasPrefix(p, "/hosts/") {
 		return p
 	}
 	rest := p[len("/hosts/"):]
-	// rest is "{name}/..." — drop the first segment.
 	if i := strings.IndexByte(rest, '/'); i >= 0 {
 		return rest[i:]
 	}
-	// "/hosts/{name}" with no trailing path → "/".
 	return "/"
 }

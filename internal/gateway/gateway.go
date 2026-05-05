@@ -1,19 +1,10 @@
-// Package gateway is the daemon's single ingress: a reverse proxy
-// that authenticates incoming requests, resolves the calling user to
-// a persistent host (via the provisioner), and forwards HTTP/WebSocket
-// traffic to that host. After PR 3 it replaces clank-hub as the
-// public listener; cmd/clankd mounts gateway.Handler() on the
-// configured port.
+// Package gateway is the daemon's single ingress: it authenticates,
+// resolves the user to a persistent host via the provisioner, and
+// reverse-proxies everything else through.
 //
-// PR 3 ships with PermissiveAuth (any bearer accepted, "local" user
-// id assumed). PR 4 swaps in real JWT verification + per-device
-// auth without changing the gateway's shape.
-//
-// Routing is intentionally minimal: a tiny set of self-served
-// endpoints (/ping, /gateway/health) and a catch-all that proxies
-// everything else to the user's host. The previous hub-vs-host
-// distinction is gone — with one host per user, every non-gateway
-// route lives on the host.
+// Routing: /ping and /gateway/health are served locally; every other
+// path proxies to the user's host with the provisioner-supplied
+// transport injecting per-request auth.
 package gateway
 
 import (
@@ -27,19 +18,16 @@ import (
 // Config wires the gateway's dependencies. All fields except
 // Provisioner have sensible defaults.
 type Config struct {
-	// Provisioner resolves a userID into the user's HostRef
-	// (URL + auth-wired Transport). EnsureHost is called per-
-	// request; the provisioner's in-process cache makes repeated
-	// calls cheap.
+	// Provisioner resolves a userID into the user's HostRef. EnsureHost
+	// is called per-request; the provisioner caches in-process.
 	Provisioner provisioner.Provisioner
 
-	// Auth verifies the bearer on incoming requests. PR 3 ships
-	// PermissiveAuth which accepts everything; PR 4 swaps in JWT.
+	// Auth verifies the bearer on incoming requests. Defaults to
+	// PermissiveAuth (any bearer accepted).
 	Auth Authenticator
 
-	// ResolveUserID maps the verified request to a userID for the
-	// provisioner lookup. PR 3 hardcodes "local"; PR 4 reads
-	// claims from the verified JWT.
+	// ResolveUserID maps a verified request to a userID. Defaults to
+	// returning "local".
 	ResolveUserID func(*http.Request) string
 }
 
@@ -49,8 +37,7 @@ type Gateway struct {
 	log *log.Logger
 }
 
-// NewGateway constructs a Gateway. Returns an error if Provisioner
-// is missing.
+// NewGateway constructs a Gateway.
 func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if cfg.Provisioner == nil {
 		return nil, fmt.Errorf("gateway: Provisioner is required")
@@ -67,19 +54,10 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	return &Gateway{cfg: cfg, log: lg}, nil
 }
 
-// Handler returns the http.Handler that the daemon mounts on its
-// public listener. Routes:
+// Handler returns the public-listener http.Handler.
 //
-//	GET /ping              → gateway responds immediately (heartbeat)
-//	GET /gateway/health    → gateway responds (separate from /status
-//	                         because /status proxies to the host —
-//	                         /gateway/health answers "is the gateway
-//	                         itself alive" without waking a sleeping
-//	                         host)
-//	*                      → proxied to the user's host with the
-//	                         provisioner-supplied Transport injecting
-//	                         per-request auth (Daytona preview-token,
-//	                         Sprites bearer, etc.)
+// /ping and /gateway/health answer locally without waking a host;
+// every other path proxies to the user's host.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)

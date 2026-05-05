@@ -13,14 +13,13 @@ import (
 	"time"
 )
 
-// stubFS records the order of fs ops so tests can pin
-// "remove-before-write" for atomic binary replacement.
+// stubFS records fs op order so tests can pin remove-before-write.
 type stubFS struct {
 	mu    sync.Mutex
 	files map[string][]byte
 	calls []string // "Remove:/p", "Write:/p", in order
-	// onWrite (when set) overrides the default "succeed and store"
-	// behavior — used to simulate write failures.
+	// onWrite replaces the default succeed-and-store path to simulate
+	// write failures.
 	onWrite func(name string, data []byte) error
 }
 
@@ -133,10 +132,8 @@ func (tw testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestEnsureBinaryInstalled_SkipsOnSizeMatch is the fast path: when
-// the sprite already has a binary of the right size we don't touch
-// it — the upload is ~17MB, doing it on every daemon start would
-// dominate provisioning time.
+// TestEnsureBinaryInstalled_SkipsOnSizeMatch pins the fast path: an
+// existing same-size binary skips the ~17MB upload.
 func TestEnsureBinaryInstalled_SkipsOnSizeMatch(t *testing.T) {
 	t.Parallel()
 	want := []byte("hello world binary contents")
@@ -152,9 +149,8 @@ func TestEnsureBinaryInstalled_SkipsOnSizeMatch(t *testing.T) {
 	}
 }
 
-// TestEnsureBinaryInstalled_ColdInstallWritesOnly verifies that on a
-// fresh sprite (no prior file), we proceed straight to write. Remove
-// runs first as a no-op safety net (returns ENOENT and we move on).
+// TestEnsureBinaryInstalled_ColdInstallWritesOnly: cold install runs
+// Remove (ENOENT no-op) then Write.
 func TestEnsureBinaryInstalled_ColdInstallWritesOnly(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -171,10 +167,8 @@ func TestEnsureBinaryInstalled_ColdInstallWritesOnly(t *testing.T) {
 }
 
 // TestEnsureBinaryInstalled_RemoveBeforeWrite is the ETXTBSY
-// regression: when a stale binary needs replacement, the Remove
-// must precede the Write. Without that, Linux returns ETXTBSY
-// because the sprite's clank-host service is currently exec'd from
-// /usr/local/bin/clank-host.
+// regression: stale-binary replacement must Remove before Write or
+// Linux rejects the write to a running executable.
 func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -197,10 +191,9 @@ func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 	}
 }
 
-// TestEnsureBinaryInstalled_RemoveErrorIsBestEffort confirms a
-// non-ENOENT failure on the unlink path is logged and tolerated —
-// the Write still runs because in practice WriteFile may still
-// succeed (e.g. if the underlying syscall changed since stat).
+// TestEnsureBinaryInstalled_RemoveErrorIsBestEffort: a non-ENOENT
+// Remove failure is tolerated and Write proceeds — WriteFile may
+// still succeed despite the unlink failure.
 func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -236,8 +229,8 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	}
 }
 
-// TestEnsureBinaryInstalled_WriteErrorPropagates pins that an actual
-// write failure is surfaced — not silently swallowed.
+// TestEnsureBinaryInstalled_WriteErrorPropagates: a write failure is
+// surfaced, not swallowed.
 func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -254,7 +247,7 @@ func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	}
 }
 
-// stubWF lets a test override remove independently of the read path.
+// stubWF lets tests override Remove independently of the read path.
 type stubWF struct {
 	write  func(ctx context.Context, name string, data []byte, perm fs.FileMode) error
 	remove func(ctx context.Context, name string) error
@@ -265,8 +258,7 @@ func (s stubWF) WriteFileContext(ctx context.Context, name string, data []byte, 
 }
 func (s stubWF) RemoveContext(ctx context.Context, name string) error { return s.remove(ctx, name) }
 
-// contains is a tiny strings.Contains wrapper to keep the test file
-// import list short.
+// contains keeps "strings" out of this test file's import list.
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

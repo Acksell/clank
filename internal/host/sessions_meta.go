@@ -11,13 +11,10 @@ import (
 )
 
 // SessionStoreNotConfigured is returned by session-metadata methods
-// when the host was constructed without an Options.SessionsStore.
-// Tests that don't care about persistence get this error and can
-// ignore it; production wiring always provides a store.
+// when the Service was constructed without Options.SessionsStore.
 var SessionStoreNotConfigured = errors.New("host: session store not configured")
 
-// UpsertSessionMetadata persists the session record. Called from
-// CreateSession and from event-relay code that updates status/title.
+// UpsertSessionMetadata persists the session record.
 func (s *Service) UpsertSessionMetadata(ctx context.Context, info agent.SessionInfo) error {
 	if s.sessionsStore == nil {
 		return SessionStoreNotConfigured
@@ -101,8 +98,7 @@ func (s *Service) SetSessionDraft(ctx context.Context, id, draft string) error {
 }
 
 // ToggleSessionFollowUp flips the follow_up flag and returns the new
-// session state. Does NOT bump UpdatedAt — see mutateSessionMeta for
-// the rationale.
+// state. Does NOT bump UpdatedAt — see mutateSessionMeta.
 func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.SessionInfo, error) {
 	if s.sessionsStore == nil {
 		return agent.SessionInfo{}, SessionStoreNotConfigured
@@ -121,17 +117,10 @@ func (s *Service) ToggleSessionFollowUp(ctx context.Context, id string) (agent.S
 	return info, nil
 }
 
-// mutateSessionMeta is the read-modify-write helper used by the
-// single-field setters above. Returns ErrNotFound if the session
-// doesn't exist.
-//
-// Critically: does NOT bump UpdatedAt. UpdatedAt tracks agent-driven
-// activity (status/title changes from the relay's
-// applyEventToMetadata) — bumping it here would re-hoist a session
-// to the top of the inbox every time the user marked it read or
-// flipped its visibility, which broke "open chat → close chat" by
-// making the session perpetually "newest". User-owned metadata
-// changes are intentionally invisible to the inbox sort order.
+// mutateSessionMeta is the read-modify-write helper for the setters
+// above. Does NOT bump UpdatedAt — that field tracks agent-driven
+// activity, so user metadata changes (mark-read, follow-up, draft)
+// stay invisible to the inbox's newest-first sort.
 func (s *Service) mutateSessionMeta(ctx context.Context, id string, mutate func(*agent.SessionInfo)) error {
 	if s.sessionsStore == nil {
 		return SessionStoreNotConfigured
