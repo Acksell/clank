@@ -5,21 +5,27 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/url"
+
+	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
 )
 
 // previewTokenInjector adds Daytona's `x-daytona-preview-token`
-// header to every outbound request before delegating to wrapped.
+// header. host pins the injection to the upstream so a cross-host
+// redirect can't carry the token to a third-party.
 type previewTokenInjector struct {
 	wrapped http.RoundTripper
 	token   string
+	host    string
 }
 
 // RoundTrip implements http.RoundTripper.
 func (p *previewTokenInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	// RoundTrip must not modify its input — clone before setting headers.
 	r2 := r.Clone(r.Context())
 	r2.Header = r.Header.Clone()
-	r2.Header.Set("x-daytona-preview-token", p.token)
+	if p.token != "" && (p.host == "" || r2.URL.Host == p.host) {
+		r2.Header.Set("x-daytona-preview-token", p.token)
+	}
 	rt := p.wrapped
 	if rt == nil {
 		rt = http.DefaultTransport
@@ -39,51 +45,23 @@ func (p *previewTokenInjector) CloseIdleConnections() {
 	}
 }
 
-// bearerInjector adds `Authorization: Bearer <token>` to every
-// outbound request. Used as the universal capability-token layer
-// stacked on top of provider-specific edge auth.
-type bearerInjector struct {
-	wrapped http.RoundTripper
-	token   string
-}
-
-// RoundTrip implements http.RoundTripper.
-func (b *bearerInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	r2 := r.Clone(r.Context())
-	r2.Header = r.Header.Clone()
-	r2.Header.Set("Authorization", "Bearer "+b.token)
-	rt := b.wrapped
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	return rt.RoundTrip(r2)
-}
-
-// CloseIdleConnections delegates.
-func (b *bearerInjector) CloseIdleConnections() {
-	type idler interface{ CloseIdleConnections() }
-	rt := b.wrapped
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	if i, ok := rt.(idler); ok {
-		i.CloseIdleConnections()
-	}
-}
-
-// chainTransport returns the full RoundTripper stack for talking to
-// a Daytona-hosted clank-host: bearer (auth-token, app layer) wrapping
-// preview-token (Daytona edge layer) wrapping http.DefaultTransport.
+// chainTransport stacks the bearer (auth-token, app layer) on top of
+// the preview-token (Daytona edge layer). previewURL pins both to the
+// upstream's host so cross-host redirects can't leak either credential.
 //
 // An empty authToken means "no app-layer auth" (pre-PR-2 sandboxes
-// adopted via label-recovery); the bearer header is omitted so
-// clank-host's no-token-set path is exercised.
-func chainTransport(authToken, previewToken string) http.RoundTripper {
-	rt := http.RoundTripper(&previewTokenInjector{token: previewToken})
-	if authToken != "" {
-		rt = &bearerInjector{wrapped: rt, token: authToken}
+// adopted via label-recovery); the bearer is omitted so clank-host's
+// no-token path is exercised.
+func chainTransport(authToken, previewToken, previewURL string) (http.RoundTripper, error) {
+	parsed, err := url.Parse(previewURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse preview URL %q: %w", previewURL, err)
 	}
-	return rt
+	rt := http.RoundTripper(&previewTokenInjector{token: previewToken, host: parsed.Host})
+	if authToken != "" {
+		rt = &transportpkg.BearerInjector{Wrapped: rt, Token: authToken, Host: parsed.Host}
+	}
+	return rt, nil
 }
 
 // generateAuthToken returns a cryptographically-random URL-safe token

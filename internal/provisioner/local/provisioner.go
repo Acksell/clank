@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/provisioner"
+	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
 )
 
 // Options configures the local-subprocess provisioner.
@@ -149,7 +151,13 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	hostname := host.Hostname("local-" + id[len(id)-8:])
 	hostID := ulid.Make().String()
 
-	transport := &bearerInjector{token: authToken}
+	parsedURL, err := url.Parse(httpURL)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return provisioner.HostRef{}, fmt.Errorf("parse local host URL %q: %w", httpURL, err)
+	}
+	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
 	c := &child{
 		cmd:       cmd,
 		hostID:    hostID,
@@ -264,32 +272,3 @@ func drainTagged(r io.Reader, lg *log.Logger, prefix string) {
 }
 
 var _ provisioner.Provisioner = (*Provisioner)(nil)
-
-// bearerInjector adds Authorization: Bearer <token> on every
-// outbound request. Same shape as the daytona/flyio variants.
-type bearerInjector struct {
-	wrapped http.RoundTripper
-	token   string
-}
-
-func (b *bearerInjector) RoundTrip(r *http.Request) (*http.Response, error) {
-	r2 := r.Clone(r.Context())
-	r2.Header = r.Header.Clone()
-	r2.Header.Set("Authorization", "Bearer "+b.token)
-	rt := b.wrapped
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	return rt.RoundTrip(r2)
-}
-
-func (b *bearerInjector) CloseIdleConnections() {
-	type idler interface{ CloseIdleConnections() }
-	rt := b.wrapped
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
-	if i, ok := rt.(idler); ok {
-		i.CloseIdleConnections()
-	}
-}

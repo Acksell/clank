@@ -245,7 +245,10 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		}
 	}
 
-	transport := chainTransport(authToken, preview.Token)
+	transport, err := chainTransport(authToken, preview.Token, preview.URL)
+	if err != nil {
+		return provisioner.HostRef{}, fmt.Errorf("build transport: %w", err)
+	}
 	client := hostclient.NewHTTP(preview.URL, transport)
 	if err := waitForHostReady(ctx, client, sandbox.ID); err != nil {
 		_ = client.Close()

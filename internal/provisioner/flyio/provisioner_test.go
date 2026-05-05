@@ -1,11 +1,8 @@
 package flyio
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/acksell/clank/internal/provisioner"
@@ -94,49 +91,9 @@ func TestSafeHostnameSuffix(t *testing.T) {
 	}
 }
 
-// TestBearerInjector_AddsHeader pins the only auth shape the
-// flyio provisioner produces — a public sprite URL has no other
-// gate, so this header is the entire auth boundary.
-func TestBearerInjector_AddsHeader(t *testing.T) {
-	t.Parallel()
-	gotCh := make(chan string, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotCh <- r.Header.Get("Authorization")
-		w.WriteHeader(204)
-	}))
-	t.Cleanup(srv.Close)
-
-	cli := &http.Client{Transport: &bearerInjector{token: "secret"}}
-	resp, err := cli.Get(srv.URL + "/anything")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	resp.Body.Close()
-	if got := <-gotCh; got != "Bearer secret" {
-		t.Errorf("Authorization header: got %q, want %q", got, "Bearer secret")
-	}
-}
-
-// TestBearerInjector_CloseIdleConnectionsDelegates pins the
-// transport-pool cleanup chain. Without it, every Sprites client
-// leaks idle conns at shutdown.
-func TestBearerInjector_CloseIdleConnectionsDelegates(t *testing.T) {
-	t.Parallel()
-	var called atomic.Bool
-	base := &idlerRT{onClose: func() { called.Store(true) }}
-	b := &bearerInjector{wrapped: base, token: "x"}
-	b.CloseIdleConnections()
-	if !called.Load() {
-		t.Error("bearerInjector.CloseIdleConnections should reach the wrapped transport")
-	}
-}
-
-type idlerRT struct {
-	onClose func()
-}
-
-func (r *idlerRT) RoundTrip(*http.Request) (*http.Response, error) { panic("unused") }
-func (r *idlerRT) CloseIdleConnections()                           { r.onClose() }
+// Bearer-injector unit tests live alongside the shared type in
+// internal/provisioner/transport — the flyio provisioner just wires
+// it together with the parsed sprite URL host.
 
 // TestEmbeddedBinary_NotEmpty pins that the //go:embed actually
 // produced bytes — a missing or zero-size binary would be an

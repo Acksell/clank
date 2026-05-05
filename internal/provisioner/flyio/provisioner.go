@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/acksell/clank/internal/host"
 	"github.com/acksell/clank/internal/provisioner"
+	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
 	"github.com/acksell/clank/internal/store"
 )
 
@@ -181,7 +183,13 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		return provisioner.HostRef{}, fmt.Errorf("sprite %s has no public URL after provisioning; check sprites-go SDK behavior", spriteName)
 	}
 
-	transport := &bearerInjector{token: authToken}
+	// Pin the bearer to fresh.URL's host so a cross-host redirect
+	// can't carry the auth-token to a third-party.
+	parsedURL, err := url.Parse(fresh.URL)
+	if err != nil {
+		return provisioner.HostRef{}, fmt.Errorf("parse sprite URL %q: %w", fresh.URL, err)
+	}
+	transport := &transportpkg.BearerInjector{Token: authToken, Host: parsedURL.Host}
 	hostname := host.Hostname("flyio-" + safeHostnameSuffix(spriteName))
 
 	// The Service "started" event only means the process is running;
