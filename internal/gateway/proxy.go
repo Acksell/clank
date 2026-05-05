@@ -40,15 +40,20 @@ func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			// Strip /hosts/{name}/ from the *incoming* path before
+			// SetURL joins target.Path. If we strip after the join, a
+			// target with a non-empty path (http://upstream/v1) yields
+			// /v1/hosts/{name}/… which doesn't match the prefix and
+			// silently leaks /hosts/{name} to the upstream.
+			strippedPath := stripHostsPrefix(pr.In.URL.Path)
+			strippedRaw := stripHostsPrefix(pr.In.URL.RawPath)
 			pr.SetURL(target)
 			// Forward the upstream Host: Sprites' edge routes by Host
 			// header, and the client's Host (a tunnel hostname or
 			// localhost) makes the edge serve its own 404 page.
 			pr.Out.Host = target.Host
-			// Strip the /hosts/{hostname} prefix the HostClient
-			// prepends — single-user host plane serves bare paths.
-			pr.Out.URL.Path = stripHostsPrefix(pr.Out.URL.Path)
-			pr.Out.URL.RawPath = stripHostsPrefix(pr.Out.URL.RawPath)
+			pr.Out.URL.Path = singleJoiningSlash(target.Path, strippedPath)
+			pr.Out.URL.RawPath = singleJoiningSlash(target.RawPath, strippedRaw)
 		},
 		Transport: ref.Transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
@@ -71,4 +76,26 @@ func stripHostsPrefix(p string) string {
 		return rest[i:]
 	}
 	return "/"
+}
+
+// singleJoiningSlash mirrors net/http/httputil.singleJoiningSlash.
+// We can't call SetURL with a stripped pr.In (it reads pr.In.URL.Path
+// directly), so we rebuild the joined path here from target.Path +
+// the stripped suffix.
+func singleJoiningSlash(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
 }

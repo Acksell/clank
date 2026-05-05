@@ -7,6 +7,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -643,7 +644,8 @@ func (s *Service) Session(id string) (agent.SessionBackend, bool) {
 // BackendInvocation.ResumeExternalID.
 //
 // Returns ErrNotFound when id is in neither the registry nor the
-// store; the underlying error when rebuild itself fails.
+// store. Real store errors (DB lock, disk full) are surfaced wrapped,
+// not coerced into ErrNotFound — same pattern as GetSessionMetadata.
 func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBackend, error) {
 	if b, ok := s.Session(id); ok {
 		return b, nil
@@ -652,8 +654,11 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 		return nil, ErrNotFound
 	}
 	info, err := s.sessionsStore.GetSession(ctx, id)
-	if err != nil {
+	if errors.Is(err, store.ErrSessionNotFound) {
 		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ensure backend %s: load session: %w", id, err)
 	}
 
 	mgr, ok := s.backendManagers[info.Backend]
@@ -701,12 +706,18 @@ func (s *Service) ensureBackend(ctx context.Context, id string) (agent.SessionBa
 	s.wg.Add(1)
 	go s.relayBackendEvents(id, b)
 
-	// Open attaches the SSE listener; without it the relay never sees
-	// streaming PartUpdates and the TUI shows a frozen conversation.
-	// Open failure is non-fatal: Send/Messages still work via the
-	// SDK directly, so a teardown here would be more disruptive.
+	// Open is required by the SessionBackend contract — Send/Messages
+	// fast-fail on an unopened backend. On Open failure tear down the
+	// registration so the next call re-runs ensureBackend instead of
+	// finding a broken wrapper in s.sessions.
 	if err := b.Open(ctx); err != nil {
-		s.log.Printf("ensure backend %s: open: %v", id, err)
+		s.mu.Lock()
+		delete(s.sessions, id)
+		s.mu.Unlock()
+		if stopErr := b.Stop(); stopErr != nil {
+			s.log.Printf("warning: stop backend after open failure for %s: %v", id, stopErr)
+		}
+		return nil, fmt.Errorf("ensure backend %s: open: %w", id, err)
 	}
 
 	return b, nil

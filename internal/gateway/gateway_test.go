@@ -263,6 +263,65 @@ func TestProxy_StripsHostsPrefix(t *testing.T) {
 	}
 }
 
+// TestProxy_StripsHostsPrefixWithTargetPath pins that the strip works
+// when the upstream URL itself has a path prefix — pre-fix the strip
+// ran after SetURL had already joined target.Path with the incoming
+// path, so /v1/hosts/{name}/auth would not match /hosts/ and the prefix
+// would silently leak through.
+func TestProxy_StripsHostsPrefixWithTargetPath(t *testing.T) {
+	t.Parallel()
+	gotPath := make(chan string, 1)
+	mx := http.NewServeMux()
+	mx.HandleFunc("/v1/auth/providers", func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	mx.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		w.WriteHeader(http.StatusNotFound)
+	})
+	upstream := httptest.NewServer(mx)
+	t.Cleanup(upstream.Close)
+
+	prov := &stubProvisioner{ref: provisioner.HostRef{URL: upstream.URL + "/v1", Transport: http.DefaultTransport}}
+	g, _ := NewGateway(Config{Provisioner: prov}, nil)
+	srv := httptest.NewServer(g.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/hosts/local/auth/providers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	got := <-gotPath
+	if got != "/v1/auth/providers" {
+		t.Errorf("upstream got %q, want %q (target.Path=/v1 must be preserved + /hosts/local stripped)", got, "/v1/auth/providers")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200 (a 404 means the strip leaked /hosts/local through)", resp.StatusCode)
+	}
+}
+
+func TestSingleJoiningSlash(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		a, b, want string
+	}{
+		{"", "/foo", "/foo"},
+		{"/v1", "", "/v1"},
+		{"/v1", "/foo", "/v1/foo"},
+		{"/v1/", "/foo", "/v1/foo"},
+		{"/v1", "foo", "/v1/foo"},
+		{"/v1/", "foo", "/v1/foo"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := singleJoiningSlash(c.a, c.b); got != c.want {
+			t.Errorf("singleJoiningSlash(%q, %q) = %q; want %q", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestStripHostsPrefix_Unit(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
