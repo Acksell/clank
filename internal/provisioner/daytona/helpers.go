@@ -31,6 +31,23 @@ var reservedSandboxEnv = []string{
 const persistenceLabel = "clank-host-managed"
 const persistenceLabelValue = "v1"
 
+// userLabel scopes recovery to the calling user — its value is the
+// userID. Without this scope, recoverByLabel would adopt the first
+// matching sandbox regardless of owner, which in a multi-user setup
+// rebinds user A's daemon to user B's sandbox.
+const userLabel = "clank-host-user"
+
+// recoveryLabels returns the label map used for both Create (so the
+// sandbox is tagged) and List (so recovery scopes to one userID).
+// Centralised so the create + recover sites can never drift apart —
+// drift would silently let user A adopt user B's sandbox.
+func recoveryLabels(userID string) map[string]string {
+	return map[string]string{
+		persistenceLabel: persistenceLabelValue,
+		userLabel:        userID,
+	}
+}
+
 // getPreviewLinkWithRetry calls GetPreviewLink with a tight backoff so
 // a no-wait Create that hasn't finished provisioning the preview
 // routing layer doesn't blow up the launch. The retry budget is

@@ -3,6 +3,8 @@ package flyio
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -132,37 +134,85 @@ func (tw testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestEnsureBinaryInstalled_SkipsOnSizeMatch pins the fast path: an
-// existing same-size binary skips the ~17MB upload.
-func TestEnsureBinaryInstalled_SkipsOnSizeMatch(t *testing.T) {
+// hashHex computes the helper's expected sidecar value.
+func hashHex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// TestEnsureBinaryInstalled_SkipsOnSizeAndHashMatch pins the fast path:
+// when both size AND sidecar hash match, the upload is skipped.
+func TestEnsureBinaryInstalled_SkipsOnSizeAndHashMatch(t *testing.T) {
 	t.Parallel()
 	want := []byte("hello world binary contents")
 	stub := newStubFS()
 	stub.seed("usr/local/bin/clank-host", want)
+	stub.seed("usr/local/bin/clank-host"+hashSidecarSuffix, []byte(hashHex(want)))
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if got := stub.ops(); len(got) != 0 {
-		t.Errorf("unexpected fs ops on size-match fast path: %v", got)
+		t.Errorf("unexpected fs ops on hash-match fast path: %v", got)
 	}
 }
 
-// TestEnsureBinaryInstalled_ColdInstallWritesOnly: cold install runs
-// Remove (ENOENT no-op) then Write.
-func TestEnsureBinaryInstalled_ColdInstallWritesOnly(t *testing.T) {
+// TestEnsureBinaryInstalled_SameSizeDifferentHashReinstalls is the
+// regression CR raised: two builds with the same byte length but
+// different content should still trigger a reinstall, not a silent
+// keep of the old binary.
+func TestEnsureBinaryInstalled_SameSizeDifferentHashReinstalls(t *testing.T) {
+	t.Parallel()
+	old := []byte("0123456789abcdef")
+	new := []byte("fedcba9876543210") // same length, different content
+	if len(old) != len(new) {
+		t.Fatal("test bug: old and new must be the same length")
+	}
+	stub := newStubFS()
+	stub.seed("usr/local/bin/clank-host", old)
+	stub.seed("usr/local/bin/clank-host"+hashSidecarSuffix, []byte(hashHex(old)))
+
+	p := newTestProvisioner(t)
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", new, hashHex(new)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	ops := stub.ops()
+	hasBinaryWrite := false
+	for _, op := range ops {
+		if op == "Write:/usr/local/bin/clank-host" {
+			hasBinaryWrite = true
+		}
+	}
+	if !hasBinaryWrite {
+		t.Errorf("size matched but hash differed; expected reinstall (Write:%s) in ops=%v", "/usr/local/bin/clank-host", ops)
+	}
+	// Sidecar should have been refreshed with the new hash.
+	stub.mu.Lock()
+	got := string(stub.files["usr/local/bin/clank-host"+hashSidecarSuffix])
+	stub.mu.Unlock()
+	if got != hashHex(new) {
+		t.Errorf("sidecar hash after reinstall: got %q, want %q", got, hashHex(new))
+	}
+}
+
+// TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSidecar: a fresh
+// sprite (no prior file) goes Remove → Write binary → Write sidecar.
+func TestEnsureBinaryInstalled_ColdInstallWritesBinaryAndSidecar(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
 	want := []byte("fresh binary")
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	got := stub.ops()
-	if len(got) != 2 || got[0] != "Remove:/usr/local/bin/clank-host" || got[1] != "Write:/usr/local/bin/clank-host" {
-		t.Errorf("ops = %v, want [Remove:/usr/…, Write:/usr/…]", got)
+	if len(got) != 3 ||
+		got[0] != "Remove:/usr/local/bin/clank-host" ||
+		got[1] != "Write:/usr/local/bin/clank-host" ||
+		got[2] != "Write:/usr/local/bin/clank-host"+hashSidecarSuffix {
+		t.Errorf("ops = %v, want [Remove:bin, Write:bin, Write:sidecar]", got)
 	}
 }
 
@@ -176,12 +226,12 @@ func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 	want := []byte("new binary, larger payload")
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	got := stub.ops()
-	if len(got) != 2 {
-		t.Fatalf("expected 2 ops (Remove, Write), got %v", got)
+	if len(got) < 2 {
+		t.Fatalf("expected at least 2 ops, got %v", got)
 	}
 	if got[0] != "Remove:/usr/local/bin/clank-host" {
 		t.Errorf("first op should be Remove (avoid ETXTBSY); got %q", got[0])
@@ -192,8 +242,7 @@ func TestEnsureBinaryInstalled_RemoveBeforeWrite(t *testing.T) {
 }
 
 // TestEnsureBinaryInstalled_RemoveErrorIsBestEffort: a non-ENOENT
-// Remove failure is tolerated and Write proceeds — WriteFile may
-// still succeed despite the unlink failure.
+// Remove failure is tolerated and Write proceeds.
 func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -210,7 +259,7 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	}
 
 	p := newTestProvisioner(t)
-	if err := p.ensureBinaryInstalledOn(context.Background(), stub, wfStub, "/usr/local/bin/clank-host", want); err != nil {
+	if err := p.ensureBinaryInstalledOn(context.Background(), stub, wfStub, "/usr/local/bin/clank-host", want, hashHex(want)); err != nil {
 		t.Fatalf("install: %v (Write should have proceeded despite Remove failure)", err)
 	}
 	if len(calls) != 1 || calls[0] != "Remove:/usr/local/bin/clank-host" {
@@ -229,8 +278,8 @@ func TestEnsureBinaryInstalled_RemoveErrorIsBestEffort(t *testing.T) {
 	}
 }
 
-// TestEnsureBinaryInstalled_WriteErrorPropagates: a write failure is
-// surfaced, not swallowed.
+// TestEnsureBinaryInstalled_WriteErrorPropagates: a write failure on
+// the binary itself is surfaced, not swallowed.
 func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	t.Parallel()
 	stub := newStubFS()
@@ -238,7 +287,7 @@ func TestEnsureBinaryInstalled_WriteErrorPropagates(t *testing.T) {
 	stub.onWrite = func(_ string, _ []byte) error { return bang }
 
 	p := newTestProvisioner(t)
-	err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", []byte("data"))
+	err := p.ensureBinaryInstalledOn(context.Background(), stub, stub, "/usr/local/bin/clank-host", []byte("data"), hashHex([]byte("data")))
 	if err == nil {
 		t.Fatal("expected write error to surface, got nil")
 	}

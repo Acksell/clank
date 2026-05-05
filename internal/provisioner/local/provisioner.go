@@ -65,6 +65,11 @@ type child struct {
 	url       string
 	authToken string
 	transport http.RoundTripper
+	// exited closes when the child process is reaped by the watcher
+	// goroutine. EnsureHost selects on this to detect crashed children
+	// (cmd.ProcessState only populates after Wait returns, so without
+	// the watcher the cache could never invalidate on its own).
+	exited chan struct{}
 }
 
 // New constructs a Provisioner. log may be nil.
@@ -96,10 +101,11 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 	defer p.mu.Unlock()
 
 	if p.current != nil {
-		if p.current.cmd.ProcessState != nil {
+		select {
+		case <-p.current.exited:
 			p.log.Printf("local provisioner: cached child has exited; respawning")
 			p.killCurrentLocked()
-		} else {
+		default:
 			return p.refFromChild(p.current), nil
 		}
 	}
@@ -165,7 +171,16 @@ func (p *Provisioner) EnsureHost(_ context.Context, _ string) (provisioner.HostR
 		url:       httpURL,
 		authToken: authToken,
 		transport: transport,
+		exited:    make(chan struct{}),
 	}
+	// Reap the child in the background so c.exited closes when the
+	// process dies (whether from a graceful Stop or an unexpected
+	// crash). Without this, EnsureHost could never invalidate the cache
+	// after a crash and would return stale URLs forever.
+	go func() {
+		_ = cmd.Wait()
+		close(c.exited)
+	}()
 	p.current = c
 	p.log.Printf("local provisioner: spawned host %s at %s (data-dir=%q)", hostname, httpURL, p.opts.DataDir)
 	return p.refFromChild(c), nil
@@ -195,7 +210,9 @@ func (p *Provisioner) DestroyHost(_ context.Context, _ string) error {
 	return nil
 }
 
-// killCurrentLocked sends SIGINT, waits 5s, then SIGKILLs.
+// killCurrentLocked sends SIGINT, waits 5s, then SIGKILLs. Watches
+// c.exited (the watcher goroutine spawned by EnsureHost) instead of
+// calling cmd.Wait directly — concurrent Wait calls are undefined.
 // Caller holds p.mu.
 func (p *Provisioner) killCurrentLocked() {
 	c := p.current
@@ -206,18 +223,13 @@ func (p *Provisioner) killCurrentLocked() {
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Signal(os.Interrupt)
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = c.cmd.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-c.exited:
 	case <-time.After(5 * time.Second):
 		if c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
 		}
-		<-done
+		<-c.exited
 	}
 }
 

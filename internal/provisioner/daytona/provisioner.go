@@ -320,13 +320,16 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 	}
 
 	// Recovery: even with no store row, we may have an existing
-	// sandbox tagged with our label (e.g. corrupted DB, manual
-	// migration). Adopt the first match. We can't recover the
-	// original auth-token (it was only known by the daemon that
-	// created the sandbox), so this returns "" and the caller
-	// proceeds without app-layer auth — same as a pre-PR-2 sandbox.
-	if sb := p.recoverByLabel(ctx); sb != nil {
-		p.log.Printf("daytona provisioner: adopted unrecorded sandbox %s by label", sb.ID)
+	// sandbox tagged with our label AND owned by this userID (e.g.
+	// corrupted DB, manual migration). Adopt the first match. We
+	// can't recover the original auth-token (it was only known by the
+	// daemon that created the sandbox), so this returns "" and the
+	// caller proceeds without app-layer auth — same as a pre-PR-2
+	// sandbox. Pre-PR-2 sandboxes don't have userLabel so we can't
+	// adopt them in a multi-user world; the migration path is to
+	// re-create.
+	if sb := p.recoverByLabel(ctx, userID); sb != nil {
+		p.log.Printf("daytona provisioner: adopted unrecorded sandbox %s by label for user %s", sb.ID, userID)
 		return sb, false, "", nil
 	}
 
@@ -334,19 +337,21 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 	if err != nil {
 		return nil, false, "", fmt.Errorf("generate auth-token: %w", err)
 	}
-	sandbox, err := p.create(ctx, authToken)
+	sandbox, err := p.create(ctx, userID, authToken)
 	if err != nil {
 		return nil, false, "", err
 	}
 	return sandbox, true, authToken, nil
 }
 
-// recoverByLabel lists sandboxes filtered by the persistence label and
-// returns the first one (or nil on miss / error). Defense in depth for
-// the case where the store has no row but a sandbox already exists.
-func (p *Provisioner) recoverByLabel(ctx context.Context) *daytona.Sandbox {
+// recoverByLabel lists sandboxes filtered by both the global
+// persistence label AND the per-user label, returning the first
+// match. Without the user-scope, distinct users with missing/corrupt
+// store rows could rebind to each other's sandboxes — a cross-user
+// session-data leak.
+func (p *Provisioner) recoverByLabel(ctx context.Context, userID string) *daytona.Sandbox {
 	one := 1
-	page, err := p.client.List(ctx, map[string]string{persistenceLabel: persistenceLabelValue}, nil, &one)
+	page, err := p.client.List(ctx, recoveryLabels(userID), nil, &one)
 	if err != nil {
 		// Best-effort: fall through to create.
 		p.log.Printf("daytona provisioner: list by label failed (%v); will create fresh", err)
@@ -358,12 +363,12 @@ func (p *Provisioner) recoverByLabel(ctx context.Context) *daytona.Sandbox {
 	return page.Items[0]
 }
 
-// create issues a new Create with the persistence label set so future
-// recoveries can find the sandbox. AutoDeleteInterval is left nil so
-// the sandbox persists indefinitely. authToken is baked into the
-// sandbox env so clank-host's bearer middleware enforces it from the
-// first request.
-func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
+// create issues a new Create with the persistence + per-user labels
+// set so future recoveries scope to the same userID. AutoDeleteInterval
+// is left nil so the sandbox persists indefinitely. authToken is baked
+// into the sandbox env so clank-host's bearer middleware enforces it
+// from the first request.
+func (p *Provisioner) create(ctx context.Context, userID, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
 		"CLANK_HUB_URL":          p.opts.HubBaseURL,
 		"CLANK_HUB_TOKEN":        p.opts.HubAuthToken,
@@ -379,7 +384,7 @@ func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sa
 
 	base := types.SandboxBaseParams{
 		EnvVars: envVars,
-		Labels:  map[string]string{persistenceLabel: persistenceLabelValue},
+		Labels:  recoveryLabels(userID),
 		Public:  true, // expose preview port; preview token still gates auth
 	}
 

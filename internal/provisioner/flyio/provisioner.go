@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +31,21 @@ import (
 	transportpkg "github.com/acksell/clank/internal/provisioner/transport"
 	"github.com/acksell/clank/internal/store"
 )
+
+// clankHostHashHex is the SHA-256 of the embedded clank-host binary,
+// used as a versioning marker. Same-size builds with different content
+// (e.g. a one-byte source change) would silently slip past a size-only
+// check; the sidecar file <installPath>.installed-sha256 stores the
+// last-installed hash so we can detect those.
+var clankHostHashHex = func() string {
+	sum := sha256.Sum256(clankHostBinary)
+	return hex.EncodeToString(sum[:])
+}()
+
+// hashSidecarSuffix is the path suffix for the sidecar marker. Read
+// after the size match in ensureBinaryInstalledOn; written after a
+// successful binary write.
+const hashSidecarSuffix = ".installed-sha256"
 
 // HostPort is clank-host's listen port inside the sprite. We set it
 // on Service.HTTPPort explicitly rather than relying on Sprites' default.
@@ -387,7 +404,7 @@ func (p *Provisioner) ensureBinaryInstalled(ctx context.Context, sprite *sprites
 	if !ok {
 		return fmt.Errorf("sprites filesystem does not support WriteFileContext+RemoveContext (SDK API drift)")
 	}
-	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary)
+	return p.ensureBinaryInstalledOn(ctx, fsys, wf, installPath, clankHostBinary, clankHostHashHex)
 }
 
 // spriteFSWriter is the SDK filesystem subset needed for atomic
@@ -398,7 +415,10 @@ type spriteFSWriter interface {
 }
 
 // ensureBinaryInstalledOn is the testable core of ensureBinaryInstalled.
-func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte) error {
+// wantHashHex is the sha256 of want. After a size match, the sidecar
+// file at path+hashSidecarSuffix is also compared so that two builds
+// with the same byte length but different content trigger a reinstall.
+func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, wf spriteFSWriter, path string, want []byte, wantHashHex string) error {
 	var info fs.FileInfo
 	statErr := retryClosedConn(ctx, p.log, func() error {
 		var err error
@@ -406,9 +426,14 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		return err
 	})
 	if statErr == nil && info.Size() == int64(len(want)) {
-		return nil
-	}
-	if statErr == nil {
+		// Size matches — verify the sidecar before declaring done.
+		// Missing/mismatched sidecar means the size collision is
+		// hiding a real version skew, so fall through to reinstall.
+		if got, ok := readSidecar(stat, path+hashSidecarSuffix); ok && got == wantHashHex {
+			return nil
+		}
+		p.log.Printf("flyio provisioner: clank-host size matches but hash sidecar missing/stale; reinstalling")
+	} else if statErr == nil {
 		p.log.Printf("flyio provisioner: clank-host binary size mismatch (have %d, want %d); replacing", info.Size(), len(want))
 	} else {
 		p.log.Printf("flyio provisioner: clank-host not present on sprite (%v); installing (%d bytes)", statErr, len(want))
@@ -424,12 +449,45 @@ func (p *Provisioner) ensureBinaryInstalledOn(ctx context.Context, stat fs.FS, w
 		return nil
 	})
 
-	return retryClosedConn(ctx, p.log, func() error {
+	if err := retryClosedConn(ctx, p.log, func() error {
 		if err := wf.WriteFileContext(ctx, path, want, 0o755); err != nil {
 			return fmt.Errorf("install clank-host binary: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Stamp the sidecar so the next EnsureHost can short-circuit on a
+	// hash match. Sidecar write failures are logged but not surfaced —
+	// worst-case the next run reinstalls the (already-current) binary.
+	if err := retryClosedConn(ctx, p.log, func() error {
+		return wf.WriteFileContext(ctx, path+hashSidecarSuffix, []byte(wantHashHex), 0o644)
+	}); err != nil {
+		p.log.Printf("flyio provisioner: stamp hash sidecar: %v (binary still up to date)", err)
+	}
+	return nil
+}
+
+// readSidecar reads the hash sidecar file from the sprite filesystem.
+// Returns (hex, true) on a successful read; (_, false) on any error
+// (missing, permission, decode) so the caller can treat it as "stale".
+func readSidecar(stat fs.FS, sidecarPath string) (string, bool) {
+	f, err := stat.Open(strings.TrimPrefix(sidecarPath, "/"))
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	// Sidecar is a 64-char hex string; cap the read defensively.
+	buf, err := io.ReadAll(io.LimitReader(f, 256))
+	if err != nil {
+		return "", false
+	}
+	got := strings.TrimSpace(string(buf))
+	if len(got) != hex.EncodedLen(sha256.Size) {
+		return "", false
+	}
+	return got, true
 }
 
 // ensureOpenCodeInstalled probes for opencode at /usr/local/bin and
@@ -783,12 +841,22 @@ func (p *Provisioner) cacheDrop(userID string) {
 }
 
 // spriteNameFor derives a sprite name from a userID, sanitized for
-// Sprites' name validation.
+// Sprites' name validation. When the sanitization is lossy (input
+// contains characters Sprites doesn't allow, or the input is symbol-
+// only), a short hash of the original userID is appended so distinct
+// inputs always produce distinct sprite names.
 func (p *Provisioner) spriteNameFor(userID string) string {
 	suffix := safeSpriteSuffix(userID)
-	if suffix == "" {
-		// userID is required upstream; this is a paranoid fallback.
-		suffix = "anonymous"
+	if suffix == "" || suffix != strings.ToLower(userID) {
+		// Lossy sanitization (or empty after strip): pin uniqueness
+		// with a hash of the raw userID.
+		sum := sha256.Sum256([]byte(userID))
+		hashFrag := hex.EncodeToString(sum[:3])
+		if suffix == "" {
+			suffix = hashFrag
+		} else {
+			suffix = suffix + "-" + hashFrag
+		}
 	}
 	return p.opts.SpriteNamePrefix + "-" + suffix
 }

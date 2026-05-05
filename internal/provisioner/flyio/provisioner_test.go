@@ -95,6 +95,38 @@ func TestSafeHostnameSuffix(t *testing.T) {
 // internal/provisioner/transport — the flyio provisioner just wires
 // it together with the parsed sprite URL host.
 
+// TestSpriteNameFor_DistinctInputsDistinctNames pins the regression
+// CR raised: pre-fix safeSpriteSuffix collapsed distinct user IDs to
+// the same suffix (e.g. "A.B" and "ab" → "ab"), so user A would
+// target user B's persistent sprite. The fix appends a short hash of
+// the raw userID whenever the sanitization is lossy.
+func TestSpriteNameFor_DistinctInputsDistinctNames(t *testing.T) {
+	t.Parallel()
+	p := &Provisioner{opts: Options{SpriteNamePrefix: "clank-host"}}
+	cases := []string{
+		"alice@example.com",
+		"alice.example.com",
+		"aliceexamplecom", // already-clean, would collide pre-fix
+		"A.B",
+		"ab",
+		"!!!", // symbol-only
+		"???", // distinct symbol-only
+	}
+	seen := map[string]string{}
+	for _, in := range cases {
+		got := p.spriteNameFor(in)
+		if other, dup := seen[got]; dup {
+			t.Errorf("collision: spriteNameFor(%q) and spriteNameFor(%q) both yield %q", other, in, got)
+		}
+		seen[got] = in
+	}
+
+	// Sanity: a clean input round-trips without a hash suffix.
+	if got := p.spriteNameFor("local"); got != "clank-host-local" {
+		t.Errorf("clean input: got %q, want %q (hash suffix should only fire on lossy inputs)", got, "clank-host-local")
+	}
+}
+
 // TestEmbeddedBinary_NotEmpty pins that the //go:embed actually
 // produced bytes — a missing or zero-size binary would be an
 // invisible build-pipeline regression that surfaces only at runtime
