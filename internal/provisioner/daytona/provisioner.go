@@ -319,18 +319,16 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
-	// Recovery: even with no store row, we may have an existing
-	// sandbox tagged with our label AND owned by this userID (e.g.
-	// corrupted DB, manual migration). Adopt the first match. We
-	// can't recover the original auth-token (it was only known by the
-	// daemon that created the sandbox), so this returns "" and the
-	// caller proceeds without app-layer auth — same as a pre-PR-2
-	// sandbox. Pre-PR-2 sandboxes don't have userLabel so we can't
-	// adopt them in a multi-user world; the migration path is to
-	// re-create.
-	if sb := p.recoverByLabel(ctx, userID); sb != nil {
-		p.log.Printf("daytona provisioner: adopted unrecorded sandbox %s by label for user %s", sb.ID, userID)
-		return sb, false, "", nil
+	// Store miss: a fresh user with no prior sandbox should fall
+	// straight through to create. If Daytona disagrees and reports a
+	// sandbox already labeled for this user, the store and the cloud
+	// have diverged — refuse to proceed. The original bearer token
+	// is unrecoverable today (lives only in the row we just lost),
+	// so adoption would 401 every gateway request and creating a
+	// duplicate alongside is worse. A future secrets-backed recovery
+	// can replace this fail-fast.
+	if orphan := p.findStrandedSandbox(ctx, userID); orphan != nil {
+		return nil, false, "", fmt.Errorf("daytona provisioner: no store row for user %q but sandbox %s already exists with matching labels — store and Daytona are out of sync. Run `daytona sandbox delete %s` (or restore the daemon's host store from backup) before retrying", userID, orphan.ID, orphan.ID)
 	}
 
 	authToken, err := generateAuthToken()
@@ -344,20 +342,15 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 	return sandbox, true, authToken, nil
 }
 
-// recoverByLabel lists sandboxes filtered by both the global
-// persistence label AND the per-user label, returning the first
-// match. Without the user-scope, distinct users with missing/corrupt
-// store rows could rebind to each other's sandboxes — a cross-user
-// session-data leak.
-func (p *Provisioner) recoverByLabel(ctx context.Context, userID string) *daytona.Sandbox {
+// findStrandedSandbox returns a sandbox tagged for this user when one
+// exists, used solely to detect store/Daytona divergence so the
+// caller can fail fast. We do not adopt — without the original bearer
+// token (which lived in the missing store row) the gateway can't
+// authenticate to its clank-host.
+func (p *Provisioner) findStrandedSandbox(ctx context.Context, userID string) *daytona.Sandbox {
 	one := 1
 	page, err := p.client.List(ctx, recoveryLabels(userID), nil, &one)
-	if err != nil {
-		// Best-effort: fall through to create.
-		p.log.Printf("daytona provisioner: list by label failed (%v); will create fresh", err)
-		return nil
-	}
-	if page == nil || len(page.Items) == 0 {
+	if err != nil || page == nil || len(page.Items) == 0 {
 		return nil
 	}
 	return page.Items[0]
