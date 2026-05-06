@@ -1,13 +1,9 @@
 // Package daytona implements provisioner.Provisioner using Daytona's
-// hosted control plane.
-//
-// Compared to the legacy `internal/host/launcher/daytona` (which
-// created a disposable sandbox per Launch and deleted it on Stop), the
-// provisioner manages exactly one persistent sandbox per (userID,
-// "daytona") tuple. EnsureHost is idempotent across daemon restarts:
-// the sandbox identity is recorded in the SQL store, woken from
-// stopped/archived state if necessary, and the preview URL/token are
-// refreshed since they may rotate across stop/start cycles.
+// hosted control plane: one persistent sandbox per (userID, "daytona")
+// tuple, recorded in the SQL store. EnsureHost is idempotent across
+// daemon restarts — woken from stopped/archived state if needed, and
+// the preview URL/token are refreshed since they rotate across
+// stop/start cycles.
 package daytona
 
 import (
@@ -231,10 +227,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 	}
 
 	// Capability-token: cold-create path passed it down via
-	// mintedAuthToken. Reuse path: read from the store. Pre-PR-2 rows
-	// (label-recovery adoption) have empty auth_token, which clank-host
-	// treats as "auth disabled" — return empty here so the transport
-	// stays in sync with that.
+	// mintedAuthToken; reuse path reads from the store row.
 	authToken := mintedAuthToken
 	if !isNew {
 		row, err := p.store.GetHostByUser(ctx, userID, "daytona")
@@ -335,12 +328,11 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 	return sandbox, true, authToken, nil
 }
 
-// create issues a new Create with the persistence + per-user labels
-// set so future recoveries scope to the same userID. AutoDeleteInterval
-// is left nil so the sandbox persists indefinitely. authToken is baked
-// into the sandbox env so clank-host's bearer middleware enforces it
-// from the first request. The store row is the sole source of truth
-// for user → sandbox binding; we don't tag the sandbox with the userID.
+// create issues a fresh Daytona sandbox. AutoDeleteInterval is left
+// nil so the sandbox persists indefinitely. authToken is baked into
+// the sandbox env so clank-host's bearer middleware enforces it from
+// the first request. The store row is the sole source of truth for
+// user → sandbox binding.
 func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
 		"CLANK_HUB_URL":          p.opts.HubBaseURL,

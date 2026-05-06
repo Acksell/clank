@@ -48,10 +48,8 @@ func (p *previewTokenInjector) CloseIdleConnections() {
 // chainTransport stacks the bearer (auth-token, app layer) on top of
 // the preview-token (Daytona edge layer). previewURL pins both to the
 // upstream's host so cross-host redirects can't leak either credential.
-//
-// An empty authToken means "no app-layer auth" (pre-PR-2 sandboxes
-// adopted via label-recovery); the bearer is omitted so clank-host's
-// no-token path is exercised.
+// authToken is required — chainTransport is only called on paths
+// where the store row gave us a non-empty value.
 func chainTransport(authToken, previewToken, previewURL string) (http.RoundTripper, error) {
 	parsed, err := url.Parse(previewURL)
 	if err != nil {
