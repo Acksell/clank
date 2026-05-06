@@ -4,6 +4,17 @@
 // daemon restarts — woken from stopped/archived state if needed, and
 // the preview URL/token are refreshed since they rotate across
 // stop/start cycles.
+//
+// TODO/Future: refactor to consume a Daytona-backed sandbox-pool
+// package whose API mirrors fly.io sprites — keyed GetOrCreate,
+// stable URL, wake-on-traffic. The flyio provisioner is already that
+// shape; daytona drags the lower-level state machine inline. Needs
+// research: how much can use Daytona's name lookup + auto-archive
+// directly, vs. needing a wrapper layer to emulate persistence. Once
+// that lands, this provisioner shrinks to a thin clank-host
+// configurator on top of the pool, and persistence-across-DB-loss
+// becomes a property of the pool's name lookup rather than something
+// the provisioner has to reason about.
 package daytona
 
 import (
@@ -103,7 +114,7 @@ type cachedHost struct {
 	hostname  host.Hostname
 	url       string
 	token     string // preview-token (provider-edge layer)
-	authToken  string // clank-host bearer-token (universal app layer)
+	authToken string // clank-host bearer-token (universal app layer)
 }
 
 // New constructs a Provisioner. Returns an error if required options
@@ -268,7 +279,7 @@ func (p *Provisioner) EnsureHost(ctx context.Context, userID string) (provisione
 		hostname:  hostname,
 		url:       preview.URL,
 		token:     preview.Token,
-		authToken:  authToken,
+		authToken: authToken,
 	}
 	p.cacheSet(userID, cached)
 	return p.refToHost(cached), nil
@@ -279,7 +290,7 @@ func (p *Provisioner) refToHost(c *cachedHost) provisioner.HostRef {
 		HostID:    c.hostID,
 		URL:       c.url,
 		Transport: c.transport,
-		AuthToken:  c.authToken,
+		AuthToken: c.authToken,
 		AutoWake:  false,
 		Hostname:  c.hostname,
 	}
@@ -335,10 +346,10 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 // user → sandbox binding.
 func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
-		"CLANK_HUB_URL":          p.opts.HubBaseURL,
-		"CLANK_HUB_TOKEN":        p.opts.HubAuthToken,
-		"CLANK_HOST_PORT":        fmt.Sprintf("%d", HostPort),
-		"CLANK_HOST_AUTH_TOKEN":  authToken,
+		"CLANK_HUB_URL":         p.opts.HubBaseURL,
+		"CLANK_HUB_TOKEN":       p.opts.HubAuthToken,
+		"CLANK_HOST_PORT":       fmt.Sprintf("%d", HostPort),
+		"CLANK_HOST_AUTH_TOKEN": authToken,
 	}
 	for k, v := range p.opts.ExtraEnv {
 		if v == "" {
@@ -457,7 +468,7 @@ func (p *Provisioner) persistRow(ctx context.Context, userID, externalID, hostna
 		Status:     store.HostStatusRunning,
 		LastURL:    url,
 		LastToken:  token,
-		AuthToken:   authToken,
+		AuthToken:  authToken,
 		AutoWake:   false,
 		UpdatedAt:  now,
 	}
