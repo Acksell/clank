@@ -241,11 +241,15 @@ func (m *SidebarModel) cursorSection() (sidebarSection, int) {
 }
 
 // sectionBreakpoints returns the cursor positions that shift+up/shift+down
-// snap between.
+// snap between. For the entries section both the first (1) and last entry are
+// included so shift+up stops at the top of the list before jumping to "All".
 func (m *SidebarModel) sectionBreakpoints() []int {
 	bp := []int{0}
 	if last := len(m.entries); last > 0 {
-		bp = append(bp, last)
+		bp = append(bp, 1) // first entry — top of list
+		if last > 1 {
+			bp = append(bp, last) // last entry — bottom of list
+		}
 	}
 	bp = append(bp, m.importCursorIndex())
 	bp = append(bp, m.settingsCursorIndex())
@@ -436,15 +440,15 @@ func (m *SidebarModel) View() string {
 	lines = append(lines, allLabel)
 	lines = append(lines, "")
 
-	// Worktree entries derived from sessions.
-	lines = append(lines, m.renderWorktreeEntries(contentWidth)...)
-
-	// New branch input.
-	if m.creating {
-		lines = append(lines, "")
+	// When creating a new worktree with cursor on "All", show input here.
+	if m.creating && m.cursor == 0 {
 		m.input.SetWidth(contentWidth - 2)
 		lines = append(lines, "  "+m.input.View())
+		lines = append(lines, "")
 	}
+
+	// Worktree entries derived from sessions (scrolled; input inserted at cursor).
+	lines = append(lines, m.renderWorktreeEntries(contentWidth)...)
 
 	// Error.
 	if m.err != nil {
@@ -477,15 +481,28 @@ func (m *SidebarModel) View() string {
 	return style.Render(content)
 }
 
-// renderWorktreeEntries renders all worktree entries as a flat list.
+// renderWorktreeEntries renders the visible slice of worktree entries, applying
+// the scroll offset. When in creating mode, the branch-name input is inserted
+// inline after the cursor's entry (or after "All" if cursor==0, handled by View).
 func (m *SidebarModel) renderWorktreeEntries(contentWidth int) []string {
 	if len(m.entries) == 0 {
 		return nil
 	}
-	lines := make([]string, 0, len(m.entries))
-	for i, e := range m.entries {
-		idx := i + 1 // cursor index (0 = All)
+	vh := m.entryViewportH()
+	end := m.scroll + vh
+	if end > len(m.entries) {
+		end = len(m.entries)
+	}
+	visible := m.entries[m.scroll:end]
+
+	lines := make([]string, 0, len(visible)+2)
+	for i, e := range visible {
+		idx := m.scroll + i + 1 // cursor index (0 = All)
 		lines = append(lines, m.renderWorktreeEntry(e, idx, contentWidth))
+		if m.creating && m.cursor == idx {
+			m.input.SetWidth(contentWidth - 2)
+			lines = append(lines, "  "+m.input.View())
+		}
 	}
 	return lines
 }
@@ -584,17 +601,36 @@ func (m *SidebarModel) listHeight() int {
 	return h
 }
 
-// ensureVisible scrolls to keep the cursor visible.
-func (m *SidebarModel) ensureVisible() {
-	vh := m.listHeight() - 3 // header + blank line + some margin
+// entryViewportH returns the number of entry rows that fit in the scrollable
+// middle section. Fixed lines consumed: header(1)+blank(1)+All(1)+blank(1)+
+// footer_sep(1)+import(1)+settings(1) = 7. When creating, the inline input
+// takes 2 additional lines.
+func (m *SidebarModel) entryViewportH() int {
+	extra := 0
+	if m.creating {
+		extra = 2
+	}
+	vh := m.listHeight() - 7 - extra
 	if vh < 1 {
 		vh = 1
 	}
-	if m.cursor < m.scroll {
-		m.scroll = m.cursor
+	return vh
+}
+
+// ensureVisible scrolls the entries section to keep the cursor visible.
+// "All" and footer rows are always visible; only the entries section scrolls.
+func (m *SidebarModel) ensureVisible() {
+	if m.cursor == 0 || m.cursor >= m.importCursorIndex() {
+		// "All" and footer rows are always visible; no scroll adjustment needed.
+		return
 	}
-	if m.cursor >= m.scroll+vh {
-		m.scroll = m.cursor - vh + 1
+	entryIdx := m.cursor - 1
+	vh := m.entryViewportH()
+	if entryIdx < m.scroll {
+		m.scroll = entryIdx
+	}
+	if entryIdx >= m.scroll+vh {
+		m.scroll = entryIdx - vh + 1
 	}
 	if m.scroll < 0 {
 		m.scroll = 0

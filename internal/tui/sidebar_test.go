@@ -22,7 +22,7 @@ func TestSidebar_SectionBreakpoints(t *testing.T) {
 	}{
 		{"no entries", 0, []int{0, 1, 2}},
 		{"one entry", 1, []int{0, 1, 2, 3}},
-		{"three entries", 3, []int{0, 3, 4, 5}},
+		{"three entries", 3, []int{0, 1, 3, 4, 5}},
 	}
 
 	for _, tc := range cases {
@@ -50,16 +50,18 @@ func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 entries → breakpoints [0, 3, 4, 5]
-		{"3e: shift+down from All -> end of worktrees", 3, 0, shiftDownKey(), 3},
+		// 3 entries → breakpoints [0, 1, 3, 4, 5]
+		{"3e: shift+down from All -> first entry", 3, 0, shiftDownKey(), 1},
+		{"3e: shift+down from first entry -> end of worktrees", 3, 1, shiftDownKey(), 3},
 		{"3e: shift+down from middle -> end of worktrees", 3, 2, shiftDownKey(), 3},
 		{"3e: shift+down from end of worktrees -> Import", 3, 3, shiftDownKey(), 4},
 		{"3e: shift+down from Import -> Settings", 3, 4, shiftDownKey(), 5},
 		{"3e: shift+down from Settings clamps", 3, 5, shiftDownKey(), 5},
 		{"3e: shift+up from Settings -> Import", 3, 5, shiftUpKey(), 4},
 		{"3e: shift+up from Import -> end of worktrees", 3, 4, shiftUpKey(), 3},
-		{"3e: shift+up from end of worktrees -> All", 3, 3, shiftUpKey(), 0},
-		{"3e: shift+up from middle -> All", 3, 1, shiftUpKey(), 0},
+		{"3e: shift+up from end of worktrees -> first entry", 3, 3, shiftUpKey(), 1},
+		{"3e: shift+up from middle -> first entry", 3, 2, shiftUpKey(), 1},
+		{"3e: shift+up from first entry -> All", 3, 1, shiftUpKey(), 0},
 		{"3e: shift+up from All clamps", 3, 0, shiftUpKey(), 0},
 
 		// 0 entries → breakpoints [0, 1, 2]
@@ -104,8 +106,9 @@ func TestSidebar_ShiftDown_EnsuresVisible(t *testing.T) {
 		focused: true,
 		height:  8, // listHeight clamps small but viewport stays smaller than list
 	}
-	m.handleKey(shiftDownKey())
-	if m.cursor != 20 { // end of worktrees
+	m.handleKey(shiftDownKey()) // All → first entry (cursor=1)
+	m.handleKey(shiftDownKey()) // first entry → last entry (cursor=20)
+	if m.cursor != 20 {
 		t.Fatalf("cursor: got %d, want 20", m.cursor)
 	}
 	if m.scroll == 0 {

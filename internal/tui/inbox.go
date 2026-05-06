@@ -1751,8 +1751,12 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("+", "="))):
+		// Don't resize while typing a branch name.
+		if m.sidebar.creating {
+			break
+		}
 		// Increase sidebar width by one character.
-		if !m.sidebar.creating && m.width > 0 {
+		if m.width > 0 {
 			target := m.sidebarRenderWidth() + 1
 			newRatio := target * 100 / m.width
 			if newRatio <= m.sidebarWidthRatio {
@@ -1764,8 +1768,12 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("-"))):
+		// Don't resize while typing a branch name.
+		if m.sidebar.creating {
+			break
+		}
 		// Decrease sidebar width by one character.
-		if !m.sidebar.creating && m.width > 0 {
+		if m.width > 0 {
 			target := m.sidebarRenderWidth() - 1
 			newRatio := target * 100 / m.width
 			if newRatio >= m.sidebarWidthRatio {
