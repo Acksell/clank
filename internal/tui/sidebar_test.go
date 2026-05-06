@@ -11,9 +11,9 @@ import (
 // TestSidebar_SectionBreakpoints verifies the breakpoint list adapts to the
 // number of branches:
 //
-//   - 0 branches: [0 (All), 1 (Settings)]   — no separate "end of worktrees"
-//   - 1 branch:   [0, 1, 2]
-//   - 3 branches: [0, 3, 4]
+//   - 0 branches: [0 (All), 1 (Import), 2 (Settings)]
+//   - 1 branch:   [0, 1, 2, 3]
+//   - 3 branches: [0, 3, 4, 5]
 func TestSidebar_SectionBreakpoints(t *testing.T) {
 	t.Parallel()
 
@@ -22,9 +22,9 @@ func TestSidebar_SectionBreakpoints(t *testing.T) {
 		branches int
 		want     []int
 	}{
-		{"no branches", 0, []int{0, 1}},
-		{"one branch", 1, []int{0, 1, 2}},
-		{"three branches", 3, []int{0, 3, 4}},
+		{"no branches", 0, []int{0, 1, 2}},
+		{"one branch", 1, []int{0, 1, 2, 3}},
+		{"three branches", 3, []int{0, 3, 4, 5}},
 	}
 
 	for _, tc := range cases {
@@ -52,23 +52,28 @@ func TestSidebar_ShiftArrowNavigation(t *testing.T) {
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 branches → breakpoints [0, 3, 4]
+		// 3 branches → breakpoints [0, 3, 4, 5]
 		{"3b: shift+down from All -> end of worktrees", 3, 0, shiftDownKey(), 3},
 		{"3b: shift+down from middle -> end of worktrees", 3, 2, shiftDownKey(), 3},
-		{"3b: shift+down from end of worktrees -> Settings", 3, 3, shiftDownKey(), 4},
-		{"3b: shift+down from Settings clamps", 3, 4, shiftDownKey(), 4},
-		{"3b: shift+up from Settings -> end of worktrees", 3, 4, shiftUpKey(), 3},
+		{"3b: shift+down from end of worktrees -> Import", 3, 3, shiftDownKey(), 4},
+		{"3b: shift+down from Import -> Settings", 3, 4, shiftDownKey(), 5},
+		{"3b: shift+down from Settings clamps", 3, 5, shiftDownKey(), 5},
+		{"3b: shift+up from Settings -> Import", 3, 5, shiftUpKey(), 4},
+		{"3b: shift+up from Import -> end of worktrees", 3, 4, shiftUpKey(), 3},
 		{"3b: shift+up from end of worktrees -> All", 3, 3, shiftUpKey(), 0},
 		{"3b: shift+up from middle -> All", 3, 1, shiftUpKey(), 0},
 		{"3b: shift+up from All clamps", 3, 0, shiftUpKey(), 0},
 
-		// 0 branches → breakpoints [0, 1]
-		{"0b: shift+down from All -> Settings", 0, 0, shiftDownKey(), 1},
-		{"0b: shift+up from Settings -> All", 0, 1, shiftUpKey(), 0},
+		// 0 branches → breakpoints [0, 1, 2]
+		{"0b: shift+down from All -> Import", 0, 0, shiftDownKey(), 1},
+		{"0b: shift+down from Import -> Settings", 0, 1, shiftDownKey(), 2},
+		{"0b: shift+up from Settings -> Import", 0, 2, shiftUpKey(), 1},
+		{"0b: shift+up from Import -> All", 0, 1, shiftUpKey(), 0},
 
-		// 1 branch → breakpoints [0, 1, 2]
+		// 1 branch → breakpoints [0, 1, 2, 3]
 		{"1b: shift+down from All -> branch", 1, 0, shiftDownKey(), 1},
-		{"1b: shift+down from branch -> Settings", 1, 1, shiftDownKey(), 2},
+		{"1b: shift+down from branch -> Import", 1, 1, shiftDownKey(), 2},
+		{"1b: shift+down from Import -> Settings", 1, 2, shiftDownKey(), 3},
 	}
 
 	for _, tc := range cases {
@@ -133,15 +138,15 @@ func TestSidebar_ArrowNavigationWraps(t *testing.T) {
 		key        tea.KeyPressMsg
 		wantCursor int
 	}{
-		// 3 branches → maxIdx = 4 (Settings row)
-		{"3b: up from All wraps to Settings", 3, 0, upKey(), 4},
-		{"3b: down from Settings wraps to All", 3, 4, downKey(), 0},
+		// 3 branches → maxIdx = 5 (Settings row)
+		{"3b: up from All wraps to Settings", 3, 0, upKey(), 5},
+		{"3b: down from Settings wraps to All", 3, 5, downKey(), 0},
 		{"3b: up from middle moves up", 3, 2, upKey(), 1},
 		{"3b: down from middle moves down", 3, 2, downKey(), 3},
 
-		// 0 branches → maxIdx = 1
-		{"0b: up from All wraps to Settings", 0, 0, upKey(), 1},
-		{"0b: down from Settings wraps to All", 0, 1, downKey(), 0},
+		// 0 branches → maxIdx = 2
+		{"0b: up from All wraps to Settings", 0, 0, upKey(), 2},
+		{"0b: down from Settings wraps to All", 0, 2, downKey(), 0},
 	}
 
 	for _, tc := range cases {

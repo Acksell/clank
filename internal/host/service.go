@@ -911,6 +911,17 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 	defaultBranch, _ := git.DefaultBranch(projectDir)
 	currentBranch, _ := git.CurrentBranch(projectDir)
 
+	// Derive the repo label: use the remote name when available so that
+	// forks of the same directory name are distinguishable; fall back to
+	// the basename of projectDir for local-only repos.
+	repoLabel := filepath.Base(projectDir)
+	if remoteURL, err := git.RemoteURL(projectDir, "origin"); err == nil && remoteURL != "" {
+		// Strip common git URL noise to produce a short, readable label.
+		// e.g. "https://github.com/acme/api.git" → "api"
+		//      "git@github.com:acme/api.git"     → "api"
+		repoLabel = repoLabelFromURL(remoteURL, repoLabel)
+	}
+
 	result := make([]BranchInfo, 0, len(worktrees))
 	for _, wt := range worktrees {
 		if wt.Bare || wt.Branch == "" {
@@ -921,6 +932,7 @@ func (s *Service) listBranches(_ context.Context, projectDir string) ([]BranchIn
 			WorktreeDir: wt.Path,
 			IsDefault:   wt.Branch == defaultBranch,
 			IsCurrent:   wt.Branch == currentBranch,
+			RepoLabel:   repoLabel,
 		}
 		// Diff stats + ahead count are only meaningful off-default.
 		if wt.Branch != defaultBranch {

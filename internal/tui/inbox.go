@@ -18,9 +18,9 @@ import (
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/config"
+	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
-	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -87,6 +87,10 @@ type InboxModel struct {
 	// Confirm dialog state.
 	showConfirm bool
 	confirm     confirmDialogModel
+
+	// Import Sessions modal state.
+	showImportSessions bool
+	importSessions     importSessionsModel
 
 	// Help overlay state.
 	showHelp bool
@@ -257,9 +261,54 @@ func (m *InboxModel) discoverCmd() tea.Cmd {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.client.Sessions().Discover(ctx, cwd)
+		_ = m.client.Sessions().Discover(ctx, agent.BackendOpenCode, cwd)
+		_ = m.client.Sessions().Discover(ctx, agent.BackendClaudeCode, cwd)
 		// After discovery completes, trigger a refresh to show new sessions.
 		return inboxRefreshMsg{}
+	}
+}
+
+// discoverResultMsg carries the outcome of a user-initiated import.
+type discoverResultMsg struct {
+	imported int // number of sessions imported (best-effort count)
+	err      error
+}
+
+// discoverForProvidersCmd runs discovery for the given providers and returns
+// a discoverResultMsg with the number of newly-imported sessions.
+func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return discoverResultMsg{err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Count sessions before discovery so we can report a delta.
+		before, _ := client.Sessions().List(ctx)
+		beforeCount := len(before)
+
+		for _, p := range providers {
+			var backend agent.BackendType
+			switch p {
+			case importProviderClaude:
+				backend = agent.BackendClaudeCode
+			case importProviderOpenCode:
+				backend = agent.BackendOpenCode
+			default:
+				continue
+			}
+			_ = client.Sessions().Discover(ctx, backend, cwd)
+		}
+
+		after, _ := client.Sessions().List(ctx)
+		imported := len(after) - beforeCount
+		if imported < 0 {
+			imported = 0
+		}
+		return discoverResultMsg{imported: imported}
 	}
 }
 
@@ -419,6 +468,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	}
 
+	// If import sessions modal is open, delegate.
+	if m.showImportSessions {
+		return m.updateImportSessions(msg)
+	}
+
 	// If merge overlay is open, delegate.
 	if m.showMerge {
 		return m.updateMerge(msg)
@@ -463,6 +517,23 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case inboxSearchResultMsg:
 		// Late-arriving search result after exiting search mode — ignore.
 		return m, nil
+
+	case discoverResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, m.loadDataCmd()
+		}
+		noun := "session"
+		if msg.imported != 1 {
+			noun = "sessions"
+		}
+		body := fmt.Sprintf("Found %d new %s.\nAdd them to your inbox?", msg.imported, noun)
+		if msg.imported == 0 {
+			body = "No new sessions found."
+		}
+		m.showConfirm = true
+		m.confirm = newConfirmDialog("Import Sessions", body, "import-done:")
+		return m, m.loadDataCmd()
 
 	case nativeCLIReturnMsg:
 		// User returned from native CLI — refresh inbox to pick up any
@@ -627,6 +698,26 @@ func (m *InboxModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.confirm, cmd = m.confirm.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m *InboxModel) updateImportSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case importSessionsCancelMsg:
+		m.showImportSessions = false
+		return m, nil
+
+	case importSessionsConfirmMsg:
+		m.showImportSessions = false
+		if len(msg.providers) == 0 {
+			return m, nil
+		}
+		return m, m.discoverForProvidersCmd(msg.providers)
+
+	default:
+		var cmd tea.Cmd
+		m.importSessions, cmd = m.importSessions.Update(msg)
 		return m, cmd
 	}
 }
@@ -1140,6 +1231,9 @@ func (m *InboxModel) handleConfirmAction(action string) tea.Cmd {
 		return m.setSessionVisibility(id, agent.VisibilityArchived)
 	case "unarchive":
 		return m.setSessionVisibility(id, agent.VisibilityVisible)
+	case "import-done":
+		// User confirmed the import summary — just reload.
+		return m.loadDataCmd()
 	}
 	return nil
 }
@@ -1391,6 +1485,11 @@ func (m *InboxModel) View() tea.View {
 	// Overlay provider auth modal if open.
 	if m.showProviderAuth {
 		content = overlayCenter(content, m.providerAuth.View(), m.width, m.height)
+	}
+
+	// Overlay import sessions modal if open.
+	if m.showImportSessions {
+		content = overlayCenter(content, m.importSessions.View(), m.width, m.height)
 	}
 
 	// Overlay help if open.
@@ -1655,6 +1754,12 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		// the user can still navigate back into it.
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
+			return m, nil
+		}
+		// Enter on the "↓ Import Sessions" row opens the provider selector.
+		if m.sidebar.CursorOnImport() {
+			m.showImportSessions = true
+			m.importSessions = newImportSessionsModel()
 			return m, nil
 		}
 		// Enter on a branch selects it and switches focus to session pane.

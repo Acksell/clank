@@ -10,14 +10,14 @@ import (
 )
 
 // TestSidebar_SettingsCursorIndex_NoBranches verifies the settings row sits
-// immediately after the "All branches" entry when no branches exist.
+// after the import row when no branches exist: [0=All, 1=Import, 2=Settings].
 func TestSidebar_SettingsCursorIndex_NoBranches(t *testing.T) {
 	t.Parallel()
 
 	m := SidebarModel{}
-	// 0 = All, 1 = Settings footer.
-	if got := m.settingsCursorIndex(); got != 1 {
-		t.Errorf("settingsCursorIndex with 0 branches: got %d, want 1", got)
+	// 0 = All, 1 = Import, 2 = Settings footer.
+	if got := m.settingsCursorIndex(); got != 2 {
+		t.Errorf("settingsCursorIndex with 0 branches: got %d, want 2", got)
 	}
 }
 
@@ -27,9 +27,9 @@ func TestSidebar_SettingsCursorIndex_WithBranches(t *testing.T) {
 	m := SidebarModel{
 		branches: []host.BranchInfo{{Name: "a"}, {Name: "b"}, {Name: "c"}},
 	}
-	// 0 = All, 1..3 = branches, 4 = Settings.
-	if got := m.settingsCursorIndex(); got != 4 {
-		t.Errorf("settingsCursorIndex with 3 branches: got %d, want 4", got)
+	// 0 = All, 1..3 = branches, 4 = Import, 5 = Settings.
+	if got := m.settingsCursorIndex(); got != 5 {
+		t.Errorf("settingsCursorIndex with 3 branches: got %d, want 5", got)
 	}
 }
 
@@ -45,11 +45,12 @@ func TestSidebar_CursorOnSettings_TrackingMoves(t *testing.T) {
 		t.Fatal("cursor should not be on settings at index 0")
 	}
 
-	// Down x 2 -> 0=All, 1=main, 2=Settings.
+	// Down x 3 -> 0=All, 1=main, 2=Import, 3=Settings.
+	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	m.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
 	if !m.CursorOnSettings() {
-		t.Errorf("expected CursorOnSettings after 2x down; cursor=%d", m.cursor)
+		t.Errorf("expected CursorOnSettings after 3x down; cursor=%d", m.cursor)
 	}
 
 	// Down from settings wraps back to the top (All).

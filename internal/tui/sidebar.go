@@ -4,16 +4,17 @@ package tui
 //
 // It contains two sections, selectable with one cursor:
 //
-//   - Worktrees (top): "All" plus every git branch in the active repo.
-//   - Settings (footer): the "⚙ Settings" entry, anchored to the
-//     bottom of the sidebar; activating it opens the settings page
-//     in the right pane.
+//   - Worktrees (top): "All" plus every git branch grouped by RepoLabel.
+//     Group headers are visual-only (non-selectable).
+//   - Footer: "↓ Import Sessions" then "⚙ Settings", anchored to the
+//     bottom of the sidebar.
 //
-// Cursor model: linear `cursor int` across both sections. Layout:
+// Cursor model: linear `cursor int` across all selectable rows. Layout:
 //
 //	[0]                 → "All" worktrees
-//	[1 .. M]            → branches (M rows)
-//	[M+1]               → "⚙ Settings" footer
+//	[1 .. M]            → branches (M rows, group headers not counted)
+//	[M+1]               → "↓ Import Sessions" footer
+//	[M+2]               → "⚙ Settings" footer
 //
 // Section boundaries are computed at use-time (cursorSection /
 // settingsCursorIndex) so adding rows doesn't require renumbering.
@@ -30,8 +31,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/acksell/clank/internal/agent"
-	"github.com/acksell/clank/internal/host"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/host"
 )
 
 // sidebarWidth is the fixed width of the sidebar (including border).
@@ -63,6 +64,10 @@ type branchWorktreeCreatedMsg struct {
 // "⚙ Settings" footer entry in the sidebar. It's defined here (rather than
 // in inbox.go) so sidebar consumers can react without importing inbox types.
 type SettingsRequestedMsg struct{}
+
+// ImportSessionsRequestedMsg is emitted when the user activates the
+// "↓ Import Sessions" footer entry in the sidebar.
+type ImportSessionsRequestedMsg struct{}
 
 // branchSessionStatus summarises session states for a single worktree branch.
 type branchSessionStatus struct {
@@ -144,16 +149,27 @@ func (m *SidebarModel) Init() tea.Cmd {
 
 // --- Cursor / section helpers ---
 
-// totalRows is the number of selectable rows across both sections.
-// Layout: [1 "All"][len(branches) branches][1 settings].
+// totalRows is the number of selectable rows across all sections.
+// Layout: [1 "All"][len(branches) branches][1 import][1 settings].
 func (m *SidebarModel) totalRows() int {
-	return 1 + len(m.branches) + 1
+	return 1 + len(m.branches) + 2
+}
+
+// importCursorIndex returns the cursor value of the "↓ Import Sessions"
+// footer row. Always second-to-last.
+func (m *SidebarModel) importCursorIndex() int {
+	return m.totalRows() - 2
 }
 
 // settingsCursorIndex returns the cursor value of the "⚙ Settings"
 // footer row. Always the last row in the sidebar.
 func (m *SidebarModel) settingsCursorIndex() int {
 	return m.totalRows() - 1
+}
+
+// CursorOnImport reports whether the cursor is on the import row.
+func (m *SidebarModel) CursorOnImport() bool {
+	return m.cursor == m.importCursorIndex()
 }
 
 // CursorOnSettings reports whether the cursor is on the settings row.
@@ -166,7 +182,7 @@ func (m *SidebarModel) CursorOnSettings() bool {
 // row; idx>=1 means branches[idx-1]. For sectionSettings, idx is
 // always 0 (single row).
 func (m *SidebarModel) cursorSection() (sidebarSection, int) {
-	if m.cursor >= m.settingsCursorIndex() {
+	if m.cursor >= m.importCursorIndex() {
 		return sectionSettings, 0
 	}
 	return sectionWorktrees, m.cursor
@@ -178,12 +194,14 @@ func (m *SidebarModel) cursorSection() (sidebarSection, int) {
 //   - 0                       — top of worktrees ("All")
 //   - len(branches)           — last worktree row (omitted when there are
 //     no branches, since it would coincide with "All")
+//   - importCursorIndex()     — Import Sessions footer
 //   - settingsCursorIndex()   — Settings footer
 func (m *SidebarModel) sectionBreakpoints() []int {
 	bp := []int{0}
 	if last := len(m.branches); last > 0 {
 		bp = append(bp, last)
 	}
+	bp = append(bp, m.importCursorIndex())
 	bp = append(bp, m.settingsCursorIndex())
 	return bp
 }
@@ -417,11 +435,9 @@ func (m *SidebarModel) View() string {
 	}
 	lines = append(lines, allLabel)
 
-	// Branch entries.
-	for i, b := range m.branches {
-		idx := i + 1 // cursor index (0 = All)
-		lines = append(lines, m.renderBranch(b, idx, contentWidth))
-	}
+	// Branch entries grouped by RepoLabel. Group headers are visual-only
+	// (non-selectable); cursor indices still map 1:1 to m.branches.
+	lines = append(lines, m.renderGroupedBranches(contentWidth)...)
 
 	// New branch input.
 	if m.creating {
@@ -438,10 +454,8 @@ func (m *SidebarModel) View() string {
 		lines = append(lines, errLine)
 	}
 
-	// Footer: pad with blank lines to push the settings row to the bottom
-	// of the sidebar, separated from the branch list by a dim rule. The
-	// footer is always rendered so it's discoverable even when the branch
-	// list is empty.
+	// Footer: pad with blank lines to push the footer rows to the bottom
+	// of the sidebar, separated from the branch list by a dim rule.
 	listH := m.listHeight()
 	footer := m.renderFooter(contentWidth)
 	footerLines := strings.Count(footer, "\n") + 1
@@ -461,6 +475,36 @@ func (m *SidebarModel) View() string {
 		Height(m.listHeight())
 
 	return style.Render(content)
+}
+
+// renderGroupedBranches renders all branches grouped by RepoLabel.
+// Group headers are visual-only (not counted in cursor indices).
+func (m *SidebarModel) renderGroupedBranches(contentWidth int) []string {
+	if len(m.branches) == 0 {
+		return nil
+	}
+
+	var lines []string
+	groupLabelStyle := lipgloss.NewStyle().Foreground(mutedColor).Bold(true)
+
+	currentGroup := ""
+	for i, b := range m.branches {
+		label := b.RepoLabel
+		if label == "" {
+			label = "local"
+		}
+		if label != currentGroup {
+			currentGroup = label
+			// Render group header, truncated to fit.
+			// Group header is flush-left (no indent) so it reads as a
+			// section title above the indented branch rows beneath it.
+			headerText := truncateStr(label, contentWidth)
+			lines = append(lines, groupLabelStyle.Render(headerText))
+		}
+		idx := i + 1 // cursor index (0 = All)
+		lines = append(lines, m.renderBranch(b, idx, contentWidth))
+	}
+	return lines
 }
 
 // renderBranch renders a single worktree entry with diff stats.
@@ -541,27 +585,40 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 	return line
 }
 
-// renderFooter renders the bottom-anchored block of the sidebar. Today
-// it contains a single "⚙ Settings" entry; additional footer rows can
-// be added here in the future (they'd need their own cursor slots).
+// renderFooter renders the bottom-anchored block of the sidebar containing
+// "↓ Import Sessions" and "⚙ Settings".
 func (m *SidebarModel) renderFooter(maxWidth int) string {
 	sep := lipgloss.NewStyle().
 		Foreground(mutedColor).
 		Render(strings.Repeat("─", maxWidth))
 
-	label := "⚙ Settings"
-	selected := m.CursorOnSettings() && m.focused
-	var row string
-	if selected {
+	importLabel := "↓ Import Sessions"
+	importSelected := m.CursorOnImport() && m.focused
+	var importRow string
+	if importSelected {
 		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
-		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(label)
-		row = prefix + name
-	} else if m.CursorOnSettings() {
-		row = lipgloss.NewStyle().Foreground(textColor).Render("  " + label)
+		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(importLabel)
+		importRow = prefix + name
+	} else if m.CursorOnImport() {
+		importRow = lipgloss.NewStyle().Foreground(textColor).Render("  " + importLabel)
 	} else {
-		row = lipgloss.NewStyle().Foreground(dimColor).Render("  " + label)
+		importRow = lipgloss.NewStyle().Foreground(dimColor).Render("  " + importLabel)
 	}
-	return sep + "\n" + row
+
+	settingsLabel := "⚙ Settings"
+	settingsSelected := m.CursorOnSettings() && m.focused
+	var settingsRow string
+	if settingsSelected {
+		prefix := lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
+		name := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render(settingsLabel)
+		settingsRow = prefix + name
+	} else if m.CursorOnSettings() {
+		settingsRow = lipgloss.NewStyle().Foreground(textColor).Render("  " + settingsLabel)
+	} else {
+		settingsRow = lipgloss.NewStyle().Foreground(dimColor).Render("  " + settingsLabel)
+	}
+
+	return sep + "\n" + importRow + "\n" + settingsRow
 }
 
 // listHeight returns the height available for the body (excluding border).
