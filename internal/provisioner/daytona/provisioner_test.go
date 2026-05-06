@@ -87,30 +87,6 @@ func TestNew_RejectsReservedExtraEnv(t *testing.T) {
 }
 
 // TestSafeHostnameSuffix locks the hostname-suffix shape.
-// TestRecoveryLabels_ScopedByUser pins the regression CR raised:
-// distinct user IDs must produce distinct label maps so List in
-// recoverByLabel can't return user B's sandbox to user A.
-func TestRecoveryLabels_ScopedByUser(t *testing.T) {
-	t.Parallel()
-	a := recoveryLabels("alice")
-	b := recoveryLabels("bob")
-
-	if a[userLabel] != "alice" {
-		t.Errorf("alice's userLabel = %q, want %q", a[userLabel], "alice")
-	}
-	if b[userLabel] != "bob" {
-		t.Errorf("bob's userLabel = %q, want %q", b[userLabel], "bob")
-	}
-	if a[userLabel] == b[userLabel] {
-		t.Error("alice and bob produced the same userLabel value — recovery would cross users")
-	}
-	// The global persistence label must still be present so List can
-	// filter to provisioner-managed sandboxes.
-	if a[persistenceLabel] != persistenceLabelValue {
-		t.Errorf("persistenceLabel missing/wrong: got %q, want %q", a[persistenceLabel], persistenceLabelValue)
-	}
-}
-
 func TestSafeHostnameSuffix(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

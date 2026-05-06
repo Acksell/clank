@@ -319,49 +319,29 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
-	// Store miss: a fresh user with no prior sandbox should fall
-	// straight through to create. If Daytona disagrees and reports a
-	// sandbox already labeled for this user, the store and the cloud
-	// have diverged — refuse to proceed. The original bearer token
-	// is unrecoverable today (lives only in the row we just lost),
-	// so adoption would 401 every gateway request and creating a
-	// duplicate alongside is worse. A future secrets-backed recovery
-	// can replace this fail-fast.
-	if orphan := p.findStrandedSandbox(ctx, userID); orphan != nil {
-		return nil, false, "", fmt.Errorf("daytona provisioner: no store row for user %q but sandbox %s already exists with matching labels — store and Daytona are out of sync. Run `daytona sandbox delete %s` (or restore the daemon's host store from backup) before retrying", userID, orphan.ID, orphan.ID)
-	}
-
+	// Store miss: mint a fresh sandbox. The store row is the sole
+	// source of truth for user → sandbox; we don't query Daytona by
+	// metadata to "find" anything, ever. If a true persistent-across-
+	// DB-loss story is ever needed, that's a snapshot/checkpoint
+	// abstraction layer's job, not the provisioner's.
 	authToken, err := generateAuthToken()
 	if err != nil {
 		return nil, false, "", fmt.Errorf("generate auth-token: %w", err)
 	}
-	sandbox, err := p.create(ctx, userID, authToken)
+	sandbox, err := p.create(ctx, authToken)
 	if err != nil {
 		return nil, false, "", err
 	}
 	return sandbox, true, authToken, nil
 }
 
-// findStrandedSandbox returns a sandbox tagged for this user when one
-// exists, used solely to detect store/Daytona divergence so the
-// caller can fail fast. We do not adopt — without the original bearer
-// token (which lived in the missing store row) the gateway can't
-// authenticate to its clank-host.
-func (p *Provisioner) findStrandedSandbox(ctx context.Context, userID string) *daytona.Sandbox {
-	one := 1
-	page, err := p.client.List(ctx, recoveryLabels(userID), nil, &one)
-	if err != nil || page == nil || len(page.Items) == 0 {
-		return nil
-	}
-	return page.Items[0]
-}
-
 // create issues a new Create with the persistence + per-user labels
 // set so future recoveries scope to the same userID. AutoDeleteInterval
 // is left nil so the sandbox persists indefinitely. authToken is baked
 // into the sandbox env so clank-host's bearer middleware enforces it
-// from the first request.
-func (p *Provisioner) create(ctx context.Context, userID, authToken string) (*daytona.Sandbox, error) {
+// from the first request. The store row is the sole source of truth
+// for user → sandbox binding; we don't tag the sandbox with the userID.
+func (p *Provisioner) create(ctx context.Context, authToken string) (*daytona.Sandbox, error) {
 	envVars := map[string]string{
 		"CLANK_HUB_URL":          p.opts.HubBaseURL,
 		"CLANK_HUB_TOKEN":        p.opts.HubAuthToken,
@@ -377,7 +357,6 @@ func (p *Provisioner) create(ctx context.Context, userID, authToken string) (*da
 
 	base := types.SandboxBaseParams{
 		EnvVars: envVars,
-		Labels:  recoveryLabels(userID),
 		Public:  true, // expose preview port; preview token still gates auth
 	}
 
