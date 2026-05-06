@@ -319,18 +319,15 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 		return nil, false, "", fmt.Errorf("look up host: %w", err)
 	}
 
-	// Recovery: even with no store row, we may have an existing
-	// sandbox tagged with our label AND owned by this userID (e.g.
-	// corrupted DB, manual migration). Adopt the first match. We
-	// can't recover the original auth-token (it was only known by the
-	// daemon that created the sandbox), so this returns "" and the
-	// caller proceeds without app-layer auth — same as a pre-PR-2
-	// sandbox. Pre-PR-2 sandboxes don't have userLabel so we can't
-	// adopt them in a multi-user world; the migration path is to
-	// re-create.
-	if sb := p.recoverByLabel(ctx, userID); sb != nil {
-		p.log.Printf("daytona provisioner: adopted unrecorded sandbox %s by label for user %s", sb.ID, userID)
-		return sb, false, "", nil
+	// On store miss we used to label-recover an existing sandbox.
+	// That path is broken on PR-3: clank-host's bearer middleware was
+	// configured at create-time with a token only the original daemon
+	// knew, and the store row holding it just disappeared. Adopting
+	// the orphan would 401 every request indefinitely. Detect any
+	// orphan, log a clear pointer for manual cleanup, then create a
+	// fresh sandbox with a fresh token.
+	if orphan := p.findOrphanSandbox(ctx, userID); orphan != nil {
+		p.log.Printf("daytona provisioner: orphan sandbox %s exists for user %s but its auth-token isn't recoverable; creating a fresh sandbox alongside it. Run `daytona sandbox delete %s` to reclaim resources.", orphan.ID, userID, orphan.ID)
 	}
 
 	authToken, err := generateAuthToken()
@@ -344,20 +341,15 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID string) (*dayt
 	return sandbox, true, authToken, nil
 }
 
-// recoverByLabel lists sandboxes filtered by both the global
-// persistence label AND the per-user label, returning the first
-// match. Without the user-scope, distinct users with missing/corrupt
-// store rows could rebind to each other's sandboxes — a cross-user
-// session-data leak.
-func (p *Provisioner) recoverByLabel(ctx context.Context, userID string) *daytona.Sandbox {
+// findOrphanSandbox lists sandboxes labeled for this user, returning
+// the first match. Used only to log a manual-cleanup pointer when the
+// store is missing but a sandbox isn't. We don't adopt — we have no
+// way to authenticate to its running clank-host without the original
+// bearer token.
+func (p *Provisioner) findOrphanSandbox(ctx context.Context, userID string) *daytona.Sandbox {
 	one := 1
 	page, err := p.client.List(ctx, recoveryLabels(userID), nil, &one)
-	if err != nil {
-		// Best-effort: fall through to create.
-		p.log.Printf("daytona provisioner: list by label failed (%v); will create fresh", err)
-		return nil
-	}
-	if page == nil || len(page.Items) == 0 {
+	if err != nil || page == nil || len(page.Items) == 0 {
 		return nil
 	}
 	return page.Items[0]
