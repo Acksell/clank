@@ -2012,24 +2012,32 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		branchExtra = branchBadgeWidth - 1 // visible width including trailing space
 	}
 
-	projectName := agent.RepoDisplayName(s.GitRef)
-	if len(projectName) > 12 {
-		projectName = projectName[:11] + "…"
+	// Project badge — shown only in "All" view; redundant when a specific folder is selected.
+	const projectBadgeWidth = 13 // 12 chars + 1 trailing space
+	styledProject := ""
+	isAllView := m.sidebar.SelectedBranch() == ""
+	if isAllView {
+		projectName := agent.RepoDisplayName(s.GitRef)
+		if len(projectName) > 12 {
+			projectName = projectName[:11] + "…"
+		}
+		paddedProject := fmt.Sprintf("%-12s", projectName)
+		projectColor := secondaryColor
+		if isDone || isArchived {
+			projectColor = mutedColor
+		}
+		styledProject = lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject) + " "
 	}
-	paddedProject := fmt.Sprintf("%-12s", projectName)
-	projectColor := secondaryColor
-	if isDone {
-		projectColor = mutedColor
-	} else if isArchived {
-		projectColor = mutedColor
-	}
-	styledProject := lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject)
 
-	// Fixed-width columns before the prompt: "  " (2) + project (12) + " " (1) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
+	// Fixed-width columns before the prompt: "  " (2) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
+	// project badge (13) is added on top when in "All" view.
 	// We also reserve 9 chars on the right for the timestamp (8 chars padded + 1 space).
 	const agoWidth = 9
-	const draftSuffix = " draft"                         // 6 chars when present
-	leftFixedWidth := 2 + 12 + 1 + 1 + 1 + 5 + 1 + 1 + 1 // 25
+	const draftSuffix = " draft"                // 6 chars when present
+	leftFixedWidth := 2 + 1 + 1 + 5 + 1 + 1 + 1 // 12
+	if isAllView {
+		leftFixedWidth += projectBadgeWidth
+	}
 	draftExtra := 0
 	if s.Draft != "" {
 		draftExtra = len(draftSuffix)
@@ -2070,7 +2078,8 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 	styledAgo := lipgloss.NewStyle().Foreground(dimColor).Render(ago)
 
 	// Build the left portion of the line (everything except the timestamp).
-	left := fmt.Sprintf("  %s %s %s %s%s %s",
+	// styledProject already includes its trailing space when non-empty.
+	left := fmt.Sprintf("  %s%s %s %s%s %s",
 		styledProject,
 		stateIcon,
 		agentBadge,
