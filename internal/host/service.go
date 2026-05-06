@@ -480,9 +480,15 @@ func (s *Service) applyEventToMetadata(sessionID string, evt agent.Event) {
 
 	ctx := context.Background()
 	info, err := s.sessionsStore.GetSession(ctx, sessionID)
+	if errors.Is(err, store.ErrSessionNotFound) {
+		// Out-of-band session (e.g. tests that didn't pre-persist).
+		return
+	}
 	if err != nil {
-		// Out-of-band session (e.g. tests that didn't pre-persist) —
-		// silently skip.
+		// A real DB error here would silently lose the first-time
+		// ExternalID stamp; log so a daemon-side outage is visible in
+		// the host's stderr instead of disappearing into the relay.
+		s.log.Printf("warning: load session %s metadata for %s event: %v", sessionID, evt.Type, err)
 		return
 	}
 

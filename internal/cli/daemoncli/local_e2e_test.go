@@ -212,10 +212,13 @@ type stubBackend struct {
 	// Records mutating operations so wire-level tests can assert the
 	// host translated the request correctly without mocking yet
 	// another struct.
-	aborted  bool
-	stopped  bool
-	revertID string
-	forkID   string
+	aborted          bool
+	stopped          bool
+	revertID         string
+	forkID           string
+	permissionID     string
+	permissionAllow  bool
+	permissionCalled bool
 }
 
 // PushEvent injects an event into the backend's events channel as if
@@ -325,7 +328,14 @@ func (b *stubBackend) Fork(_ context.Context, msgID string) (agent.ForkResult, e
 	b.mu.Unlock()
 	return agent.ForkResult{ID: "ext-forked-" + msgID}, nil
 }
-func (*stubBackend) RespondPermission(context.Context, string, bool) error { return nil }
+func (b *stubBackend) RespondPermission(_ context.Context, permissionID string, allow bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.permissionID = permissionID
+	b.permissionAllow = allow
+	b.permissionCalled = true
+	return nil
+}
 func (b *stubBackend) Events() <-chan agent.Event                          { return b.events }
 
 // initTestGitRepo creates a git repo with an "origin" remote so

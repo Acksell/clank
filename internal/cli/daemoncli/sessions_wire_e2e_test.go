@@ -298,10 +298,11 @@ func TestWire_TitleEventUpdatesPersistedSession(t *testing.T) {
 	}
 }
 
-// TestWire_GetMessages_Empty pins the contract that GET /messages
-// returns an empty array (not null) when the backend has no history.
-// The TUI's range loop relies on this — `for _, m := range nil`
-// works in Go but caused subtle flicker in upstream lipgloss usage.
+// TestWire_GetMessages_Empty pins that the GET /messages route is
+// registered and returns successfully on a session with no history —
+// it does not assert on the nil-vs-empty-slice shape because the
+// daemonclient unmarshals JSON and either form is fine for the TUI's
+// range loop. Kept as a smoke test for the route wiring.
 func TestWire_GetMessages_Empty(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
@@ -309,15 +310,13 @@ func TestWire_GetMessages_Empty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	msgs, err := td.Client.Session(info.ID).Messages(ctx)
-	if err != nil {
+	if _, err := td.Client.Session(info.ID).Messages(ctx); err != nil {
 		// Some backends may return an error here on empty; either is
 		// acceptable as long as the wire didn't 404 the route.
 		if strings.Contains(err.Error(), "404") {
 			t.Fatalf("messages endpoint not registered? got: %v", err)
 		}
 	}
-	_ = msgs // empty slice or nil — both are fine
 }
 
 // TestWire_PendingPermission_StubReturnsEmpty pins the post-PR-3
@@ -347,12 +346,24 @@ func TestWire_PendingPermission_StubReturnsEmpty(t *testing.T) {
 func TestWire_PermissionReply(t *testing.T) {
 	t.Parallel()
 	td := newTestDaemon(t)
-	info, _ := td.CreateOpenCodeSession(t, "tmp")
+	info, b := td.CreateOpenCodeSession(t, "tmp")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	if err := td.Client.Session(info.ID).ReplyPermission(ctx, "perm-1", true); err != nil {
 		t.Fatalf("ReplyPermission: %v", err)
+	}
+	b.mu.Lock()
+	called, gotID, gotAllow := b.permissionCalled, b.permissionID, b.permissionAllow
+	b.mu.Unlock()
+	if !called {
+		t.Fatal("backend.RespondPermission was not invoked")
+	}
+	if gotID != "perm-1" {
+		t.Errorf("permission id = %q, want %q", gotID, "perm-1")
+	}
+	if !gotAllow {
+		t.Errorf("permission allow = %v, want true", gotAllow)
 	}
 }
 

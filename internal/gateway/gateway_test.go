@@ -13,13 +13,17 @@ import (
 )
 
 // stubProvisioner is a minimal provisioner.Provisioner that returns
-// a fixed HostRef. Tests configure the URL and Transport per case.
+// a fixed HostRef. Tests configure the URL and Transport per case;
+// ensureCalls lets a test pin "this code path didn't touch the
+// provisioner" (e.g. /ping must answer locally).
 type stubProvisioner struct {
-	ref provisioner.HostRef
-	err error
+	ref          provisioner.HostRef
+	err          error
+	ensureCalls  int
 }
 
 func (s *stubProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
+	s.ensureCalls++
 	return s.ref, s.err
 }
 func (*stubProvisioner) SuspendHost(context.Context, string) error { return nil }
@@ -64,6 +68,11 @@ func TestPing_DoesNotTouchProvisioner(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/ping status: got %d, want 200", resp.StatusCode)
+	}
+	// /ping must answer locally — without this assertion the test
+	// would still pass even if /ping started waking the user's host.
+	if prov.ensureCalls != 0 {
+		t.Errorf("EnsureHost call count: got %d, want 0", prov.ensureCalls)
 	}
 }
 
