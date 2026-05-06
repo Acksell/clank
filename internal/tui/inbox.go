@@ -1984,16 +1984,6 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		unreadMark = lipgloss.NewStyle().Foreground(dangerColor).Bold(true).Render("*")
 	}
 
-	// Agent mode badge — colored so users can quickly triage build vs plan sessions.
-	agentBadge := fmt.Sprintf("%-5s", "")
-	if s.Agent != "" {
-		badgeColor := agentColor(s.Agent)
-		if isDone || isArchived {
-			badgeColor = mutedColor
-		}
-		agentBadge = lipgloss.NewStyle().Foreground(badgeColor).Render(fmt.Sprintf("%-5s", s.Agent))
-	}
-
 	// Branch badge — shown only when viewing all branches (no branch filter active).
 	const branchBadgeWidth = 12
 	branchBadge := ""
@@ -2029,12 +2019,12 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 		styledProject = lipgloss.NewStyle().Foreground(projectColor).Render(paddedProject) + " "
 	}
 
-	// Fixed-width columns before the prompt: "  " (2) + stateIcon (1) + " " (1) + agent (5) + " " (1) + unread (1) + " " (1)
+	// Fixed-width columns before the prompt: "  " (2) + stateIcon (1) + " " (1) + unread (1) + " " (1)
 	// project badge (13) is added on top when in "All" view.
 	// We also reserve 9 chars on the right for the timestamp (8 chars padded + 1 space).
 	const agoWidth = 9
-	const draftSuffix = " draft"                // 6 chars when present
-	leftFixedWidth := 2 + 1 + 1 + 5 + 1 + 1 + 1 // 12
+	const draftSuffix = " draft"        // 6 chars when present
+	leftFixedWidth := 2 + 1 + 1 + 1 + 1 // 6
 	if isAllView {
 		leftFixedWidth += projectBadgeWidth
 	}
@@ -2079,10 +2069,9 @@ func (m *InboxModel) renderRow(row inboxRow, selected bool) string {
 
 	// Build the left portion of the line (everything except the timestamp).
 	// styledProject already includes its trailing space when non-empty.
-	left := fmt.Sprintf("  %s%s %s %s%s %s",
+	left := fmt.Sprintf("  %s%s %s%s %s",
 		styledProject,
 		stateIcon,
-		agentBadge,
 		branchBadge,
 		unreadMark,
 		prompt,
