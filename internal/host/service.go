@@ -18,6 +18,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host/store"
@@ -319,14 +321,49 @@ func (s *Service) DiscoverSessions(ctx context.Context, bt agent.BackendType, se
 	}
 	if seedDir == "" {
 		if all, ok := mgr.(agent.AllSessionDiscoverer); ok {
-			return all.DiscoverAllSessions(ctx)
+			snaps, err := all.DiscoverAllSessions(ctx)
+			return s.persistSnapshots(ctx, snaps, err)
 		}
 	}
 	disc, ok := mgr.(agent.SessionDiscoverer)
 	if !ok {
 		return nil, nil
 	}
-	return disc.DiscoverSessions(ctx, seedDir)
+	snaps, err := disc.DiscoverSessions(ctx, seedDir)
+	return s.persistSnapshots(ctx, snaps, err)
+}
+
+// persistSnapshots upserts newly-discovered session snapshots into the store,
+// skipping any that already have a matching ExternalID. Returns all snapshots
+// (including pre-existing ones) so callers can report totals.
+func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSnapshot, err error) ([]agent.SessionSnapshot, error) {
+	if err != nil || s.sessionsStore == nil {
+		return snaps, err
+	}
+	for _, snap := range snaps {
+		if snap.ID == "" {
+			continue
+		}
+		if _, lookupErr := s.sessionsStore.FindSessionByExternalID(ctx, snap.ID); lookupErr == nil {
+			// Already registered — skip.
+			continue
+		}
+		info := agent.SessionInfo{
+			ID:              ulid.Make().String(),
+			ExternalID:      snap.ID,
+			Backend:         snap.Backend,
+			Status:          agent.StatusIdle,
+			Title:           snap.Title,
+			RevertMessageID: snap.RevertMessageID,
+			GitRef:          agent.GitRef{LocalPath: snap.Directory},
+			CreatedAt:       snap.CreatedAt,
+			UpdatedAt:       snap.UpdatedAt,
+		}
+		if err := s.sessionsStore.UpsertSession(ctx, info); err != nil {
+			s.log.Printf("discover: persist snapshot extID=%s: %v", snap.ID, err)
+		}
+	}
+	return snaps, nil
 }
 
 // CreateSession registers a fresh SessionBackend under sessionID. The

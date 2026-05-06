@@ -4,15 +4,15 @@ package tui
 //
 // It contains two sections, selectable with one cursor:
 //
-//   - Worktrees (top): "All" plus every git branch grouped by RepoLabel.
-//     Group headers are visual-only (non-selectable).
+//   - Worktrees (top): "All" plus one entry per unique GitRef.LocalPath
+//     derived from cached sessions, sorted by most-recent UpdatedAt.
 //   - Footer: "↓ Import Sessions" then "⚙ Settings", anchored to the
 //     bottom of the sidebar.
 //
 // Cursor model: linear `cursor int` across all selectable rows. Layout:
 //
 //	[0]                 → "All" worktrees
-//	[1 .. M]            → branches (M rows, group headers not counted)
+//	[1 .. M]            → entries (M rows)
 //	[M+1]               → "↓ Import Sessions" footer
 //	[M+2]               → "⚙ Settings" footer
 //
@@ -22,6 +22,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,7 +37,8 @@ import (
 	"github.com/acksell/clank/internal/host"
 )
 
-// sidebarWidth is the fixed width of the sidebar (including border).
+// sidebarWidth is the fallback width of the sidebar (including border)
+// used when the screen width is not yet known.
 const sidebarWidth = 30
 
 // sidebarSection identifies which section the cursor is in. Used by
@@ -48,16 +51,38 @@ const (
 	sectionSettings
 )
 
-// branchLoadedMsg carries the result of loading branches from the daemon.
-type branchLoadedMsg struct {
-	branches []host.BranchInfo
-	err      error
+// worktreeEntry is one row in the worktrees section, derived from sessions.
+type worktreeEntry struct {
+	LocalPath       string
+	Label           string // filepath.Base(LocalPath)
+	Total           int
+	Active          int
+	Done            int
+	Archived        int
+	LatestUpdatedAt time.Time
+}
+
+// IsDone returns true when every session is done or archived.
+func (e worktreeEntry) IsDone() bool {
+	return e.Total > 0 && e.Active == 0
+}
+
+// IsArchived returns true when every session is archived.
+func (e worktreeEntry) IsArchived() bool {
+	return e.Total > 0 && e.Archived == e.Total
 }
 
 // branchWorktreeCreatedMsg is sent after a worktree is created for a new branch.
 type branchWorktreeCreatedMsg struct {
-	branch string
-	err    error
+	branch      string
+	worktreeDir string
+	err         error
+}
+
+// newWorktreeSessionRequestMsg is emitted after a worktree is created so the
+// inbox can immediately open a composing session inside it.
+type newWorktreeSessionRequestMsg struct {
+	worktreeDir string
 }
 
 // SettingsRequestedMsg is emitted by the inbox when the user activates the
@@ -69,26 +94,6 @@ type SettingsRequestedMsg struct{}
 // "↓ Import Sessions" footer entry in the sidebar.
 type ImportSessionsRequestedMsg struct{}
 
-// branchSessionStatus summarises session states for a single worktree branch.
-type branchSessionStatus struct {
-	Total    int // Total sessions on this worktree
-	Active   int // Visible / in-progress sessions
-	Done     int // Sessions marked done
-	Archived int // Sessions archived
-}
-
-// IsDone returns true when the worktree has sessions and every session is
-// either done or archived.
-func (s branchSessionStatus) IsDone() bool {
-	return s.Total > 0 && s.Active == 0
-}
-
-// IsArchived returns true when the worktree has sessions and every session
-// is archived (none merely "done").
-func (s branchSessionStatus) IsArchived() bool {
-	return s.Total > 0 && s.Archived == s.Total
-}
-
 // SidebarModel displays worktrees + a settings footer
 type SidebarModel struct {
 	client *daemonclient.Client
@@ -99,19 +104,16 @@ type SidebarModel struct {
 	hostname   host.Hostname
 	gitRef     agent.GitRef
 
-	branches []host.BranchInfo
-	cursor   int
-	scroll   int
-
-	// Session status per branch (set by the inbox when sessions are loaded).
-	sessionStatus map[string]branchSessionStatus // branch name -> session status summary
+	entries []worktreeEntry
+	cursor  int
+	scroll  int
 
 	// New branch input mode.
 	creating bool
 	input    textinput.Model
 
 	// "All branches" is the virtual first entry (index -1 means all).
-	// cursor==0 means "All branches", cursor>=1 means branches[cursor-1].
+	// cursor==0 means "All branches", cursor>=1 means entries[cursor-1].
 	focused bool
 	width   int
 	height  int
@@ -138,21 +140,71 @@ func NewSidebarModel(client *daemonclient.Client, hostname host.Hostname, gitRef
 		gitRef:     gitRef,
 		projectDir: projectDir,
 		input:      ti,
-		cursor:     0, // "All branches" selected by default
+		cursor:     0, // "All" selected by default
 	}
 }
 
-// Init fetches branches from the daemon.
+// Init is a no-op; the sidebar is populated via SetSessions.
 func (m *SidebarModel) Init() tea.Cmd {
-	return m.loadBranches()
+	return nil
+}
+
+// SetSessions rebuilds the worktree entries from the provided sessions.
+// Entries are derived by grouping on GitRef.LocalPath and sorted by most-recent UpdatedAt.
+func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
+	type entryAcc struct {
+		worktreeEntry
+	}
+	byPath := make(map[string]*entryAcc)
+	for _, s := range sessions {
+		path := s.GitRef.LocalPath
+		if path == "" {
+			continue
+		}
+		acc := byPath[path]
+		if acc == nil {
+			acc = &entryAcc{worktreeEntry{
+				LocalPath: path,
+				Label:     filepath.Base(path),
+			}}
+			byPath[path] = acc
+		}
+		acc.Total++
+		switch s.Visibility {
+		case agent.VisibilityArchived:
+			acc.Archived++
+		case agent.VisibilityDone:
+			acc.Done++
+		default:
+			acc.Active++
+		}
+		if s.UpdatedAt.After(acc.LatestUpdatedAt) {
+			acc.LatestUpdatedAt = s.UpdatedAt
+		}
+	}
+
+	entries := make([]worktreeEntry, 0, len(byPath))
+	for _, acc := range byPath {
+		entries = append(entries, acc.worktreeEntry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].LatestUpdatedAt.After(entries[j].LatestUpdatedAt)
+	})
+
+	m.entries = entries
+
+	// Clamp cursor so it stays valid after the list shrinks.
+	if max := m.settingsCursorIndex(); m.cursor > max {
+		m.cursor = max
+	}
 }
 
 // --- Cursor / section helpers ---
 
 // totalRows is the number of selectable rows across all sections.
-// Layout: [1 "All"][len(branches) branches][1 import][1 settings].
+// Layout: [1 "All"][len(entries) entries][1 import][1 settings].
 func (m *SidebarModel) totalRows() int {
-	return 1 + len(m.branches) + 2
+	return 1 + len(m.entries) + 2
 }
 
 // importCursorIndex returns the cursor value of the "↓ Import Sessions"
@@ -179,7 +231,7 @@ func (m *SidebarModel) CursorOnSettings() bool {
 
 // cursorSection returns which section the cursor is in and the
 // section-local index. For sectionWorktrees, idx==0 means the "All"
-// row; idx>=1 means branches[idx-1]. For sectionSettings, idx is
+// row; idx>=1 means entries[idx-1]. For sectionSettings, idx is
 // always 0 (single row).
 func (m *SidebarModel) cursorSection() (sidebarSection, int) {
 	if m.cursor >= m.importCursorIndex() {
@@ -189,16 +241,10 @@ func (m *SidebarModel) cursorSection() (sidebarSection, int) {
 }
 
 // sectionBreakpoints returns the cursor positions that shift+up/shift+down
-// snap between. Breakpoints, in order:
-//
-//   - 0                       — top of worktrees ("All")
-//   - len(branches)           — last worktree row (omitted when there are
-//     no branches, since it would coincide with "All")
-//   - importCursorIndex()     — Import Sessions footer
-//   - settingsCursorIndex()   — Settings footer
+// snap between.
 func (m *SidebarModel) sectionBreakpoints() []int {
 	bp := []int{0}
-	if last := len(m.branches); last > 0 {
+	if last := len(m.entries); last > 0 {
 		bp = append(bp, last)
 	}
 	bp = append(bp, m.importCursorIndex())
@@ -206,43 +252,31 @@ func (m *SidebarModel) sectionBreakpoints() []int {
 	return bp
 }
 
-// SelectedBranch returns the currently selected branch name. Empty
-// string means "All" or the settings row is selected.
+// SelectedBranch returns the LocalPath for the currently selected entry.
+// Empty string means "All" or the settings row is selected.
+// This is kept for call-site compatibility; prefer SelectedWorktreeDir
+// for semantic clarity.
 func (m *SidebarModel) SelectedBranch() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
-		return ""
-	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
-		return ""
-	}
-	return m.branches[idx].Name
+	return m.SelectedWorktreeDir()
 }
 
 // SelectedWorktreeDir returns the worktree directory path for the currently
 // selected entry. Empty string means "all worktrees" (no filter).
 func (m *SidebarModel) SelectedWorktreeDir() string {
-	if m.cursor == 0 || len(m.branches) == 0 {
+	if m.cursor == 0 || len(m.entries) == 0 {
 		return ""
 	}
 	idx := m.cursor - 1
-	if idx >= len(m.branches) {
+	if idx >= len(m.entries) {
 		return ""
 	}
-	return m.branches[idx].WorktreeDir
+	return m.entries[idx].LocalPath
 }
 
-// SelectedBranchInfo returns the full BranchInfo for the currently selected
-// entry, or nil if "All" is selected.
+// SelectedBranchInfo always returns nil.
+// TODO: merge overlay disabled until sessions carry git branch metadata.
 func (m *SidebarModel) SelectedBranchInfo() *host.BranchInfo {
-	if m.cursor == 0 || len(m.branches) == 0 {
-		return nil
-	}
-	idx := m.cursor - 1
-	if idx >= len(m.branches) {
-		return nil
-	}
-	return &m.branches[idx]
+	return nil
 }
 
 // SetFocused sets whether the sidebar has keyboard focus.
@@ -261,43 +295,9 @@ func (m *SidebarModel) SetSize(width, height int) {
 	m.height = height
 }
 
-// SetSessionStatus updates the per-branch session status displayed in the sidebar.
-func (m *SidebarModel) SetSessionStatus(status map[string]branchSessionStatus) {
-	m.sessionStatus = status
-}
-
-// WorktreeDirToBranch returns a map from worktree directory path to branch name
-// for all branches that have an active worktree. The inbox uses this to count
-// sessions by matching SessionInfo.ProjectDir against worktree paths.
-func (m *SidebarModel) WorktreeDirToBranch() map[string]string {
-	result := make(map[string]string, len(m.branches))
-	for _, b := range m.branches {
-		if b.WorktreeDir != "" {
-			result[b.WorktreeDir] = b.Name
-		}
-	}
-	return result
-}
-
 // Update handles messages for the sidebar.
 func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
-	case branchLoadedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-		} else {
-			m.branches = msg.branches
-			m.err = nil
-			// Clamp the cursor: if the branch list shrank, the prior
-			// cursor may now exceed settingsCursorIndex(), leaving
-			// CursorOnSettings() (strict equality) and cursorSection()
-			// (>=) disagreeing about where the cursor is.
-			if max := m.settingsCursorIndex(); m.cursor > max {
-				m.cursor = max
-			}
-		}
-		return nil
-
 	case branchWorktreeCreatedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -305,8 +305,10 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 		}
 		m.creating = false
 		m.input.SetValue("")
-		// Reload branches to show the new worktree.
-		return m.loadBranches()
+		// Emit a request to open a composing session in the new worktree.
+		return func() tea.Msg {
+			return newWorktreeSessionRequestMsg{worktreeDir: msg.worktreeDir}
+		}
 	}
 
 	if m.creating {
@@ -354,15 +356,13 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.cursor = maxIdx
 		m.ensureVisible()
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
-		// New branch only makes sense in the worktrees section; pressing
+		// New worktree only makes sense in the worktrees section; pressing
 		// 'n' on the Settings row should be a no-op, not open the prompt.
 		if sec, _ := m.cursorSection(); sec == sectionWorktrees {
 			m.creating = true
 			m.input.SetValue("")
 			return m.input.Focus()
 		}
-	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
-		return m.loadBranches()
 	}
 
 	return nil
@@ -434,10 +434,10 @@ func (m *SidebarModel) View() string {
 		allLabel = lipgloss.NewStyle().Foreground(dimColor).Render("  All")
 	}
 	lines = append(lines, allLabel)
+	lines = append(lines, "")
 
-	// Branch entries grouped by RepoLabel. Group headers are visual-only
-	// (non-selectable); cursor indices still map 1:1 to m.branches.
-	lines = append(lines, m.renderGroupedBranches(contentWidth)...)
+	// Worktree entries derived from sessions.
+	lines = append(lines, m.renderWorktreeEntries(contentWidth)...)
 
 	// New branch input.
 	if m.creating {
@@ -455,7 +455,7 @@ func (m *SidebarModel) View() string {
 	}
 
 	// Footer: pad with blank lines to push the footer rows to the bottom
-	// of the sidebar, separated from the branch list by a dim rule.
+	// of the sidebar, separated from the entry list by a dim rule.
 	listH := m.listHeight()
 	footer := m.renderFooter(contentWidth)
 	footerLines := strings.Count(footer, "\n") + 1
@@ -477,87 +477,53 @@ func (m *SidebarModel) View() string {
 	return style.Render(content)
 }
 
-// renderGroupedBranches renders all branches grouped by RepoLabel.
-// Group headers are visual-only (not counted in cursor indices).
-func (m *SidebarModel) renderGroupedBranches(contentWidth int) []string {
-	if len(m.branches) == 0 {
+// renderWorktreeEntries renders all worktree entries as a flat list.
+func (m *SidebarModel) renderWorktreeEntries(contentWidth int) []string {
+	if len(m.entries) == 0 {
 		return nil
 	}
-
-	var lines []string
-	groupLabelStyle := lipgloss.NewStyle().Foreground(mutedColor).Bold(true)
-
-	currentGroup := ""
-	for i, b := range m.branches {
-		label := b.RepoLabel
-		if label == "" {
-			label = "local"
-		}
-		if label != currentGroup {
-			currentGroup = label
-			// Render group header, truncated to fit.
-			// Group header is flush-left (no indent) so it reads as a
-			// section title above the indented branch rows beneath it.
-			headerText := truncateStr(label, contentWidth)
-			lines = append(lines, groupLabelStyle.Render(headerText))
-		}
+	lines := make([]string, 0, len(m.entries))
+	for i, e := range m.entries {
 		idx := i + 1 // cursor index (0 = All)
-		lines = append(lines, m.renderBranch(b, idx, contentWidth))
+		lines = append(lines, m.renderWorktreeEntry(e, idx, contentWidth))
 	}
 	return lines
 }
 
-// renderBranch renders a single worktree entry with diff stats.
-func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string {
+// renderWorktreeEntry renders a single worktree entry with session count badge.
+func (m *SidebarModel) renderWorktreeEntry(e worktreeEntry, idx, maxWidth int) string {
 	selected := m.cursor == idx && m.focused
 
-	// Diff stat string: "+123 -45" or empty for the default branch.
-	var diffStr string
-	if b.LinesAdded > 0 || b.LinesRemoved > 0 {
-		diffStr = fmt.Sprintf("+%d -%d", b.LinesAdded, b.LinesRemoved)
-	}
-
-	// Session status badge.
-	status := m.sessionStatus[b.Name]
 	countBadge := ""
 	badgeColor := dimColor
-	if status.Total > 0 {
-		if status.IsArchived() {
-			countBadge = fmt.Sprintf(" (%d)", status.Total)
+	if e.Total > 0 {
+		if e.IsArchived() {
+			countBadge = fmt.Sprintf(" (%d)", e.Total)
 			badgeColor = mutedColor
-		} else if status.IsDone() {
-			countBadge = fmt.Sprintf(" (%d)", status.Total)
+		} else if e.IsDone() {
+			countBadge = fmt.Sprintf(" (%d)", e.Total)
 			badgeColor = successColor
 		} else {
-			countBadge = fmt.Sprintf(" (%d)", status.Active)
+			countBadge = fmt.Sprintf(" (%d)", e.Active)
 		}
 	}
 
-	// Reserve space for suffix items on the right.
-	suffixWidth := 0
-	if diffStr != "" {
-		suffixWidth += len(diffStr) + 1 // space + diff
+	// Truncate label to fit.
+	label := e.Label
+	maxLabel := maxWidth - 2 - len(countBadge) // 2 for prefix
+	if maxLabel < 6 {
+		maxLabel = 6
 	}
-	suffixWidth += len(countBadge)
-
-	// Truncate branch name to fit.
-	name := b.Name
-	maxName := maxWidth - 2 - suffixWidth // 2 for prefix
-	if maxName < 6 {
-		maxName = 6
-	}
-	if len(name) > maxName {
-		name = name[:maxName-1] + "…"
+	if len(label) > maxLabel {
+		label = label[:maxLabel-1] + "…"
 	}
 
-	// Style choices.
 	nameStyle := lipgloss.NewStyle()
-
 	if selected {
 		nameStyle = nameStyle.Foreground(textColor).Bold(true)
-	} else if status.IsArchived() {
+	} else if e.IsArchived() {
 		nameStyle = nameStyle.Foreground(mutedColor)
-	} else if status.IsDone() {
+	} else if e.IsDone() {
 		nameStyle = nameStyle.Foreground(dimColor)
 	} else {
 		nameStyle = nameStyle.Foreground(textColor)
@@ -568,20 +534,8 @@ func (m *SidebarModel) renderBranch(b host.BranchInfo, idx, maxWidth int) string
 		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
 	}
 
-	line := prefix + nameStyle.Render(name)
-
-	if diffStr != "" {
-		addedStr := fmt.Sprintf("+%d", b.LinesAdded)
-		removedStr := fmt.Sprintf("-%d", b.LinesRemoved)
-		styledDiff := " " +
-			lipgloss.NewStyle().Foreground(successColor).Render(addedStr) +
-			" " +
-			lipgloss.NewStyle().Foreground(dangerColor).Render(removedStr)
-		line += styledDiff
-	}
-
+	line := prefix + nameStyle.Render(label)
 	line += lipgloss.NewStyle().Foreground(badgeColor).Render(countBadge)
-
 	return line
 }
 
@@ -647,22 +601,6 @@ func (m *SidebarModel) ensureVisible() {
 	}
 }
 
-// loadBranches fetches branches from the daemon for this sidebar's repo.
-func (m *SidebarModel) loadBranches() tea.Cmd {
-	client := m.client
-	hostname := m.hostname
-	gitRef := m.gitRef
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		branches, err := client.Host(hostname).ListBranches(ctx, gitRef)
-		if err != nil {
-			return branchLoadedMsg{err: err}
-		}
-		return branchLoadedMsg{branches: branches}
-	}
-}
-
 // createWorktree asks the daemon to create a worktree for the given branch.
 func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	client := m.client
@@ -671,7 +609,10 @@ func (m *SidebarModel) createWorktree(branch string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
-		return branchWorktreeCreatedMsg{branch: branch, err: err}
+		wt, err := client.Host(hostname).ResolveWorktree(ctx, gitRef, branch)
+		if err != nil {
+			return branchWorktreeCreatedMsg{branch: branch, err: err}
+		}
+		return branchWorktreeCreatedMsg{branch: branch, worktreeDir: wt.WorktreeDir}
 	}
 }
