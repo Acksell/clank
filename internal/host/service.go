@@ -344,8 +344,17 @@ func (s *Service) persistSnapshots(ctx context.Context, snaps []agent.SessionSna
 		if snap.ID == "" {
 			continue
 		}
-		if _, lookupErr := s.sessionsStore.FindSessionByExternalID(ctx, snap.ID); lookupErr == nil {
+		_, lookupErr := s.sessionsStore.FindSessionByExternalID(ctx, snap.ID)
+		if lookupErr == nil {
 			// Already registered — skip.
+			continue
+		}
+		if !errors.Is(lookupErr, store.ErrSessionNotFound) {
+			// Treat any non-NotFound store error as a real failure: skip
+			// this snapshot rather than fall through to UpsertSession,
+			// which could otherwise compound a lookup failure into an
+			// unrelated insert.
+			s.log.Printf("discover: lookup snapshot extID=%s: %v", snap.ID, lookupErr)
 			continue
 		}
 		info := agent.SessionInfo{

@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/acksell/clank/internal/agent"
 )
 
 // TestSidebar_SectionBreakpoints verifies the breakpoint list adapts to the
@@ -201,4 +205,95 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// TestSidebar_BranchWorktreeCreatedClearsStaleErr is a regression test:
+// after a failed ResolveWorktree set m.err, a subsequent successful
+// branchWorktreeCreatedMsg must clear it so the old error doesn't render
+// while the new composing session opens.
+func TestSidebar_BranchWorktreeCreatedClearsStaleErr(t *testing.T) {
+	t.Parallel()
+
+	m := SidebarModel{
+		err:      errors.New("prior resolve failure"),
+		creating: true,
+	}
+
+	cmd := m.Update(branchWorktreeCreatedMsg{worktreeDir: "/tmp/wt"})
+
+	if m.err != nil {
+		t.Errorf("expected m.err cleared on success, got %v", m.err)
+	}
+	if m.creating {
+		t.Errorf("expected creating=false on success")
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil cmd emitting newWorktreeSessionRequestMsg")
+	}
+	got, ok := cmd().(newWorktreeSessionRequestMsg)
+	if !ok {
+		t.Fatalf("expected newWorktreeSessionRequestMsg, got %T", cmd())
+	}
+	if got.worktreeDir != "/tmp/wt" {
+		t.Errorf("worktreeDir: got %q, want %q", got.worktreeDir, "/tmp/wt")
+	}
+}
+
+// TestSidebar_SetSessionsClampsScroll is a regression test: when the
+// session list shrinks below m.scroll, renderWorktreeEntries would slice
+// m.entries[m.scroll:end] with m.scroll > end and panic. SetSessions
+// must clamp m.scroll alongside m.cursor.
+func TestSidebar_SetSessionsClampsScroll(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	tenSessions := make([]agent.SessionInfo, 10)
+	for i := range tenSessions {
+		tenSessions[i] = agent.SessionInfo{
+			GitRef:    agent.GitRef{LocalPath: "/repo/" + entryName(i)},
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	m := SidebarModel{height: 20, focused: true}
+	m.SetSessions(tenSessions)
+	if len(m.entries) != 10 {
+		t.Fatalf("entries: got %d, want 10", len(m.entries))
+	}
+	m.scroll = 5
+
+	twoSessions := []agent.SessionInfo{
+		{GitRef: agent.GitRef{LocalPath: "/repo/a"}, UpdatedAt: now},
+		{GitRef: agent.GitRef{LocalPath: "/repo/b"}, UpdatedAt: now},
+	}
+	m.SetSessions(twoSessions)
+
+	if len(m.entries) != 2 {
+		t.Fatalf("entries after shrink: got %d, want 2", len(m.entries))
+	}
+	if m.scroll > len(m.entries)-1 {
+		t.Errorf("scroll not clamped: got %d, want <= %d", m.scroll, len(m.entries)-1)
+	}
+
+	// View() must not panic with the now-shrunken state.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("View panicked after shrink: %v", r)
+		}
+	}()
+	_ = m.View()
+}
+
+// TestSidebar_SetSessionsClampsScrollToZeroOnEmpty covers the empty case.
+func TestSidebar_SetSessionsClampsScrollToZeroOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := SidebarModel{
+		entries: makeEntries(5),
+		scroll:  3,
+	}
+	m.SetSessions(nil)
+	if m.scroll != 0 {
+		t.Errorf("scroll: got %d, want 0", m.scroll)
+	}
 }

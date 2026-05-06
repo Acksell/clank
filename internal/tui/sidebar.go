@@ -197,6 +197,14 @@ func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
 	if max := m.settingsCursorIndex(); m.cursor > max {
 		m.cursor = max
 	}
+	// Clamp scroll: renderWorktreeEntries slices m.entries[m.scroll:end],
+	// which would panic if the list shrinks below the previous offset.
+	switch {
+	case len(m.entries) == 0:
+		m.scroll = 0
+	case m.scroll > len(m.entries)-1:
+		m.scroll = len(m.entries) - 1
+	}
 }
 
 // --- Cursor / section helpers ---
@@ -307,6 +315,9 @@ func (m *SidebarModel) Update(msg tea.Msg) tea.Cmd {
 			m.err = msg.err
 			return nil
 		}
+		// Clear any prior ResolveWorktree error so a successful retry
+		// doesn't render a stale message while opening the new session.
+		m.err = nil
 		m.creating = false
 		m.input.SetValue("")
 		// Emit a request to open a composing session in the new worktree.

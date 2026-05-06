@@ -1657,11 +1657,15 @@ func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
 	return defaultSidebarWidthRatio
 }
 
-// persistSidebarWidthRatio saves the current ratio to the preferences file.
-// Intended to be called in a goroutine so the TUI doesn't block on disk I/O.
-func (m *InboxModel) persistSidebarWidthRatio() {
+// persistSidebarWidthRatio saves the given ratio to the preferences file.
+// Intended to be called in a goroutine so the TUI doesn't block on disk
+// I/O. The ratio is passed in (rather than read from m.sidebarWidthRatio
+// inside the goroutine) so concurrent main-loop updates don't race with
+// the disk write. Receiver is kept for symmetry with other InboxModel
+// methods.
+func (m *InboxModel) persistSidebarWidthRatio(ratio int) {
 	prefs, _ := config.LoadPreferences()
-	prefs.SidebarWidthRatio = m.sidebarWidthRatio
+	prefs.SidebarWidthRatio = ratio
 	_ = config.SavePreferences(prefs)
 }
 
@@ -1764,7 +1768,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			}
 			m.sidebarWidthRatio = newRatio
 			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
-			go m.persistSidebarWidthRatio()
+			go m.persistSidebarWidthRatio(m.sidebarWidthRatio)
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("-"))):
@@ -1784,7 +1788,7 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			}
 			m.sidebarWidthRatio = newRatio
 			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
-			go m.persistSidebarWidthRatio()
+			go m.persistSidebarWidthRatio(m.sidebarWidthRatio)
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
