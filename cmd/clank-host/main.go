@@ -109,15 +109,17 @@ func isLoopbackHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
 	}
-	// Hostname that isn't "localhost" — resolve to play it safe. Skip
-	// the resolution if it would block startup on a flaky DNS; reject
-	// instead.
-	addrs, err := net.LookupIP(host)
+	// Hostname that isn't "localhost" — resolve with a short timeout
+	// so a flaky resolver can't hang startup. Treat any failure (or
+	// any non-loopback resolution) as non-loopback.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil || len(addrs) == 0 {
 		return false
 	}
 	for _, a := range addrs {
-		if !a.IsLoopback() {
+		if !a.IP.IsLoopback() {
 			return false
 		}
 	}
@@ -150,6 +152,10 @@ func run(addr, listenAuthToken, dataDirOpt string) error {
 	if err != nil {
 		return err
 	}
+	// Free the listener on any early-return path before we hand it to
+	// srv.Serve. Once Serve owns it, srv.Shutdown closes via the same
+	// listener and this Close becomes a no-op.
+	defer func() { _ = ln.Close() }()
 
 	// PR 3: open the host's persistent SQLite for session metadata.
 	// Crash on init failure — running without persistence would
