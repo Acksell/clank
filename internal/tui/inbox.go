@@ -66,9 +66,10 @@ type InboxModel struct {
 	client *daemonclient.Client
 
 	// Two-pane layout state.
-	pane          inboxPane    // which pane has keyboard focus
-	sidebar       SidebarModel // sidebar: branch list
-	sidebarHidden bool         // true when user toggled sidebar off with 'w'
+	pane              inboxPane    // which pane has keyboard focus
+	sidebar           SidebarModel // sidebar: branch list
+	sidebarHidden     bool         // true when user toggled sidebar off with 'w'
+	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
 	// Inbox list state (right pane).
 	groups       []inboxGroup
@@ -225,15 +226,16 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{
-		client:      client,
-		pane:        paneSessions,
-		sidebar:     bp,
-		spinner:     sp,
-		searchInput: ti,
-		projectDir:  cwd,
-		projectName: filepath.Base(cwd),
-		hostname:    hostname,
-		gitRef:      gitRef,
+		client:            client,
+		pane:              paneSessions,
+		sidebar:           bp,
+		spinner:           sp,
+		searchInput:       ti,
+		projectDir:        cwd,
+		projectName:       filepath.Base(cwd),
+		hostname:          hostname,
+		gitRef:            gitRef,
+		sidebarWidthRatio: sidebarWidthRatioFromPrefs(prefs),
 	}
 }
 
@@ -1627,6 +1629,10 @@ const minTwoPaneWidth = 80
 // session pane in two-pane layout.
 const sidebarGap = 1
 
+// defaultSidebarWidthRatio is the default sidebar width as a percentage of
+// the terminal width. Adjustable at runtime with the +/- keys.
+const defaultSidebarWidthRatio = 40
+
 // showTwoPanes returns true when the terminal is wide enough and the user
 // hasn't manually hidden the sidebar with 'w'.
 func (m *InboxModel) showTwoPanes() bool {
@@ -1642,17 +1648,34 @@ func (m *InboxModel) setPane(p inboxPane) {
 	m.sidebar.SetFocused(p == paneSidebar)
 }
 
+// sidebarWidthRatioFromPrefs returns the persisted sidebar width ratio, or the
+// default if none has been saved yet.
+func sidebarWidthRatioFromPrefs(prefs config.Preferences) int {
+	if prefs.SidebarWidthRatio > 0 {
+		return prefs.SidebarWidthRatio
+	}
+	return defaultSidebarWidthRatio
+}
+
+// persistSidebarWidthRatio saves the current ratio to the preferences file.
+// Intended to be called in a goroutine so the TUI doesn't block on disk I/O.
+func (m *InboxModel) persistSidebarWidthRatio() {
+	prefs, _ := config.LoadPreferences()
+	prefs.SidebarWidthRatio = m.sidebarWidthRatio
+	_ = config.SavePreferences(prefs)
+}
+
 // sidebarRenderWidth returns the width allocated to the sidebar (including border).
-// The width scales with the terminal: ~17% of screen width, clamped to [22, 40].
+// The width scales with the terminal: sidebarWidthRatio% of screen width, clamped to [22, 60].
 // Falls back to the sidebarWidth constant when the screen width is not yet known.
 func (m *InboxModel) sidebarRenderWidth() int {
 	if m.width > 0 {
-		w := m.width * 17 / 100
+		w := m.width * m.sidebarWidthRatio / 100
 		if w < 22 {
 			w = 22
 		}
-		if w > 40 {
-			w = 40
+		if w > 60 {
+			w = 60
 		}
 		return w
 	}
@@ -1725,6 +1748,35 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.mergeOverlay = newMergeOverlay(m.client, m.hostname, m.gitRef, *bi)
 			m.mergeOverlay.SetSize(m.width, m.height)
 			m.showMerge = true
+		}
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("+", "="))):
+		// Increase sidebar width by one character.
+		if !m.sidebar.creating && m.width > 0 {
+			target := m.sidebarRenderWidth() + 1
+			newRatio := target * 100 / m.width
+			if newRatio <= m.sidebarWidthRatio {
+				newRatio = m.sidebarWidthRatio + 1
+			}
+			m.sidebarWidthRatio = newRatio
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+			go m.persistSidebarWidthRatio()
+		}
+		return m, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("-"))):
+		// Decrease sidebar width by one character.
+		if !m.sidebar.creating && m.width > 0 {
+			target := m.sidebarRenderWidth() - 1
+			newRatio := target * 100 / m.width
+			if newRatio >= m.sidebarWidthRatio {
+				newRatio = m.sidebarWidthRatio - 1
+			}
+			if newRatio < 1 {
+				newRatio = 1
+			}
+			m.sidebarWidthRatio = newRatio
+			m.sidebar.SetSize(m.sidebarRenderWidth(), m.height)
+			go m.persistSidebarWidthRatio()
 		}
 		return m, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "shift+right"))):
