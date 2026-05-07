@@ -347,21 +347,6 @@ func (p *Provisioner) resolveOrCreate(ctx context.Context, userID, spriteName st
 
 	sprite, err := p.createSprite(ctx, spriteName, cfg)
 	if err != nil {
-		if isAlreadyExists(err) {
-			// Sprite exists upstream but our local store has no row
-			// for it — happens after a store wipe, after running the
-			// integration tests with a separate process's store, or
-			// when a previous daemon's clank.db was deleted. Adopt
-			// by name; installAndStart re-baselines the Service
-			// Args (including the bearer token) so the freshly
-			// generated authToken takes effect.
-			p.log.Printf("flyio provisioner: sprite %s already exists upstream; adopting (local store had no row)", spriteName)
-			existing, getErr := p.client.GetSprite(ctx, spriteName)
-			if getErr != nil {
-				return nil, false, "", fmt.Errorf("create sprite %s returned 'already exists' but get failed: %w", spriteName, getErr)
-			}
-			return existing, true, authToken, nil
-		}
 		return nil, false, "", err
 	}
 	return sprite, true, authToken, nil
@@ -931,18 +916,6 @@ func isNotFound(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "not found") || strings.Contains(msg, "404")
-}
-
-// isAlreadyExists matches the Sprites API's name-conflict error. Same
-// string-matching dance as isNotFound — the pinned SDK doesn't surface
-// a typed conflict error. Server message looks like
-// "A sprite named '...' already exists. Please choose a different name."
-func isAlreadyExists(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "already exists")
 }
 
 // isClosedConnErr matches the SDK's stale-control-WebSocket symptoms.
