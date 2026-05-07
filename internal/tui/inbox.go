@@ -30,6 +30,7 @@ const (
 	screenInbox    inboxScreen = iota
 	screenSession              // Viewing a specific session (or composing a new one)
 	screenSettings             // Viewing the settings page in the right pane
+	screenCloud                // Viewing the cloud (cloud auth + /me) panel
 )
 
 // inboxPane tracks which pane has keyboard focus in the two-pane layout.
@@ -129,6 +130,9 @@ type InboxModel struct {
 
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
+
+	// Cloud panel state (shown when screen == screenCloud).
+	cloud cloudView
 
 	// Color-scheme picker overlay (modal). Rendered on top of whatever
 	// screen is currently active. Showing is independent of `screen` so
@@ -455,6 +459,11 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// If we're on the Settings page, delegate there.
 	if m.screen == screenSettings {
 		return m.updateSettings(msg)
+	}
+
+	// If we're on the Cloud panel, delegate there.
+	if m.screen == screenCloud {
+		return m.updateCloud(msg)
 	}
 
 	// If help overlay is open, dismiss on any key press.
@@ -1471,10 +1480,13 @@ func (m *InboxModel) View() tea.View {
 	}
 
 	sessionContent := m.renderSessionPane()
-	// When the Settings screen is active, swap the right pane for the
-	// settings page. The sidebar remains on the left exactly as usual.
+	// When the Settings or Cloud screen is active, swap the right pane.
+	// The sidebar remains on the left exactly as usual.
 	if m.screen == screenSettings {
 		sessionContent = m.settings.View()
+	}
+	if m.screen == screenCloud {
+		sessionContent = m.cloud.View()
 	}
 	var content string
 
@@ -1803,6 +1815,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.openSettings()
 			return m, nil
 		}
+		// On the "☁ Cloud" row, right arrow opens the cloud panel.
+		if m.sidebar.CursorOnCloud() {
+			return m, m.openCloud()
+		}
 		prevBranch := m.sidebar.SelectedBranch()
 		m.setPane(paneSessions)
 		if m.sidebar.SelectedBranch() != prevBranch {
@@ -1820,6 +1836,10 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		if m.sidebar.CursorOnSettings() {
 			m.openSettings()
 			return m, nil
+		}
+		// Enter on the "☁ Cloud" footer row opens the Cloud panel.
+		if m.sidebar.CursorOnCloud() {
+			return m, m.openCloud()
 		}
 		// Enter on the "↓ Import Sessions" row opens the provider selector.
 		if m.sidebar.CursorOnImport() {
@@ -1850,6 +1870,11 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	// and key routing has already moved over there.
 	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
 		m.showSettings()
+	}
+	// Same hover behaviour for ☁ Cloud — the panel previews on hover
+	// without stealing focus until the user hits Enter.
+	if m.screen == screenInbox && m.sidebar.CursorOnCloud() {
+		m.showCloud()
 	}
 	return m, cmd
 }

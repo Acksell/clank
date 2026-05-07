@@ -186,6 +186,37 @@ type Preferences struct {
 	// into the config package — the value is validated at the
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
+
+	// Cloud configures the TUI's "Cloud" panel — Supabase auth +
+	// the upstream cloud control plane. The endpoint URLs identify which
+	// cloud deployment to talk to; the session fields
+	// hold the access/refresh tokens after a successful sign-in. See
+	// internal/cloud and internal/tui/cloudview.
+	Cloud *CloudPreference `json:"cloud,omitempty"`
+}
+
+// CloudPreference configures the TUI's Cloud panel.
+//
+// Endpoint URLs are user-configurable so a self-hosted the cloud can
+// point clank at it. Defaults (when fields are empty) target the
+// production the cloud.com deployment.
+//
+// Session fields are populated after a successful sign-in and used
+// for subsequent /me lookups. AccessToken expires (Supabase default
+// 1h); the user is prompted to sign in again on 401. Refresh-token
+// rotation is a follow-up.
+type CloudPreference struct {
+	SupabaseProjectURL string `json:"supabase_project_url,omitempty"`
+	SupabaseAnonKey    string `json:"supabase_anon_key,omitempty"`
+	ClankctlURL        string `json:"the cloud_url,omitempty"`
+
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	UserEmail    string `json:"user_email,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
+	// ExpiresAt is the unix-seconds expiry of AccessToken (the `exp`
+	// claim from Supabase's JWT response). Zero when no session.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 // preferencesPath returns the path to the preferences file.
