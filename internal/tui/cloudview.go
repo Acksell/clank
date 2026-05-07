@@ -1,22 +1,25 @@
 package tui
 
-// cloudview.go — TUI panel for the cloud: Supabase auth
-// (sign in / sign up) and a user-info card backed by cloud /me.
+// cloudview.go — TUI panel for the cloud. Provider-agnostic
+// by design: clank speaks RFC 8628 device flow to the cloud's URL and
+// nothing else. The cloud owns the user-auth mechanism
+// (Supabase, OAuth, magic link, …) and exposes it via its /connect
+// web page; clank never sees the auth provider.
 //
-// Mirrors the providerauth.go pattern: a single tea.Model with a phase
-// enum, hand-rolled email/password text inputs, async HTTP wrapped in
-// tea.Cmd. Reads/writes session tokens via internal/config.
+// Mirrors providerauth.go's device-flow pattern: a single tea.Model
+// with a phase enum and async HTTP wrapped in tea.Cmd.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -24,50 +27,34 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// cloudViewPhase walks the user through the auth flow. The TUI
-// transitions phases in response to async messages (cloudSignInResultMsg,
-// cloudMeResultMsg) and key presses.
+// cloudViewPhase walks the user through the device-flow grant.
 type cloudViewPhase int
 
 const (
-	cloudPhaseLoading        cloudViewPhase = iota
-	cloudPhaseNotConfigured                 // endpoints missing in prefs
-	cloudPhaseSignedOut                     // login/signup form
-	cloudPhaseAuthenticating                // spinner; HTTP in flight
-	cloudPhaseSignedIn                      // me-card + actions
-	cloudPhaseError                         // message + retry
-)
-
-// cloudFocus tracks which form field the keyboard is on while the
-// user is in cloudPhaseSignedOut.
-type cloudFocus int
-
-const (
-	cloudFocusEmail cloudFocus = iota
-	cloudFocusPassword
-	cloudFocusSubmit
-)
-
-// cloudMode toggles between sign-in and sign-up flows. Same form;
-// different submit handler.
-type cloudMode int
-
-const (
-	cloudModeSignIn cloudMode = iota
-	cloudModeSignUp
+	cloudPhaseLoading       cloudViewPhase = iota
+	cloudPhaseNotConfigured                // no cloud_url in prefs
+	cloudPhaseSignedOut                    // press Enter to start
+	cloudPhaseStarting                     // device/start in flight
+	cloudPhaseAwaiting                     // showing user_code; polling
+	cloudPhaseFetchingMe                   // success → fetching /me
+	cloudPhaseSignedIn                     // user-info card
+	cloudPhaseError                        // message + retry
 )
 
 // --- async messages -------------------------------------------------
 
-// cloudSignInResultMsg is the response from cloud.Client.SignIn /
-// SignUp. err is non-nil on any failure (including 401).
-type cloudSignInResultMsg struct {
+type cloudDeviceStartedMsg struct {
+	resp *cloud.DeviceStartResponse
+	err  error
+}
+
+type cloudDevicePollMsg struct{}
+
+type cloudDevicePollResultMsg struct {
 	session *cloud.Session
 	err     error
 }
 
-// cloudMeResultMsg is the response from cloud.Client.Me. err is
-// cloud.ErrNotSignedUp, cloud.ErrUnauthorized, or a transport error.
 type cloudMeResultMsg struct {
 	me  *cloud.MeResponse
 	err error
@@ -80,32 +67,33 @@ type cloudView struct {
 	focused       bool
 
 	phase cloudViewPhase
-	mode  cloudMode
-	focus cloudFocus
 
-	// email / password textinputs.
-	email    textinput.Model
-	password textinput.Model
+	// device-flow state, populated after StartDeviceFlow.
+	device *cloud.DeviceStartResponse
 
-	// spinner shown during cloudPhaseAuthenticating.
+	// pollInterval is the per-flow cadence the cloud asks us to use.
+	// May be increased on ErrSlowDown per RFC 8628 §3.5.
+	pollInterval time.Duration
+
+	// pollDeadline marks when device.ExpiresIn elapses; we stop
+	// polling and surface ErrExpiredToken locally if the cloud doesn't.
+	pollDeadline time.Time
+
 	spinner spinner.Model
 
-	// session is the most recent successful auth result. Persisted to
-	// prefs on transition to cloudPhaseSignedIn.
+	// session is populated on a successful poll; persisted to prefs
+	// before transitioning to cloudPhaseFetchingMe.
 	session *cloud.Session
 
-	// me is the most recent /me response, used to render the info card.
+	// me is the most recent /me response; rendered in cloudPhaseSignedIn.
 	me *cloud.MeResponse
 
-	// err carries the message rendered in cloudPhaseError.
+	// err carries the message rendered in cloudPhaseError (and as a
+	// banner in cloudPhaseSignedIn when /me reported ErrNotSignedUp).
 	err string
 
-	// endpoints are loaded from prefs on Init / re-entry.
-	endpoints cloud.Endpoints
-
-	// client is constructed from endpoints once they're known. Nil
-	// until cloudPhaseSignedOut or later.
-	client *cloud.Client
+	cloudURL string
+	client   *cloud.Client
 }
 
 func newCloudView() cloudView {
@@ -114,48 +102,25 @@ func newCloudView() cloudView {
 	sp.Style = lipgloss.NewStyle().Foreground(primaryColor)
 
 	return cloudView{
-		phase:    cloudPhaseLoading,
-		mode:     cloudModeSignIn,
-		focus:    cloudFocusEmail,
-		email:    newCloudInput("you@example.com", false),
-		password: newCloudInput("password", true),
-		spinner:  sp,
+		phase:   cloudPhaseLoading,
+		spinner: sp,
 	}
 }
 
-func newCloudInput(placeholder string, masked bool) textinput.Model {
-	ti := textinput.New()
-	ti.Placeholder = placeholder
-	ti.CharLimit = 256
-	ti.Prompt = "› "
-	if masked {
-		ti.EchoMode = textinput.EchoPassword
-		ti.EchoCharacter = '•'
-	}
-	styles := ti.Styles()
-	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(primaryColor)
-	styles.Focused.Text = lipgloss.NewStyle().Foreground(textColor)
-	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(mutedColor)
-	ti.SetStyles(styles)
-	ti.SetWidth(48)
-	return ti
-}
-
-// Init is called when the inbox transitions to screenCloud. Loads
-// prefs to decide between cloudPhaseNotConfigured, cloudPhaseSignedOut,
-// or cloudPhaseSignedIn (with a /me refetch).
+// Init loads prefs, decides the entry phase, and (if there's a saved
+// session) kicks off a /me to verify it.
 func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
-	m.endpoints = resolveEndpoints(&prefs)
-	m.client = cloud.New(m.endpoints, nil)
-
-	if !endpointsConfigured(m.endpoints) {
+	m.cloudURL = ""
+	if prefs.Cloud != nil {
+		m.cloudURL = prefs.Cloud.CloudURL
+	}
+	if m.cloudURL == "" {
 		m.phase = cloudPhaseNotConfigured
 		return nil
 	}
+	m.client = cloud.New(m.cloudURL, nil)
 
-	// If we already have a session and it hasn't expired, attempt /me
-	// to verify it's still valid and to populate the user-info card.
 	if prefs.Cloud != nil && prefs.Cloud.AccessToken != "" && !cloudTokenExpired(prefs.Cloud) {
 		m.session = &cloud.Session{
 			AccessToken:  prefs.Cloud.AccessToken,
@@ -164,42 +129,18 @@ func (m *cloudView) Init() tea.Cmd {
 			UserEmail:    prefs.Cloud.UserEmail,
 			ExpiresAt:    prefs.Cloud.ExpiresAt,
 		}
-		m.phase = cloudPhaseAuthenticating
+		m.phase = cloudPhaseFetchingMe
 		return tea.Batch(m.spinner.Tick, m.fetchMeCmd())
 	}
 
 	m.phase = cloudPhaseSignedOut
-	m.email.SetValue("")
-	m.password.SetValue("")
-	m.email.Focus()
-	m.password.Blur()
-	m.focus = cloudFocusEmail
 	return nil
 }
 
-func (m *cloudView) SetSize(w, h int) {
-	m.width = w
-	m.height = h
-}
+func (m *cloudView) SetSize(w, h int) { m.width = w; m.height = h }
+func (m *cloudView) SetFocused(f bool) { m.focused = f }
 
-func (m *cloudView) SetFocused(f bool) {
-	m.focused = f
-	if !f {
-		m.email.Blur()
-		m.password.Blur()
-		return
-	}
-	m.applyFocus()
-}
-
-// IsConfigured reports whether the prefs hold endpoint URLs. Used by
-// the inbox to decide whether the Cloud sidebar item should be enabled.
-func (m *cloudView) IsConfigured() bool {
-	return endpointsConfigured(m.endpoints)
-}
-
-// Update handles the panel's messages. The inbox dispatches here when
-// screen == screenCloud.
+// Update handles the panel's messages.
 func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
@@ -207,43 +148,72 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case cloudSignInResultMsg:
+	case cloudDeviceStartedMsg:
 		if msg.err != nil {
 			m.phase = cloudPhaseError
-			m.err = "sign-in failed: " + msg.err.Error()
+			m.err = "starting device flow: " + msg.err.Error()
 			return m, nil
 		}
-		if msg.session.AccessToken == "" {
-			// Email-confirmation flow: Supabase issued no tokens.
+		m.device = msg.resp
+		m.pollInterval = time.Duration(maxInt(msg.resp.Interval, 1)) * time.Second
+		m.pollDeadline = time.Now().Add(time.Duration(msg.resp.ExpiresIn) * time.Second)
+		m.phase = cloudPhaseAwaiting
+		// Nudge the user's browser if we can — non-fatal if it fails.
+		go openBrowser(msg.resp.VerificationURIComplete, msg.resp.VerificationURI)
+		// Start the poll loop.
+		return m, tea.Batch(m.spinner.Tick, m.scheduleNextPoll())
+
+	case cloudDevicePollMsg:
+		// Ignore stray ticks once we've moved past the awaiting phase.
+		if m.phase != cloudPhaseAwaiting {
+			return m, nil
+		}
+		if time.Now().After(m.pollDeadline) {
 			m.phase = cloudPhaseError
-			m.err = "check your inbox to confirm your email, then sign in"
+			m.err = "device code expired — press any key to start over"
 			return m, nil
 		}
-		m.session = msg.session
-		_ = persistSession(msg.session)
-		// Fetch /me to populate the info card.
-		m.phase = cloudPhaseAuthenticating
-		return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
+		return m, m.pollOnceCmd()
+
+	case cloudDevicePollResultMsg:
+		switch {
+		case msg.err == nil:
+			// Approved — persist + fetch /me.
+			m.session = msg.session
+			_ = persistSession(msg.session)
+			m.phase = cloudPhaseFetchingMe
+			return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
+		case errors.Is(msg.err, cloud.ErrAuthorizationPending):
+			return m, m.scheduleNextPoll()
+		case errors.Is(msg.err, cloud.ErrSlowDown):
+			m.pollInterval += 5 * time.Second
+			return m, m.scheduleNextPoll()
+		case errors.Is(msg.err, cloud.ErrAccessDenied):
+			m.phase = cloudPhaseError
+			m.err = "the request was denied"
+			return m, nil
+		case errors.Is(msg.err, cloud.ErrExpiredToken):
+			m.phase = cloudPhaseError
+			m.err = "device code expired — press any key to start over"
+			return m, nil
+		default:
+			m.phase = cloudPhaseError
+			m.err = "polling: " + msg.err.Error()
+			return m, nil
+		}
 
 	case cloudMeResultMsg:
 		if errors.Is(msg.err, cloud.ErrUnauthorized) {
-			// Token expired — clear and re-prompt.
 			m.session = nil
 			_ = clearSession()
 			m.phase = cloudPhaseSignedOut
-			m.email.Focus()
-			m.focus = cloudFocusEmail
-			m.err = "session expired; please sign in again"
+			m.err = "session expired; sign in again"
 			return m, nil
 		}
 		if errors.Is(msg.err, cloud.ErrNotSignedUp) {
-			// Authenticated but no the cloud row yet — surface as the
-			// info card with a "you haven't signed up" hint instead
-			// of bouncing back to the form. The user can run
-			// `curl -X POST /signup` (or hit a future button) to fix.
 			m.me = nil
 			m.phase = cloudPhaseSignedIn
-			m.err = "Authenticated, but you haven't completed signup. Run /signup via the cloud to claim a handle."
+			m.err = "Authenticated, but you haven't claimed a handle yet."
 			return m, nil
 		}
 		if msg.err != nil {
@@ -265,153 +235,91 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 	switch m.phase {
 	case cloudPhaseSignedOut:
-		return m.handleKeySignedOut(msg)
+		// Enter starts the device flow; any other key is a no-op so
+		// the user can navigate back to the sidebar.
+		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
+			m.phase = cloudPhaseStarting
+			m.err = ""
+			return m, tea.Batch(m.spinner.Tick, m.startDeviceCmd())
+		}
+		return m, nil
+
+	case cloudPhaseAwaiting:
+		// 'c' cancels and returns to signed-out.
+		if key.Matches(msg, key.NewBinding(key.WithKeys("c", "esc"))) {
+			m.device = nil
+			m.phase = cloudPhaseSignedOut
+			return m, nil
+		}
+		return m, nil
+
 	case cloudPhaseSignedIn:
-		return m.handleKeySignedIn(msg)
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
+			if m.session != nil && m.client != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				m.client.SignOut(ctx, m.session.AccessToken)
+			}
+			_ = clearSession()
+			m.session = nil
+			m.me = nil
+			m.err = ""
+			m.phase = cloudPhaseSignedOut
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
+			if m.session != nil {
+				m.phase = cloudPhaseFetchingMe
+				return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
+			}
+		}
+		return m, nil
+
 	case cloudPhaseError:
-		// Any key returns to the form.
+		// Any key returns to the prior usable state.
 		m.phase = cloudPhaseSignedOut
 		m.err = ""
-		m.applyFocus()
+		m.device = nil
 		return m, nil
 	}
 	return m, nil
-}
-
-func (m cloudView) handleKeySignedOut(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
-	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-		m.advanceFocus()
-		return m, nil
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
-		m.retreatFocus()
-		return m, nil
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))):
-		// ctrl+s toggles between sign-in and sign-up modes.
-		if m.mode == cloudModeSignIn {
-			m.mode = cloudModeSignUp
-		} else {
-			m.mode = cloudModeSignIn
-		}
-		return m, nil
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		// Enter on email moves to password; Enter on password (or submit)
-		// triggers the auth call.
-		switch m.focus {
-		case cloudFocusEmail:
-			m.focus = cloudFocusPassword
-			m.applyFocus()
-			return m, nil
-		case cloudFocusPassword, cloudFocusSubmit:
-			email := strings.TrimSpace(m.email.Value())
-			password := m.password.Value()
-			if email == "" || password == "" {
-				m.err = "email and password are required"
-				return m, nil
-			}
-			m.err = ""
-			m.phase = cloudPhaseAuthenticating
-			return m, tea.Batch(m.spinner.Tick, m.signInCmd(email, password))
-		}
-		return m, nil
-	}
-
-	// Otherwise forward to the focused input.
-	var cmd tea.Cmd
-	switch m.focus {
-	case cloudFocusEmail:
-		m.email, cmd = m.email.Update(msg)
-	case cloudFocusPassword:
-		m.password, cmd = m.password.Update(msg)
-	}
-	return m, cmd
-}
-
-func (m cloudView) handleKeySignedIn(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
-	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
-		// Sign out: revoke + clear local session.
-		if m.session != nil && m.client != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			m.client.SignOut(ctx, m.session.AccessToken)
-		}
-		_ = clearSession()
-		m.session = nil
-		m.me = nil
-		m.email.SetValue("")
-		m.password.SetValue("")
-		m.focus = cloudFocusEmail
-		m.applyFocus()
-		m.phase = cloudPhaseSignedOut
-		return m, nil
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
-		// Refresh /me.
-		if m.session != nil {
-			m.phase = cloudPhaseAuthenticating
-			return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
-		}
-	}
-	return m, nil
-}
-
-func (m *cloudView) advanceFocus() {
-	switch m.focus {
-	case cloudFocusEmail:
-		m.focus = cloudFocusPassword
-	case cloudFocusPassword:
-		m.focus = cloudFocusSubmit
-	case cloudFocusSubmit:
-		m.focus = cloudFocusEmail
-	}
-	m.applyFocus()
-}
-
-func (m *cloudView) retreatFocus() {
-	switch m.focus {
-	case cloudFocusEmail:
-		m.focus = cloudFocusSubmit
-	case cloudFocusPassword:
-		m.focus = cloudFocusEmail
-	case cloudFocusSubmit:
-		m.focus = cloudFocusPassword
-	}
-	m.applyFocus()
-}
-
-func (m *cloudView) applyFocus() {
-	m.email.Blur()
-	m.password.Blur()
-	switch m.focus {
-	case cloudFocusEmail:
-		m.email.Focus()
-	case cloudFocusPassword:
-		m.password.Focus()
-	}
 }
 
 // --- async commands -------------------------------------------------
 
-func (m *cloudView) signInCmd(email, password string) tea.Cmd {
+func (m *cloudView) startDeviceCmd() tea.Cmd {
 	client := m.client
-	mode := m.mode
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		var (
-			s   *cloud.Session
-			err error
-		)
-		if mode == cloudModeSignUp {
-			s, err = client.SignUp(ctx, email, password)
-		} else {
-			s, err = client.SignIn(ctx, email, password)
-		}
-		return cloudSignInResultMsg{session: s, err: err}
+		resp, err := client.StartDeviceFlow(ctx)
+		return cloudDeviceStartedMsg{resp: resp, err: err}
+	}
+}
+
+// scheduleNextPoll waits one pollInterval, then fires a
+// cloudDevicePollMsg which Update interprets as "go ahead and poll".
+// Splitting the wait from the request makes the wait cancelable
+// (ESC during cloudPhaseAwaiting transitions to signed-out and any
+// in-flight tick becomes a no-op).
+func (m *cloudView) scheduleNextPoll() tea.Cmd {
+	d := m.pollInterval
+	return tea.Tick(d, func(time.Time) tea.Msg {
+		return cloudDevicePollMsg{}
+	})
+}
+
+func (m *cloudView) pollOnceCmd() tea.Cmd {
+	client := m.client
+	deviceCode := ""
+	if m.device != nil {
+		deviceCode = m.device.DeviceCode
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		s, err := client.PollDeviceFlow(ctx, deviceCode)
+		return cloudDevicePollResultMsg{session: s, err: err}
 	}
 }
 
@@ -429,13 +337,33 @@ func (m *cloudView) fetchMeCmd() tea.Cmd {
 	}
 }
 
+// openBrowser tries to launch the user's browser. uriComplete includes
+// the user_code as a query param so the user doesn't have to type it.
+// Falls back to uri if uriComplete is empty.
+func openBrowser(uriComplete, uri string) {
+	target := uriComplete
+	if target == "" {
+		target = uri
+	}
+	if target == "" {
+		return
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", target)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	_ = cmd.Run()
+}
+
 // --- view -----------------------------------------------------------
 
 func (m cloudView) View() string {
-	header := lipgloss.NewStyle().
-		Foreground(textColor).
-		Bold(true).
-		Render("☁  Cloud")
+	header := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("☁  Cloud")
 
 	var body string
 	switch m.phase {
@@ -445,12 +373,12 @@ func (m cloudView) View() string {
 		body = m.viewNotConfigured()
 	case cloudPhaseSignedOut:
 		body = m.viewSignedOut()
-	case cloudPhaseAuthenticating:
-		label := "signing in…"
-		if m.session != nil {
-			label = "fetching profile…"
-		}
-		body = lipgloss.NewStyle().Foreground(mutedColor).Render(m.spinner.View() + " " + label)
+	case cloudPhaseStarting:
+		body = lipgloss.NewStyle().Foreground(mutedColor).Render(m.spinner.View() + " starting device flow…")
+	case cloudPhaseAwaiting:
+		body = m.viewAwaiting()
+	case cloudPhaseFetchingMe:
+		body = lipgloss.NewStyle().Foreground(mutedColor).Render(m.spinner.View() + " fetching profile…")
 	case cloudPhaseSignedIn:
 		body = m.viewSignedIn()
 	case cloudPhaseError:
@@ -466,41 +394,54 @@ func (m cloudView) viewNotConfigured() string {
 	return muted.Render(strings.Join([]string{
 		"Cloud is not configured.",
 		"",
-		"Set the endpoint URLs in your preferences (~/.config/clank/preferences.json):",
+		"Set the cloud URL in your preferences (~/.config/clank/preferences.json):",
 		"",
 		`  "cloud": {`,
-		`    "supabase_project_url": "https://<project>.supabase.co",`,
-		`    "supabase_anon_key":    "<publishable anon key>",`,
-		`    "the cloud_url":         "https://your-cloud.example.com"`,
+		`    "cloud_url": "https://your-cloud.example.com"`,
 		`  }`,
 		"",
-		"Or point at a self-hosted the cloud by setting your own URLs.",
+		"clank speaks RFC 8628 device flow to the cloud — the cloud handles user auth.",
 	}, "\n"))
 }
 
 func (m cloudView) viewSignedOut() string {
-	modeLabel := "Sign in"
-	if m.mode == cloudModeSignUp {
-		modeLabel = "Sign up"
+	muted := lipgloss.NewStyle().Foreground(mutedColor)
+	text := lipgloss.NewStyle().Foreground(textColor)
+	parts := []string{
+		text.Render("Connect this device to the cloud."),
+		"",
+		muted.Render("press Enter to start. We'll open your browser to confirm."),
 	}
-
-	emailLine := "Email     " + m.email.View()
-	passLine := "Password  " + m.password.View()
-
-	submitStyle := lipgloss.NewStyle().Foreground(textColor)
-	if m.focus == cloudFocusSubmit {
-		submitStyle = submitStyle.Bold(true).Foreground(primaryColor)
-	}
-	submitLine := submitStyle.Render("[ " + modeLabel + " ]")
-
-	help := lipgloss.NewStyle().Foreground(mutedColor).Render(
-		"tab: next field   enter: submit   ctrl+s: switch to " + altMode(m.mode))
-
-	parts := []string{emailLine, passLine, "", submitLine, "", help}
 	if m.err != "" {
 		parts = append([]string{lipgloss.NewStyle().Foreground(dangerColor).Render(m.err), ""}, parts...)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func (m cloudView) viewAwaiting() string {
+	muted := lipgloss.NewStyle().Foreground(mutedColor)
+	text := lipgloss.NewStyle().Foreground(textColor).Bold(true)
+	primary := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+
+	uri := ""
+	code := ""
+	if m.device != nil {
+		uri = m.device.VerificationURI
+		code = m.device.UserCode
+	}
+
+	rows := []string{
+		text.Render("Visit:"),
+		"  " + primary.Render(uri),
+		"",
+		text.Render("Enter code:"),
+		"  " + primary.Render(code),
+		"",
+		muted.Render(m.spinner.View() + " waiting for confirmation…"),
+		"",
+		muted.Render("c / esc: cancel"),
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m cloudView) viewSignedIn() string {
@@ -515,8 +456,7 @@ func (m cloudView) viewSignedIn() string {
 			muted.Render("user_id   "+truncate(m.session.UserID, 36)),
 		)
 		if m.session.ExpiresAt > 0 {
-			ttl := time.Until(time.Unix(m.session.ExpiresAt, 0))
-			rows = append(rows, muted.Render("expires   "+humanTTL(ttl)))
+			rows = append(rows, muted.Render("expires   "+humanTTL(time.Until(time.Unix(m.session.ExpiresAt, 0)))))
 		}
 		rows = append(rows, "")
 	}
@@ -543,26 +483,14 @@ func (m cloudView) viewSignedIn() string {
 				"",
 			)
 		} else if len(m.me.Hubs) > 0 {
-			rows = append(rows,
-				muted.Render("(no host yet — POST /provision against the cloud to create one)"),
-				"",
-			)
+			rows = append(rows, muted.Render("(no host yet — POST /provision against the cloud to create one)"), "")
 		}
 	} else if m.err != "" {
-		// /me returned ErrNotSignedUp or similar.
 		rows = append(rows, muted.Render(m.err), "")
 	}
 
 	rows = append(rows, muted.Render("r: refresh   o: sign out"))
-
 	return strings.Join(rows, "\n")
-}
-
-func altMode(m cloudMode) string {
-	if m == cloudModeSignIn {
-		return "sign up"
-	}
-	return "sign in"
 }
 
 func truncate(s string, n int) string {
@@ -585,25 +513,15 @@ func humanTTL(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
-// --- helpers --------------------------------------------------------
-
-func resolveEndpoints(prefs *config.Preferences) cloud.Endpoints {
-	var ep cloud.Endpoints
-	if prefs != nil && prefs.Cloud != nil {
-		ep.SupabaseProjectURL = prefs.Cloud.SupabaseProjectURL
-		ep.SupabaseAnonKey = prefs.Cloud.SupabaseAnonKey
-		ep.ClankctlURL = prefs.Cloud.ClankctlURL
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-	return ep
+	return b
 }
 
-func endpointsConfigured(ep cloud.Endpoints) bool {
-	return ep.SupabaseProjectURL != "" && ep.SupabaseAnonKey != "" && ep.ClankctlURL != ""
-}
+// --- pref helpers ---------------------------------------------------
 
-// cloudTokenExpired returns true if AccessToken is past its expiry,
-// with a small skew buffer so we don't try a request that would 401
-// in flight.
 func cloudTokenExpired(c *config.CloudPreference) bool {
 	if c == nil || c.ExpiresAt == 0 {
 		return false

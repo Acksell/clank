@@ -1,11 +1,11 @@
-// Package cloud is the laptop's HTTP client for the the cloud cloud:
-// Supabase auth (sign-in / sign-up against the project's REST API) and
-// the the cloud control plane (/me, /provision).
+// Package cloud is the laptop's HTTP client for a cloud control plane
+// deployment. It speaks the OAuth 2.0 Device Authorization Grant
+// (RFC 8628) so clank stays provider-agnostic — the cloud's user-auth
+// mechanism (Supabase today, anything tomorrow) is invisible to clank.
 //
-// Designed for the TUI's Cloud panel (internal/tui/cloudview.go) — every
-// call is a one-shot Context-bounded request returning a typed result
-// the TUI can render. No background goroutines, no caching: the TUI
-// owns lifecycle.
+// Designed for the TUI's Cloud panel (internal/tui/cloudview.go):
+// every call is a one-shot Context-bounded request. No background
+// goroutines, no caching: the TUI owns lifecycle and polling cadence.
 package cloud
 
 import (
@@ -20,42 +20,91 @@ import (
 	"time"
 )
 
-// ErrUnauthorized is returned when Supabase or the cloud rejects the
-// bearer token (401). Callers should re-prompt for sign-in.
+// Standard RFC 8628 polling errors. Returned as typed errors so the
+// TUI can branch without string matching.
+var (
+	// ErrAuthorizationPending: user hasn't approved the device yet.
+	// Caller continues polling at the agreed interval.
+	ErrAuthorizationPending = errors.New("authorization_pending")
+
+	// ErrSlowDown: poll interval was too tight. Caller should add 5s
+	// to its interval (per RFC 8628 §3.5) and continue.
+	ErrSlowDown = errors.New("slow_down")
+
+	// ErrAccessDenied: the user explicitly denied the request.
+	ErrAccessDenied = errors.New("access_denied")
+
+	// ErrExpiredToken: device_code expired before approval. Caller
+	// should restart the flow.
+	ErrExpiredToken = errors.New("expired_token")
+)
+
+// ErrUnauthorized is returned when the bearer is rejected on a
+// post-grant request (e.g. /me). Caller should re-prompt sign-in.
 var ErrUnauthorized = errors.New("cloud: unauthorized")
 
-// Endpoints are the URLs the client talks to. All three are required.
-type Endpoints struct {
-	// SupabaseProjectURL is the project root (no trailing slash), e.g.
-	// "https://abc123.supabase.co". Auth lives at /auth/v1/* under it.
-	SupabaseProjectURL string
+// ErrNotSignedUp is returned by Me when the auth token verifies but
+// no cloud-side users row exists yet — the user has authenticated with
+// the cloud but hasn't claimed a handle.
+var ErrNotSignedUp = errors.New("cloud: user not signed up")
 
-	// SupabaseAnonKey is the project's publishable anon key. Sent in
-	// the `apikey` header on every Supabase auth request.
-	SupabaseAnonKey string
-
-	// ClankctlURL is the upstream cloud control plane root, e.g.
-	// "https://your-cloud.example.com".
-	ClankctlURL string
-}
-
-// Client wraps an *http.Client with Supabase + the cloud helpers.
+// Client wraps an *http.Client with the device-flow + /me endpoints.
 type Client struct {
-	endpoints Endpoints
-	http      *http.Client
+	cloudURL string
+	http     *http.Client
 }
 
-// New constructs a Client. httpClient may be nil to use the default.
-func New(endpoints Endpoints, httpClient *http.Client) *Client {
+// New constructs a Client targeting the given cloud base URL (e.g.
+// "https://your-cloud.example.com"). httpClient may be nil for the default.
+func New(cloudURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{endpoints: endpoints, http: httpClient}
+	return &Client{cloudURL: strings.TrimRight(cloudURL, "/"), http: httpClient}
+}
+
+// DeviceStartResponse is RFC 8628 §3.2's "Device Authorization
+// Response" shape. The cloud generates the codes; clank shows
+// UserCode + VerificationURI to the user, then polls with DeviceCode.
+type DeviceStartResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete,omitempty"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+// StartDeviceFlow asks the cloud to mint a (device_code, user_code)
+// pair. Unauthenticated — anyone can start a flow; the user_code is
+// the unguessable hand-off the user types in their browser.
+func (c *Client) StartDeviceFlow(ctx context.Context) (*DeviceStartResponse, error) {
+	url := c.cloudURL + "/auth/device/start"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("device/start: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("device/start: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out DeviceStartResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("parse device/start: %w", err)
+	}
+	return &out, nil
 }
 
 // Session is the credential set returned after a successful
-// SignIn/SignUp. ExpiresAt is unix-seconds; the caller should treat
-// AccessToken as invalid once time.Now().Unix() crosses it.
+// device-flow grant. ExpiresAt is unix-seconds; treat AccessToken as
+// invalid once time.Now().Unix() > ExpiresAt.
 type Session struct {
 	AccessToken  string
 	RefreshToken string
@@ -64,126 +113,83 @@ type Session struct {
 	ExpiresAt    int64
 }
 
-type supabaseTokenResponse struct {
+type devicePollSuccess struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
 	ExpiresIn    int64  `json:"expires_in"`
-	ExpiresAt    int64  `json:"expires_at"`
-	User         struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-	} `json:"user"`
+	UserID       string `json:"user_id"`
+	Email        string `json:"email"`
 }
 
-type supabaseError struct {
-	Code    string `json:"code"`
-	Message string `json:"msg"`
-	// Some Supabase errors use error_description (older shape).
-	ErrorDescription string `json:"error_description"`
+type devicePollError struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description,omitempty"`
 }
 
-// SignIn exchanges email+password for a Session via the Supabase
-// password grant. Returns ErrUnauthorized on 400/401 with a wrapped
-// reason from Supabase's error body.
-func (c *Client) SignIn(ctx context.Context, email, password string) (*Session, error) {
-	url := strings.TrimRight(c.endpoints.SupabaseProjectURL, "/") + "/auth/v1/token?grant_type=password"
-	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
+// PollDeviceFlow polls the cloud for the user's approval. Returns the
+// session on success, or one of the typed RFC 8628 errors above. Any
+// other error is a transport / unexpected response failure.
+//
+// Caller is responsible for honoring the interval and backing off on
+// ErrSlowDown.
+func (c *Client) PollDeviceFlow(ctx context.Context, deviceCode string) (*Session, error) {
+	url := c.cloudURL + "/auth/device/poll"
+	body, _ := json.Marshal(map[string]string{"device_code": deviceCode})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("apikey", c.endpoints.SupabaseAnonKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("supabase signin: %w", err)
+		return nil, fmt.Errorf("device/poll: %w", err)
 	}
 	defer resp.Body.Close()
-	return parseTokenResponse(resp)
-}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
-// SignUp creates a new Supabase user and returns a Session iff the
-// project is configured to auto-confirm users (the default for new
-// projects without email-confirmation enabled). When email confirmation
-// is required, Supabase returns 200 with a user object but no tokens —
-// in that case ExpiresAt is 0 and the caller should ask the user to
-// check their inbox.
-func (c *Client) SignUp(ctx context.Context, email, password string) (*Session, error) {
-	url := strings.TrimRight(c.endpoints.SupabaseProjectURL, "/") + "/auth/v1/signup"
-	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("apikey", c.endpoints.SupabaseAnonKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("supabase signup: %w", err)
-	}
-	defer resp.Body.Close()
-	return parseTokenResponse(resp)
-}
-
-func parseTokenResponse(resp *http.Response) (*Session, error) {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest {
-		var sbe supabaseError
-		_ = json.Unmarshal(body, &sbe)
-		msg := strings.TrimSpace(sbe.Message)
-		if msg == "" {
-			msg = strings.TrimSpace(sbe.ErrorDescription)
+	if resp.StatusCode == http.StatusOK {
+		var ok devicePollSuccess
+		if err := json.Unmarshal(bodyBytes, &ok); err != nil {
+			return nil, fmt.Errorf("parse poll success: %w", err)
 		}
-		if msg == "" {
-			msg = strings.TrimSpace(string(body))
+		expires := int64(0)
+		if ok.ExpiresIn > 0 {
+			expires = time.Now().Unix() + ok.ExpiresIn
 		}
-		return nil, fmt.Errorf("%w: %s", ErrUnauthorized, msg)
+		return &Session{
+			AccessToken:  ok.AccessToken,
+			RefreshToken: ok.RefreshToken,
+			UserID:       ok.UserID,
+			UserEmail:    ok.Email,
+			ExpiresAt:    expires,
+		}, nil
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("supabase: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+
+	// RFC 8628 §3.5: while pending, the server returns 400 with the
+	// error code in the JSON body. We treat any 4xx with a recognized
+	// error code as one of the typed sentinels.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		var perr devicePollError
+		_ = json.Unmarshal(bodyBytes, &perr)
+		switch perr.Error {
+		case "authorization_pending":
+			return nil, ErrAuthorizationPending
+		case "slow_down":
+			return nil, ErrSlowDown
+		case "access_denied":
+			return nil, ErrAccessDenied
+		case "expired_token":
+			return nil, ErrExpiredToken
+		}
+		return nil, fmt.Errorf("device/poll: status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
-	var tok supabaseTokenResponse
-	if err := json.Unmarshal(body, &tok); err != nil {
-		return nil, fmt.Errorf("parse token response: %w", err)
-	}
-	if tok.AccessToken == "" {
-		// Email-confirmation flow: no tokens issued yet.
-		return &Session{UserID: tok.User.ID, UserEmail: tok.User.Email}, nil
-	}
-	return &Session{
-		AccessToken:  tok.AccessToken,
-		RefreshToken: tok.RefreshToken,
-		UserID:       tok.User.ID,
-		UserEmail:    tok.User.Email,
-		ExpiresAt:    tok.ExpiresAt,
-	}, nil
+	return nil, fmt.Errorf("device/poll: status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 }
 
-// SignOut revokes the access token at Supabase. Best-effort: a network
-// failure or a 4xx is not surfaced as an error — the caller has already
-// erased the local session.
-func (c *Client) SignOut(ctx context.Context, accessToken string) {
-	url := strings.TrimRight(c.endpoints.SupabaseProjectURL, "/") + "/auth/v1/logout"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("apikey", c.endpoints.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return
-	}
-	resp.Body.Close()
-}
-
-// MeResponse mirrors the cloud's GET /me payload. Only the fields the
-// TUI actually renders are typed; ignore unknown fields gracefully.
+// MeResponse mirrors the cloud's GET /me payload.
 type MeResponse struct {
 	UserID        string             `json:"user_id"`
 	Email         string             `json:"email"`
@@ -220,10 +226,9 @@ type HostView struct {
 }
 
 // Me fetches the authenticated user's cloud-side state. Returns
-// ErrUnauthorized on 401 (token expired) and a 404-flavored error
-// when the user hasn't called /signup yet.
+// ErrUnauthorized on 401 (token expired) and ErrNotSignedUp on 404.
 func (c *Client) Me(ctx context.Context, accessToken string) (*MeResponse, error) {
-	url := strings.TrimRight(c.endpoints.ClankctlURL, "/") + "/me"
+	url := c.cloudURL + "/me"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -241,9 +246,6 @@ func (c *Client) Me(ctx context.Context, accessToken string) (*MeResponse, error
 		return nil, ErrUnauthorized
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		// User authenticated but has no signup row; surface as a typed
-		// error so the TUI can offer a "sign up" flow without parsing
-		// strings.
 		return nil, ErrNotSignedUp
 	}
 	if resp.StatusCode >= 400 {
@@ -257,47 +259,19 @@ func (c *Client) Me(ctx context.Context, accessToken string) (*MeResponse, error
 	return &me, nil
 }
 
-// ErrNotSignedUp is returned by Me when the Supabase JWT verifies but
-// no cloud-side users row exists yet. Caller should run Signup.
-var ErrNotSignedUp = errors.New("cloud: user not signed up")
-
-// SignupRequest is the body of the cloud's POST /signup.
-type SignupRequest struct {
-	Handle string `json:"handle"`
-}
-
-// Signup creates the the cloud-side users + personal-org rows for an
-// authenticated user. Idempotency: 409 means "already signed up" and
-// is mapped to ErrAlreadySignedUp so the TUI can ignore it.
-func (c *Client) Signup(ctx context.Context, accessToken, handle string) error {
-	url := strings.TrimRight(c.endpoints.ClankctlURL, "/") + "/signup"
-	body, _ := json.Marshal(SignupRequest{Handle: handle})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+// SignOut is best-effort — caller has already cleared the local
+// session; this revokes server-side. Errors are swallowed (the user
+// has already signed out from their perspective).
+func (c *Client) SignOut(ctx context.Context, accessToken string) {
+	url := c.cloudURL + "/auth/signout"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return err
+		return
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("the cloud /signup: %w", err)
+		return
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-
-	switch resp.StatusCode {
-	case http.StatusCreated, http.StatusOK:
-		return nil
-	case http.StatusConflict:
-		return ErrAlreadySignedUp
-	case http.StatusUnauthorized:
-		return ErrUnauthorized
-	default:
-		return fmt.Errorf("the cloud /signup: status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
+	resp.Body.Close()
 }
-
-// ErrAlreadySignedUp is returned by Signup on a 409. Idempotent re-runs
-// can ignore it.
-var ErrAlreadySignedUp = errors.New("cloud: user already signed up")
