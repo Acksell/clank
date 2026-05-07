@@ -391,10 +391,14 @@ func (m cloudView) View() string {
 
 func (m cloudView) viewNotConfigured() string {
 	muted := lipgloss.NewStyle().Foreground(mutedColor)
+	prefsPath := "~/.clank/preferences.json"
+	if dir, err := config.Dir(); err == nil && dir != "" {
+		prefsPath = dir + "/preferences.json"
+	}
 	return muted.Render(strings.Join([]string{
 		"Cloud is not configured.",
 		"",
-		"Set the cloud URL in your preferences (~/.config/clank/preferences.json):",
+		"Set the cloud URL in your preferences (" + prefsPath + "):",
 		"",
 		`  "cloud": {`,
 		`    "cloud_url": "https://your-cloud.example.com"`,

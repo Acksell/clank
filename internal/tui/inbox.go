@@ -131,8 +131,13 @@ type InboxModel struct {
 	// Settings page state (shown when screen == screenSettings).
 	settings settingsView
 
-	// Cloud panel state (shown when screen == screenCloud).
-	cloud cloudView
+	// Cloud panel state (shown when screen == screenCloud). Persistent
+	// across hovers — the panel does its own /me caching by simply
+	// keeping m.me / m.session populated between visits, so re-hovering
+	// the ☁ row doesn't re-fire the request. Refresh requires either a
+	// sign-out + sign-in or pressing 'r' inside the panel.
+	cloud            cloudView
+	cloudInitialized bool
 
 	// Color-scheme picker overlay (modal). Rendered on top of whatever
 	// screen is currently active. Showing is independent of `screen` so
@@ -384,13 +389,22 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.providerAuth, providerAuthCmd = m.providerAuth.Update(tickMsg)
 		}
 
+		// Forward to cloud panel so its spinner animates during the
+		// loading / awaiting / fetching-me phases. Only when the cloud
+		// is showing — outside screenCloud the panel's tick chain
+		// would die anyway because the cloud isn't rendering.
+		var cloudCmd tea.Cmd
+		if m.screen == screenCloud {
+			m.cloud, cloudCmd = m.cloud.Update(tickMsg)
+		}
+
 		// Forward to session view so its spinner keeps ticking too.
 		if m.screen == screenSession && m.sessionView != nil {
 			model, sessionCmd := m.sessionView.Update(tickMsg)
 			m.sessionView = model.(*SessionViewModel)
-			return m, tea.Batch(inboxCmd, providerAuthCmd, sessionCmd)
+			return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd, sessionCmd)
 		}
-		return m, tea.Batch(inboxCmd, providerAuthCmd)
+		return m, tea.Batch(inboxCmd, providerAuthCmd, cloudCmd)
 	}
 
 	// Always keep the refresh timer ticking, regardless of screen state.
@@ -1862,19 +1876,35 @@ func (m *InboxModel) handleSidebarKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	if m.sidebar.SelectedBranch() != prevBranch {
 		m.applyFiltersAndRebuild()
 	}
-	// Mirror the branch-hover behaviour for the ⚙ Settings footer: if
-	// the cursor lands on it, render the settings page in the right pane
-	// without stealing focus from the sidebar. The reverse transition
-	// (cursor moves off Settings → revert to inbox) is handled in
-	// updateSettings, since at that point the screen is screenSettings
-	// and key routing has already moved over there.
-	if m.screen == screenInbox && m.sidebar.CursorOnSettings() {
-		m.showSettings()
-	}
-	// Same hover behaviour for ☁ Cloud — the panel previews on hover
-	// without stealing focus until the user hits Enter.
-	if m.screen == screenInbox && m.sidebar.CursorOnCloud() {
-		m.showCloud()
+	// Hover preview: keep the right pane in sync with the sidebar
+	// cursor. Cloud / Settings rows show their respective panels;
+	// any other row snaps back to the inbox. Unified here so navigation
+	// like Settings → Cloud (cursor moving across both footer rows)
+	// transitions cleanly in one pass instead of stalling on whichever
+	// screen happened to be showing.
+	switch {
+	case m.sidebar.CursorOnCloud():
+		if m.screen != screenCloud {
+			// Batch the cloud's Init Cmd (loads prefs, fires /me if
+			// a saved session exists) into the sidebar dispatch's
+			// return so the panel's async work runs without the user
+			// having to press Enter first.
+			cmd = tea.Batch(cmd, m.showCloud())
+		}
+	case m.sidebar.CursorOnSettings():
+		if m.screen != screenSettings {
+			m.showSettings()
+		}
+	default:
+		// Cursor moved off both Cloud and Settings — drop back to
+		// inbox if we were previewing either.
+		if m.screen == screenCloud {
+			m.screen = screenInbox
+			m.cloud.SetFocused(false)
+		} else if m.screen == screenSettings {
+			m.screen = screenInbox
+			m.settings.SetFocused(false)
+		}
 	}
 	return m, cmd
 }
