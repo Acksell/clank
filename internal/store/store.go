@@ -9,10 +9,15 @@ import (
 	"fmt"
 
 	"github.com/acksell/clank/internal/store/sqlitedb"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 
 	// Pure-Go SQLite driver (no CGo).
 	_ "modernc.org/sqlite"
 )
+
+// *Store satisfies the HostStore contract — keep the assertion close to
+// the type definition so refactors can't silently break the interface.
+var _ hoststore.HostStore = (*Store)(nil)
 
 // Store wraps a SQLite database for persisting session metadata and host
 // registry state. New tables are accessed via the sqlc-generated Queries
