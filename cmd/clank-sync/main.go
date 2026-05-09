@@ -9,15 +9,27 @@
 // Env (laptop dev / single-tenant deployment):
 //
 //	CLANK_SYNC_LISTEN_ADDR  — HTTP listen (default ":8081")
-//	CLANK_SYNC_DB_PATH      — SQLite path for the HostStore the
-//	                           provisioner uses (default
-//	                           ~/.local/state/clank/clank.db)
+//	CLANK_SYNC_DB_PATH      — SQLite path for the HostStore + sync tables
+//	                           (default ~/.local/state/clank/clank.db)
 //	SPRITES_TOKEN           — sprites API token (required)
 //	SPRITES_ORG             — optional Sprites org slug
 //	SPRITES_REGION          — optional Sprites region
 //	MIRROR_BASE_URL         — placeholder (provisioner validates non-empty)
 //	MIRROR_AUTH_TOKEN       — placeholder
 //	CLANK_SYNC_DEBOUNCE     — Go duration; default "30s"
+//
+// Object-storage backend (S3-compatible — AWS S3, R2, Tigris, MinIO).
+// All four are required to enable the new /v1/worktrees + /v1/checkpoints
+// endpoints; if any are unset, only the legacy /v1/bundles path is served.
+//
+//	CLANK_SYNC_S3_BUCKET     — bucket name
+//	CLANK_SYNC_S3_REGION     — region (use "auto" for R2)
+//	CLANK_SYNC_S3_ENDPOINT   — optional; set for R2/Tigris/MinIO
+//	CLANK_SYNC_S3_ACCESS_KEY — access key
+//	CLANK_SYNC_S3_SECRET_KEY — secret key
+//	CLANK_SYNC_S3_PATH_STYLE — "1" / "true" for path-style addressing
+//	                            (required for MinIO and most R2 setups)
+//	CLANK_SYNC_PRESIGN_TTL   — Go duration; default "5m"
 //
 // For multi-tenant cloud deployments, run this binary with the
 // same env your cloud gateway uses; auth defaults to permissive (PR follow-up:
@@ -33,12 +45,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/acksell/clank/internal/store"
 	clankflyio "github.com/acksell/clank/pkg/provisioner/flyio"
 	clanksync "github.com/acksell/clank/pkg/sync"
+	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 const defaultListenAddr = ":8081"
@@ -83,10 +97,37 @@ func main() {
 		debounce = parsed
 	}
 
-	srv, err := clanksync.NewServer(clanksync.Config{
+	syncCfg := clanksync.Config{
 		Provisioner:   flyProv,
 		FlushDebounce: debounce,
-	}, log.Default())
+	}
+
+	// S3-compatible object storage backs the new checkpoint substrate.
+	// All four credentials must be set together — partial config is a
+	// fatal error rather than a silent fallback to legacy-only mode.
+	s3Cfg, ok := loadS3Config()
+	if ok {
+		ctxInit, cancelInit := context.WithTimeout(context.Background(), 30*time.Second)
+		bucket, err := storage.NewS3(ctxInit, s3Cfg)
+		cancelInit()
+		if err != nil {
+			log.Fatalf("storage S3: %v", err)
+		}
+		syncCfg.Store = st
+		syncCfg.Storage = bucket
+		if ttl := os.Getenv("CLANK_SYNC_PRESIGN_TTL"); ttl != "" {
+			parsed, err := time.ParseDuration(ttl)
+			if err != nil {
+				log.Fatalf("CLANK_SYNC_PRESIGN_TTL: %v", err)
+			}
+			syncCfg.PresignTTL = parsed
+		}
+		log.Printf("clank-sync: checkpoint endpoints enabled (bucket=%s region=%s)", s3Cfg.Bucket, s3Cfg.Region)
+	} else {
+		log.Printf("clank-sync: S3 not configured; only legacy /v1/bundles path is served")
+	}
+
+	srv, err := clanksync.NewServer(syncCfg, log.Default())
 	if err != nil {
 		log.Fatalf("sync server: %v", err)
 	}
@@ -143,4 +184,38 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// loadS3Config reads CLANK_SYNC_S3_* env vars. Returns (cfg, true) when
+// the four required credentials are all set, or (cfg, false) when none
+// are set. A partial config is a fatal error so half-configured deploys
+// can't silently fall back to legacy-only mode.
+func loadS3Config() (storage.S3Config, bool) {
+	bucket := os.Getenv("CLANK_SYNC_S3_BUCKET")
+	region := os.Getenv("CLANK_SYNC_S3_REGION")
+	access := os.Getenv("CLANK_SYNC_S3_ACCESS_KEY")
+	secret := os.Getenv("CLANK_SYNC_S3_SECRET_KEY")
+	allEmpty := bucket == "" && region == "" && access == "" && secret == ""
+	if allEmpty {
+		return storage.S3Config{}, false
+	}
+	if bucket == "" || region == "" || access == "" || secret == "" {
+		log.Fatalf("CLANK_SYNC_S3_* env vars are partially set; need all of BUCKET, REGION, ACCESS_KEY, SECRET_KEY (or none)")
+	}
+	pathStyle := false
+	if v := os.Getenv("CLANK_SYNC_S3_PATH_STYLE"); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			log.Fatalf("CLANK_SYNC_S3_PATH_STYLE: %v", err)
+		}
+		pathStyle = parsed
+	}
+	return storage.S3Config{
+		Bucket:       bucket,
+		Region:       region,
+		Endpoint:     os.Getenv("CLANK_SYNC_S3_ENDPOINT"),
+		AccessKey:    access,
+		SecretKey:    secret,
+		UsePathStyle: pathStyle,
+	}, true
 }
