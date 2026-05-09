@@ -25,22 +25,35 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    apk add --no-cache build-base sqlite-dev && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w" -o /out/clank-sync   ./cmd/clank-sync && \
     go build -trimpath -ldflags "-s -w" -o /out/clankd       ./cmd/clankd     && \
     go build -trimpath -ldflags "-s -w" -o /out/clank-host   ./cmd/clank-host
 
-FROM alpine:3.20 AS runtime
+FROM debian:bookworm-slim AS runtime
 
-# git:               clank-host clones repos and applies bundles.
-# openssh-client:    git clone git@github.com:... requires ssh.
-# ca-certificates:   outbound HTTPS (S3, fly.io, GitHub HTTPS clones).
+# git:               clank-host applies bundles via `git fetch <bundle>`.
+# openssh-client:    `git clone git@github.com:...` requires ssh.
+# ca-certificates:   outbound HTTPS (S3, fly.io, GitHub HTTPS).
 # tini:              PID 1 reaper so signals propagate cleanly to
 #                    clank-host subprocesses spawned by the local
 #                    provisioner.
-# sqlite-libs:       runtime dep of the cgo sqlite driver.
-RUN apk add --no-cache git openssh-client ca-certificates tini sqlite-libs
+# libsqlite3-0:      runtime dep of the cgo sqlite driver.
+# nodejs+npm:        opencode-ai's wrapper script uses node; npm to
+#                    install the package globally.
+#
+# Debian (glibc) base because opencode-ai's npm package ships only
+# glibc binaries via optionalDependencies; alpine/musl can't run them.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git openssh-client ca-certificates tini libsqlite3-0 \
+        nodejs npm \
+        wget curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# opencode-ai is the OpenCode backend's CLI binary, started per-session
+# by the host's BackendManager. Installed globally so /usr/local/bin/opencode
+# resolves on PATH for the clank-host subprocess.
+RUN npm install -g opencode-ai && opencode --version
 
 # Pre-load github.com's host keys so `git clone git@github.com:...`
 # doesn't fail with "Host key verification failed". The keys are
@@ -63,6 +76,6 @@ COPY --from=builder /out/clank-host   /usr/local/bin/clank-host
 # clankd's local provisioner does exec.LookPath("clank-host"); having
 # it on PATH satisfies that without an explicit BinPath option.
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 # Override per-service in docker-compose.yml.
 CMD ["clankd", "start", "--foreground"]
