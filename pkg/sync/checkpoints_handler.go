@@ -116,8 +116,19 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !callerOwnsWorktree(caller, wt) {
-		http.Error(w, "caller is not the current owner", http.StatusForbidden)
+	// Two flavors of legitimate caller for a transfer:
+	//   1. the current owner releasing → routine handoff
+	//      (laptop migrating to_sprite).
+	//   2. the new owner claiming → reclaim path
+	//      (laptop migrating to_laptop after a previous to_sprite,
+	//      or another of the user's devices taking over).
+	// Both cases represent deliberate user intent within their own
+	// tenant. The optimistic-concurrency guard (expected_owner_id)
+	// blocks lost-update races regardless of which path applies.
+	callerIsCurrentOwner := callerOwnsWorktree(caller, wt)
+	callerIsNewOwner := callerMatches(caller, req.ToKind, req.ToID)
+	if !callerIsCurrentOwner && !callerIsNewOwner {
+		http.Error(w, "caller must be either the current owner or the new owner", http.StatusForbidden)
 		return
 	}
 
@@ -429,6 +440,21 @@ func callerOwnsWorktree(c Caller, wt Worktree) bool {
 		return wt.OwnerKind == OwnerKindLaptop && wt.OwnerID == c.DeviceID
 	case CallerKindSprite:
 		return wt.OwnerKind == OwnerKindSprite && wt.OwnerID == c.HostID
+	default:
+		return false
+	}
+}
+
+// callerMatches returns true when the caller's identity equals the
+// (kind, id) pair. Used by transferOwnership to recognize a legitimate
+// "I'm claiming this worktree for myself" reclaim — see
+// handleTransferOwnership.
+func callerMatches(c Caller, kind OwnerKind, id string) bool {
+	switch kind {
+	case OwnerKindLaptop:
+		return c.Kind == CallerKindLaptop && c.DeviceID == id
+	case OwnerKindSprite:
+		return c.Kind == CallerKindSprite && c.HostID == id
 	default:
 		return false
 	}
