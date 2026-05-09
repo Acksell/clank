@@ -177,6 +177,8 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 //	GET  /v1/health                       — liveness (no auth)
 //	POST /v1/bundles?repo=<slug>          — legacy: buffer + autonomous flush (auth required)
 //	POST /v1/worktrees                    — register a worktree, returns ID
+//	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on migration)
+//	POST /v1/worktrees/{id}/owner         — atomic ownership transfer
 //	POST /v1/checkpoints                  — create checkpoint metadata, returns presigned PUT URLs
 //	POST /v1/checkpoints/{id}/commit      — confirm upload, advance latest_synced_checkpoint
 //	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on migration)
@@ -189,6 +191,8 @@ func (s *Server) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/bundles", s.handlePushBundle)
 	if s.cfg.Store != nil && s.cfg.Storage != nil {
 		mx.HandleFunc("POST /v1/worktrees", s.handleRegisterWorktree)
+		mx.HandleFunc("GET /v1/worktrees/{id}", s.handleGetWorktree)
+		mx.HandleFunc("POST /v1/worktrees/{id}/owner", s.handleTransferOwnership)
 		mx.HandleFunc("POST /v1/checkpoints", s.handleCreateCheckpoint)
 		mx.HandleFunc("POST /v1/checkpoints/{id}/commit", s.handleCommitCheckpoint)
 		mx.HandleFunc("GET /v1/checkpoints/{id}/download", s.handleDownloadCheckpoint)

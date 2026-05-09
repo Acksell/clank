@@ -29,6 +29,122 @@ type worktreeResponse struct {
 	UpdatedAt              time.Time `json:"updated_at"`
 }
 
+// handleGetWorktree returns the worktree row to its owning user.
+// Used by the gateway during MigrateWorktree to read
+// latest_synced_checkpoint and validate ownership.
+func (s *Server) handleGetWorktree(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.callerOrUnauthorized(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "worktree id missing", http.StatusBadRequest)
+		return
+	}
+	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
+	if errors.Is(err, ErrWorktreeNotFound) {
+		http.Error(w, "worktree not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.log.Printf("sync: get worktree: %v", err)
+		http.Error(w, "lookup worktree", http.StatusInternalServerError)
+		return
+	}
+	if wt.UserID != caller.UserID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, http.StatusOK, worktreeToResponse(wt))
+}
+
+// transferOwnershipRequest is the body of POST /v1/worktrees/{id}/owner.
+type transferOwnershipRequest struct {
+	ToKind  OwnerKind `json:"to_kind"`
+	ToID    string    `json:"to_id"`
+	// ExpectedOwnerID guards the optimistic-concurrency check. The
+	// caller MUST provide its current view of the row's owner_id; the
+	// UPDATE only succeeds if reality still matches. Mismatch returns
+	// 409 so the caller can re-read and retry. Defaults to caller's
+	// own ID (DeviceID for laptops, HostID for sprites) when empty —
+	// the common case is "I currently own this; transfer to X".
+	ExpectedOwnerID string `json:"expected_owner_id"`
+}
+
+// handleTransferOwnership performs the atomic ownership transfer for
+// MigrateWorktree. Authorization: the caller must currently own the
+// worktree (laptop's DeviceID == worktree.OwnerID, OR sprite's HostID
+// == worktree.OwnerID). The DB-level UPDATE WHERE owner_id = expected
+// catches lost-update races even if the auth check passes.
+func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.callerOrUnauthorized(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "worktree id missing", http.StatusBadRequest)
+		return
+	}
+
+	var req transferOwnershipRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ToKind != OwnerKindLaptop && req.ToKind != OwnerKindSprite {
+		http.Error(w, "to_kind must be laptop or sprite", http.StatusBadRequest)
+		return
+	}
+	if req.ToID == "" {
+		http.Error(w, "to_id is required", http.StatusBadRequest)
+		return
+	}
+
+	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
+	if errors.Is(err, ErrWorktreeNotFound) {
+		http.Error(w, "worktree not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.log.Printf("sync: get worktree: %v", err)
+		http.Error(w, "lookup worktree", http.StatusInternalServerError)
+		return
+	}
+	if wt.UserID != caller.UserID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !callerOwnsWorktree(caller, wt) {
+		http.Error(w, "caller is not the current owner", http.StatusForbidden)
+		return
+	}
+
+	expected := req.ExpectedOwnerID
+	if expected == "" {
+		expected = wt.OwnerID
+	}
+
+	if err := s.cfg.Store.UpdateWorktreeOwner(r.Context(), id, expected, req.ToKind, req.ToID); err != nil {
+		if errors.Is(err, ErrOwnerMismatch) {
+			http.Error(w, "owner mismatch (concurrent migration?)", http.StatusConflict)
+			return
+		}
+		s.log.Printf("sync: update worktree owner: %v", err)
+		http.Error(w, "transfer", http.StatusInternalServerError)
+		return
+	}
+
+	updated, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
+	if err != nil {
+		s.log.Printf("sync: re-read worktree after transfer: %v", err)
+		http.Error(w, "transfer", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, worktreeToResponse(updated))
+}
+
 func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.callerOrUnauthorized(w, r)
 	if !ok {
