@@ -28,6 +28,12 @@ type Config struct {
 	// upload. Required for non-permissive deployments.
 	AuthToken string
 
+	// DeviceID identifies this laptop in worktree ownership records.
+	// Required for the new checkpoint flow (RegisterWorktree,
+	// PushCheckpoint); legacy PushBundle ignores it. P2 will move this
+	// into JWT claims.
+	DeviceID string
+
 	// HTTPClient overrides the default http.Client. Optional.
 	HTTPClient *http.Client
 }
