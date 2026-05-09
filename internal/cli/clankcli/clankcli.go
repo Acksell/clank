@@ -53,6 +53,7 @@ func Command() *cobra.Command {
 		codeCmd(),
 		inboxCmd(),
 		syncCmd(),
+		migrateCmd(),
 	)
 
 	return root
