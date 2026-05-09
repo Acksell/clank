@@ -1,5 +1,5 @@
 // Package checkpoint constructs and restores worktree checkpoints in
-// the form of two git bundles plus a manifest. The model follows
+// the form of two git bundles plus a manifest:
 //
 //   - headCommit bundle  — `git bundle` covering the current HEAD's
 //     reachable history. Heavy but rarely changes.

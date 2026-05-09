@@ -13,22 +13,11 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
 	"github.com/acksell/clank/pkg/syncclient"
 )
-
-// noopProvisioner satisfies the Provisioner contract; the new
-// /v1/checkpoints flow doesn't actually call EnsureHost.
-type noopProvisioner struct{}
-
-func (noopProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
-	return provisioner.HostRef{}, nil
-}
-func (noopProvisioner) SuspendHost(context.Context, string) error { return nil }
-func (noopProvisioner) DestroyHost(context.Context, string) error { return nil }
 
 // fixedUserAuth returns the same userID for every request — stand-in
 // for real JWT verification in MVP.
@@ -58,7 +47,6 @@ func TestCheckpointFlow_EndToEnd(t *testing.T) {
 	defer mem.Close()
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Provisioner: noopProvisioner{},
 		Auth:        fixedUserAuth{userID: "user-A"},
 		Store:       st,
 		Storage:     mem,

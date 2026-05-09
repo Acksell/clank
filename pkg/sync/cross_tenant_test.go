@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/acksell/clank/internal/store"
-	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
 	"github.com/acksell/clank/pkg/sync/storage"
@@ -32,14 +31,6 @@ func (headerUserAuth) Verify(r *http.Request) (map[string]any, error) {
 	}
 	return map[string]any{"sub": u}, nil
 }
-
-type fuzzNoopProvisioner struct{}
-
-func (fuzzNoopProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
-	return provisioner.HostRef{}, nil
-}
-func (fuzzNoopProvisioner) SuspendHost(context.Context, string) error { return nil }
-func (fuzzNoopProvisioner) DestroyHost(context.Context, string) error { return nil }
 
 // TestCrossTenantIsolation_PropertyFuzz spawns N concurrent users that
 // each register a worktree and push M checkpoints. After all pushes
@@ -73,7 +64,6 @@ func TestCrossTenantIsolation_PropertyFuzz(t *testing.T) {
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Provisioner: fuzzNoopProvisioner{},
 		Auth:        headerUserAuth{},
 		Store:       st,
 		Storage:     mem,

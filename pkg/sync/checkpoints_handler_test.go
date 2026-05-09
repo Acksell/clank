@@ -12,21 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
-
-// noopProvisioner satisfies the Provisioner contract; the new
-// /v1/checkpoints flow doesn't actually call EnsureHost (the gateway
-// drives migration), but Config.Provisioner is required.
-type noopProvisioner struct{}
-
-func (noopProvisioner) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
-	return provisioner.HostRef{}, nil
-}
-func (noopProvisioner) SuspendHost(context.Context, string) error { return nil }
-func (noopProvisioner) DestroyHost(context.Context, string) error { return nil }
 
 // memSyncStore is an in-memory SyncStore for handler tests. Real
 // persistence is exercised in internal/store's sqlite-backed tests.
@@ -160,7 +148,6 @@ func newTestServer(t *testing.T) (*httptest.Server, *memSyncStore, *storage.Memo
 	t.Cleanup(mem.Close)
 
 	srv, err := clanksync.NewServer(clanksync.Config{
-		Provisioner: noopProvisioner{},
 		Auth:        fixedUserAuth{userID: "user-A"},
 		Store:       store,
 		Storage:     mem,

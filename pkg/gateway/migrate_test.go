@@ -73,7 +73,6 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 
 	// 2. clank-sync httptest server.
 	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Provisioner: noopProv{},
 		Auth:        fixedUserAuth{userID: userID},
 		Store:       st,
 		Storage:     mem,
@@ -291,7 +290,6 @@ func TestMigrate_RejectsWhenLaptopNotOwner(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, _ := clanksync.NewServer(clanksync.Config{
-		Provisioner: noopProv{},
 		Auth:        fixedUserAuth{userID: userID},
 		Store:       st,
 		Storage:     mem,
@@ -359,7 +357,6 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, _ := clanksync.NewServer(clanksync.Config{
-		Provisioner: noopProv{},
 		Auth:        fixedUserAuth{userID: userID},
 		Store:       st,
 		Storage:     mem,
@@ -399,14 +396,6 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 }
 
 // --- helpers ---
-
-type noopProv struct{}
-
-func (noopProv) EnsureHost(context.Context, string) (provisioner.HostRef, error) {
-	return provisioner.HostRef{}, nil
-}
-func (noopProv) SuspendHost(context.Context, string) error { return nil }
-func (noopProv) DestroyHost(context.Context, string) error { return nil }
 
 type captureProvisioner struct {
 	ref   provisioner.HostRef
