@@ -44,7 +44,7 @@ func (s *Server) handleGetWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
 	if errors.Is(err, ErrWorktreeNotFound) {
-		http.Error(w, "worktree not found", http.StatusNotFound)
+		http.Error(w, worktreeNotFoundMsg(id), http.StatusNotFound)
 		return
 	}
 	if err != nil {
@@ -104,7 +104,7 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 
 	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), id)
 	if errors.Is(err, ErrWorktreeNotFound) {
-		http.Error(w, "worktree not found", http.StatusNotFound)
+		http.Error(w, worktreeNotFoundMsg(id), http.StatusNotFound)
 		return
 	}
 	if err != nil {
@@ -235,7 +235,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 
 	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), req.WorktreeID)
 	if errors.Is(err, ErrWorktreeNotFound) {
-		http.Error(w, "worktree not found", http.StatusNotFound)
+		http.Error(w, worktreeNotFoundMsg(req.WorktreeID), http.StatusNotFound)
 		return
 	}
 	if err != nil {
@@ -553,4 +553,12 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func newULID() string {
 	return ulid.MustNew(ulid.Now(), cryptorand.Reader).String()
+}
+
+// worktreeNotFoundMsg formats the user-facing 404 body for a missing
+// worktree row. Includes the recovery hint for the realistic cause:
+// a stale .clank/worktree-id on the laptop pointing at a server row
+// that no longer exists (e.g. after a clank-sync DB reset in dev).
+func worktreeNotFoundMsg(id string) string {
+	return fmt.Sprintf("worktree %s not registered with this clank-sync — if the cached id at <repo>/.clank/worktree-id is stale (e.g. server DB reset), delete it and retry to re-register", id)
 }
