@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 // Authenticator verifies the inbound bearer token and returns claims.
@@ -67,6 +68,23 @@ type Config struct {
 	// Default 100MB — generous for typical edit cadence; protects against
 	// runaway full-history bundles.
 	MaxBundleBytes int64
+
+	// Store backs the new checkpoint substrate (worktrees + checkpoints
+	// tables). When nil, the /v1/worktrees and /v1/checkpoints endpoints
+	// return 503 — the legacy /v1/bundles path stays available either way.
+	// Required for the gateway's MigrateWorktree flow (P3).
+	Store SyncStore
+
+	// Storage is the object-storage backend (S3-compatible) where
+	// checkpoint bundles live. When nil, the new endpoints return 503.
+	// Bundle bytes never traverse the sync server in either direction —
+	// laptop and gateway upload/download via presigned URLs minted here.
+	Storage storage.Storage
+
+	// PresignTTL is how long presigned PUT/GET URLs stay valid. Default
+	// 5 minutes — long enough for slow uploads, short enough to bound a
+	// leaked URL. Affects only the new /v1/checkpoints flow.
+	PresignTTL time.Duration
 }
 
 // Server is the sync middleware.
@@ -114,6 +132,12 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 	if cfg.MaxBundleBytes == 0 {
 		cfg.MaxBundleBytes = 100 << 20
 	}
+	if cfg.PresignTTL == 0 {
+		cfg.PresignTTL = 5 * time.Minute
+	}
+	if (cfg.Store == nil) != (cfg.Storage == nil) {
+		return nil, fmt.Errorf("sync: Store and Storage must be set together (or both unset)")
+	}
 	if lg == nil {
 		lg = log.Default()
 	}
@@ -128,12 +152,25 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 
 // Handler returns the public HTTP handler. Routes:
 //
-//	POST /v1/bundles?repo=<slug> — store a bundle (auth required)
-//	GET  /v1/health              — liveness (no auth)
+//	GET  /v1/health                       — liveness (no auth)
+//	POST /v1/bundles?repo=<slug>          — legacy: buffer + autonomous flush (auth required)
+//	POST /v1/worktrees                    — register a worktree, returns ID
+//	POST /v1/checkpoints                  — create checkpoint metadata, returns presigned PUT URLs
+//	POST /v1/checkpoints/{id}/commit      — confirm upload, advance latest_synced_checkpoint
+//	GET  /v1/checkpoints/{id}/download    — return presigned GET URLs (gateway uses on migration)
+//
+// The new /v1/worktrees + /v1/checkpoints routes only register when
+// Config.Store and Config.Storage are both set.
 func (s *Server) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /v1/health", s.handleHealth)
 	mx.HandleFunc("POST /v1/bundles", s.handlePushBundle)
+	if s.cfg.Store != nil && s.cfg.Storage != nil {
+		mx.HandleFunc("POST /v1/worktrees", s.handleRegisterWorktree)
+		mx.HandleFunc("POST /v1/checkpoints", s.handleCreateCheckpoint)
+		mx.HandleFunc("POST /v1/checkpoints/{id}/commit", s.handleCommitCheckpoint)
+		mx.HandleFunc("GET /v1/checkpoints/{id}/download", s.handleDownloadCheckpoint)
+	}
 	return mx
 }
 
