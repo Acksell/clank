@@ -108,3 +108,26 @@ image-print:
 # old binary version.
 cloud-hub: install
 	@bash scripts/dev-cloud-hub.sh
+
+# ---- Self-hosted docker stack (smoke testing) ------------------------
+#
+# Brings up minio + clank-sync + clankd in containers. See
+# docker/README.md for the full smoke recipe (register worktree, push
+# checkpoint, trigger migration).
+
+.PHONY: docker-setup docker-up docker-down docker-build docker-logs
+docker-setup:
+	@if ! grep -q '^[^#]*[[:space:]]clank-minio\b' /etc/hosts; then \
+	    echo "Adding 'clank-minio' → 127.0.0.1 to /etc/hosts (sudo prompt)..."; \
+	    echo "127.0.0.1 clank-minio" | sudo tee -a /etc/hosts > /dev/null; \
+	else \
+	    echo "/etc/hosts already maps clank-minio — no change."; \
+	fi
+docker-build:
+	docker compose -f docker/docker-compose.yml build
+docker-up: docker-setup
+	docker compose -f docker/docker-compose.yml up -d --build
+docker-down:
+	docker compose -f docker/docker-compose.yml down
+docker-logs:
+	docker compose -f docker/docker-compose.yml logs -f --tail=100

@@ -94,6 +94,13 @@ services:
       - "--foreground"
       - "--listen=tcp://0.0.0.0:7878"
       - "--sync-base-url=http://clank-sync:8081"
+      # PublicBaseURL is the URL sprites can reach back at when they
+      # eventually push checkpoints (P4+). Required by daytona/flyio
+      # provisioner validation; unused by the local provisioner. For
+      # real cloud sprites override CLANK_PUBLIC_BASE_URL with a
+      # publicly reachable URL (e.g. a cloudflared tunnel — see
+      # `make cloud-hub`).
+      - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://clank-sync:8081}"
     environment:
       # The local provisioner spawns clank-host as a subprocess. With
       # --listen=tcp, clankd's bearer-token middleware demands

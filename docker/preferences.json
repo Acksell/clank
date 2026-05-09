@@ -1,6 +1,6 @@
 {
-  "default_launch_host_provider": "local",
   "remote_hub": {
-    "auth_token": "clank-dev-token-change-me"
-  }
+    "auth_token": "411e9c1935324c648c29b3c7251331c6df2427a122b84f4293eeaf1aa298bc32"
+  },
+  "default_launch_host_provider": "local"
 }

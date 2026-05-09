@@ -15,19 +15,21 @@ needed. Useful for smoke-testing the sync/migration flow end-to-end.
 The presigned URLs that clank-sync mints for the laptop reference
 the minio container by its hostname (`clank-minio`). For your laptop
 to dial that hostname when uploading bundles, add a single
-`/etc/hosts` line:
+`/etc/hosts` line. The Make target handles it (sudo prompt):
 
 ```sh
-echo "127.0.0.1 clank-minio" | sudo tee -a /etc/hosts
+make docker-setup
 ```
 
-Without this, `clank sync push` from the laptop will hang on PUT.
+Without this, `clank sync push` from the laptop fails with
+`dial tcp: lookup clank-minio: no such host` on the bundle PUT.
 
 ## Bringing the stack up
 
 ```sh
-cp docker/.env.example docker/.env             # tweak ports / passwords if needed
-docker compose -f docker/docker-compose.yml --env-file docker/.env up -d --build
+make docker-up      # implies docker-setup; builds + starts everything
+make docker-logs    # tail logs from all services
+make docker-down    # stop + remove containers
 ```
 
 Health-checks:
@@ -86,13 +88,32 @@ All HTTP services run in containers. Outbound traffic happens only
 when the laptop pushes/pulls bundles via presigned minio URLs. No
 secrets ever leave the docker network.
 
-The "sandbox" in this setup is a clank-host subprocess inside the
-clankd container — useful for end-to-end smoke testing but not what
-you'd run in production. Real cloud sandboxes come from swapping the
-provisioner: edit `docker/preferences.json` to use `flyio` or
-`daytona` and provide the corresponding API token (see
-`internal/cli/daemoncli/provisioner.go` for the required preference
-fields).
+The "sandbox" in the default setup is a clank-host subprocess inside
+the clankd container (the `local` provisioner) — useful for
+end-to-end smoke testing but not what you'd run in production.
+
+### Switching to fly.io provisioner
+
+Edit `docker/preferences.json`:
+
+```json
+{
+  "remote_hub":   { "auth_token": "<your-bearer>" },
+  "default_launch_host_provider": "flyio",
+  "flyio":        { "api_token": "<fly-api-token>", "organization_slug": "<slug>" }
+}
+```
+
+For P3 (gateway pushes bundles to sprites) the default
+`CLANK_PUBLIC_BASE_URL` placeholder is fine — sprites don't reach
+back. If/when you start exercising sprite-side push (P4+), set
+`CLANK_PUBLIC_BASE_URL` in `docker/.env` to a publicly-reachable URL
+of clank-sync — easiest is a cloudflared tunnel:
+
+```sh
+cloudflared tunnel --url http://localhost:8081
+# then: CLANK_PUBLIC_BASE_URL=https://your-tunnel.trycloudflare.com
+```
 
 ## Tearing down
 
