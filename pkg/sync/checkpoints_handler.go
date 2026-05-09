@@ -16,10 +16,6 @@ import (
 // registerWorktreeRequest is the body of POST /v1/worktrees.
 type registerWorktreeRequest struct {
 	DisplayName string `json:"display_name"`
-	// DeviceID identifies the laptop registering this worktree. P2 will
-	// move this into JWT claims; for MVP with PermissiveAuth the client
-	// supplies it directly.
-	DeviceID string `json:"device_id"`
 }
 
 type worktreeResponse struct {
@@ -38,6 +34,10 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if caller.Kind != CallerKindLaptop {
+		http.Error(w, "only laptop callers may register worktrees", http.StatusForbidden)
+		return
+	}
 
 	var req registerWorktreeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -48,18 +48,14 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "display_name is required", http.StatusBadRequest)
 		return
 	}
-	if req.DeviceID == "" {
-		http.Error(w, "device_id is required", http.StatusBadRequest)
-		return
-	}
 
 	now := time.Now().UTC()
 	wt := Worktree{
 		ID:          newULID(),
-		UserID:      caller.userID,
+		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
 		OwnerKind:   OwnerKindLaptop,
-		OwnerID:     req.DeviceID,
+		OwnerID:     caller.DeviceID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -74,7 +70,8 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 
 // createCheckpointRequest is the body of POST /v1/checkpoints. Field
 // shapes match checkpoint.Manifest minus the server-assigned ID and
-// CreatedAt/By.
+// CreatedAt/By. Caller identity (userID + device_id/host_id) comes
+// from CallerVerifier, not the request body.
 type createCheckpointRequest struct {
 	WorktreeID        string `json:"worktree_id"`
 	HeadCommit        string `json:"head_commit"`
@@ -82,7 +79,6 @@ type createCheckpointRequest struct {
 	IndexTree         string `json:"index_tree"`
 	WorktreeTree      string `json:"worktree_tree"`
 	IncrementalCommit string `json:"incremental_commit"`
-	DeviceID          string `json:"device_id"`
 }
 
 type createCheckpointResponse struct {
@@ -105,8 +101,8 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" || req.WorktreeTree == "" || req.IncrementalCommit == "" || req.DeviceID == "" {
-		http.Error(w, "worktree_id, head_commit, index_tree, worktree_tree, incremental_commit, device_id are required", http.StatusBadRequest)
+	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" || req.WorktreeTree == "" || req.IncrementalCommit == "" {
+		http.Error(w, "worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required", http.StatusBadRequest)
 		return
 	}
 
@@ -120,11 +116,11 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "lookup worktree", http.StatusInternalServerError)
 		return
 	}
-	if wt.UserID != caller.userID {
+	if wt.UserID != caller.UserID {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if wt.OwnerKind != OwnerKindLaptop || wt.OwnerID != req.DeviceID {
+	if !callerOwnsWorktree(caller, wt) {
 		http.Error(w, "not the current owner", http.StatusForbidden)
 		return
 	}
@@ -140,7 +136,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		WorktreeTree:      req.WorktreeTree,
 		IncrementalCommit: req.IncrementalCommit,
 		CreatedAt:         now,
-		CreatedBy:         "laptop:" + req.DeviceID,
+		CreatedBy:         createdByFor(caller),
 	}
 	if err := s.cfg.Store.InsertCheckpoint(r.Context(), ck); err != nil {
 		s.log.Printf("sync: insert checkpoint: %v", err)
@@ -181,7 +177,7 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.userID)
+	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
@@ -246,7 +242,7 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.userID)
+	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
@@ -281,26 +277,57 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// caller bundles the few pieces of identity we extract from claims for
-// the new endpoints. P2 will replace this with a richer struct
-// (DeviceID, HostID, Kind) once JWT claims carry those fields.
-type caller struct {
-	userID string
+func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (Caller, bool) {
+	c, err := s.cfg.CallerVerifier.VerifyCaller(r)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoCallerIdentity), errors.Is(err, ErrAmbiguousCaller):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			w.Header().Set("WWW-Authenticate", `Bearer realm="clank-sync"`)
+			http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		}
+		return Caller{}, false
+	}
+	if c.Kind == CallerKindSprite && s.cfg.HostStore != nil {
+		host, err := s.cfg.HostStore.GetHostByID(r.Context(), c.HostID)
+		if err != nil {
+			http.Error(w, "unknown sprite host", http.StatusUnauthorized)
+			return Caller{}, false
+		}
+		if host.UserID != c.UserID {
+			s.log.Printf("sync: sprite cross-check failed: host_id=%s claims user=%s host user=%s", c.HostID, c.UserID, host.UserID)
+			http.Error(w, "sprite/user mismatch", http.StatusForbidden)
+			return Caller{}, false
+		}
+	}
+	return c, true
 }
 
-func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	claims, err := s.cfg.Auth.Verify(r)
-	if err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank-sync"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return caller{}, false
+// callerOwnsWorktree returns true when the caller's identity matches
+// the worktree's current owner. Laptop callers must own the worktree
+// via DeviceID; sprite callers via HostID.
+func callerOwnsWorktree(c Caller, wt Worktree) bool {
+	switch c.Kind {
+	case CallerKindLaptop:
+		return wt.OwnerKind == OwnerKindLaptop && wt.OwnerID == c.DeviceID
+	case CallerKindSprite:
+		return wt.OwnerKind == OwnerKindSprite && wt.OwnerID == c.HostID
+	default:
+		return false
 	}
-	userID, err := s.cfg.UserIDFromClaims(claims)
-	if err != nil || userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return caller{}, false
+}
+
+// createdByFor returns the canonical CreatedBy stamp for a caller.
+func createdByFor(c Caller) string {
+	switch c.Kind {
+	case CallerKindLaptop:
+		return "laptop:" + c.DeviceID
+	case CallerKindSprite:
+		return "sprite:" + c.HostID
+	default:
+		return string(c.Kind) + ":" + c.UserID
 	}
-	return caller{userID: userID}, true
 }
 
 // lookupCheckpointForUser fetches a checkpoint and its worktree,

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/acksell/clank/pkg/provisioner"
+	"github.com/acksell/clank/pkg/provisioner/hoststore"
 	"github.com/acksell/clank/pkg/sync/storage"
 )
 
@@ -85,6 +86,21 @@ type Config struct {
 	// 5 minutes — long enough for slow uploads, short enough to bound a
 	// leaked URL. Affects only the new /v1/checkpoints flow.
 	PresignTTL time.Duration
+
+	// CallerVerifier extracts a Caller from inbound requests to the new
+	// /v1/checkpoints endpoints. Defaults to a HeaderCallerVerifier
+	// wrapping Auth + UserIDFromClaims with X-Clank-Device-Id /
+	// X-Clank-Host-Id headers. Production deployments will plug in a
+	// JWT verifier that puts those values in claims directly.
+	CallerVerifier CallerVerifier
+
+	// HostStore enables the sprite-kind cross-check: every sprite-kind
+	// caller's claimed host_id is looked up here and the row's user_id
+	// is asserted to equal claims.sub. Without this, a leaked sprite
+	// token could in principle be replayed against a different sprite
+	// even within the same tenant. Optional in MVP (only laptop callers
+	// exist); required when sprite-push lands (P4).
+	HostStore hoststore.HostStore
 }
 
 // Server is the sync middleware.
@@ -137,6 +153,12 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 	}
 	if (cfg.Store == nil) != (cfg.Storage == nil) {
 		return nil, fmt.Errorf("sync: Store and Storage must be set together (or both unset)")
+	}
+	if cfg.CallerVerifier == nil {
+		cfg.CallerVerifier = &HeaderCallerVerifier{
+			Auth:             cfg.Auth,
+			UserIDFromClaims: cfg.UserIDFromClaims,
+		}
 	}
 	if lg == nil {
 		lg = log.Default()

@@ -186,7 +186,6 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	// 1. Register worktree.
 	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
 		"display_name": "myrepo (main)",
-		"device_id":    "dev-1",
 	})
 	worktreeID := wt["id"].(string)
 	if worktreeID == "" {
@@ -204,8 +203,7 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 		"index_tree":         "1111",
 		"worktree_tree":      "2222",
 		"incremental_commit": "3333",
-		"device_id":          "dev-1",
-	}
+			}
 	create := postJSON[map[string]any](t, httpSrv.URL+"/v1/checkpoints", createReq)
 	checkpointID := create["checkpoint_id"].(string)
 	headPutURL := create["head_commit_put_url"].(string)
@@ -250,7 +248,7 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 	httpSrv, _, _ := newTestServer(t)
 
 	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
-		"display_name": "r", "device_id": "dev-1",
+		"display_name": "r",
 	})
 	worktreeID := wt["id"].(string)
 
@@ -260,8 +258,7 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 		"index_tree":         "x",
 		"worktree_tree":      "x",
 		"incremental_commit": "x",
-		"device_id":          "dev-1",
-	})
+			})
 	checkpointID := create["checkpoint_id"].(string)
 
 	// Upload only the manifest, omit the two bundles.
@@ -279,30 +276,45 @@ func TestCreateCheckpoint_RejectsForeignOwner(t *testing.T) {
 	t.Parallel()
 	httpSrv, _, _ := newTestServer(t)
 	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
-		"display_name": "r", "device_id": "dev-1",
+		"display_name": "r",
 	})
 	worktreeID := wt["id"].(string)
 
-	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+	resp := mustPostExpectStatusAsDevice(t, httpSrv.URL+"/v1/checkpoints", map[string]string{
 		"worktree_id":        worktreeID,
 		"head_commit":        "x",
 		"index_tree":         "x",
 		"worktree_tree":      "x",
 		"incremental_commit": "x",
-		"device_id":          "evil-dev",
-	}, http.StatusForbidden)
+	}, "evil-dev", http.StatusForbidden)
 	if !strings.Contains(string(resp), "owner") {
 		t.Fatalf("expected ownership error, got %q", resp)
 	}
 }
 
+// defaultTestDevice is the device_id every helper uses by default.
+// Tests that need to simulate a foreign device use *AsDevice variants.
+const defaultTestDevice = "test-dev-1"
+
 func postJSON[T any](t *testing.T, url string, body any) T {
+	return postJSONAsDevice[T](t, url, body, defaultTestDevice)
+}
+
+func postJSONAsDevice[T any](t *testing.T, url string, body any, deviceID string) T {
 	t.Helper()
 	buf, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if deviceID != "" {
+		req.Header.Set("X-Clank-Device-Id", deviceID)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +331,10 @@ func postJSON[T any](t *testing.T, url string, body any) T {
 }
 
 func mustPostExpectStatus(t *testing.T, url string, body any, want int) []byte {
+	return mustPostExpectStatusAsDevice(t, url, body, defaultTestDevice, want)
+}
+
+func mustPostExpectStatusAsDevice(t *testing.T, url string, body any, deviceID string, want int) []byte {
 	t.Helper()
 	var buf []byte
 	if body != nil {
@@ -328,7 +344,15 @@ func mustPostExpectStatus(t *testing.T, url string, body any, want int) []byte {
 			t.Fatal(err)
 		}
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if deviceID != "" {
+		req.Header.Set("X-Clank-Device-Id", deviceID)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,6 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 
 	body := map[string]string{
 		"display_name": displayName,
-		"device_id":    c.cfg.DeviceID,
 	}
 	var resp struct {
 		ID string `json:"id"`
@@ -78,7 +77,6 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 		"index_tree":         res.Manifest.IndexTree,
 		"worktree_tree":      res.Manifest.WorktreeTree,
 		"incremental_commit": res.Manifest.IncrementalCommit,
-		"device_id":          c.cfg.DeviceID,
 	}
 	var createResp struct {
 		CheckpointID     string `json:"checkpoint_id"`
@@ -132,6 +130,12 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.AuthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.AuthToken)
+	}
+	if c.cfg.DeviceID != "" {
+		// X-Clank-Device-Id is the laptop's identity for checkpoint
+		// authorization. P2 will move this into JWT claims; for MVP it
+		// rides as a header. Pinned in pkg/sync.HeaderDeviceID.
+		req.Header.Set("X-Clank-Device-Id", c.cfg.DeviceID)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
