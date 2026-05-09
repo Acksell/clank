@@ -80,7 +80,7 @@ func (s *Store) migrate() error {
 				visibility      TEXT NOT NULL DEFAULT '',
 				follow_up       INTEGER NOT NULL DEFAULT 0,
 				project_dir     TEXT NOT NULL DEFAULT '',
-				git_remote      TEXT NOT NULL DEFAULT '',
+				worktree_id     TEXT NOT NULL DEFAULT '',
 				worktree_branch TEXT NOT NULL DEFAULT '',
 				prompt          TEXT NOT NULL DEFAULT '',
 				title           TEXT NOT NULL DEFAULT '',
@@ -97,10 +97,10 @@ func (s *Store) migrate() error {
 			CREATE TABLE primary_agents (
 				backend             TEXT NOT NULL,
 				project_dir         TEXT NOT NULL DEFAULT '',
-				git_remote          TEXT NOT NULL DEFAULT '',
+				worktree_id         TEXT NOT NULL DEFAULT '',
 				primary_agents_json TEXT NOT NULL DEFAULT '[]',
 				updated_at          DATETIME NOT NULL,
-				PRIMARY KEY (backend, project_dir, git_remote)
+				PRIMARY KEY (backend, project_dir, worktree_id)
 			);
 			PRAGMA user_version = 1;
 		`)

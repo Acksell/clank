@@ -138,8 +138,10 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 4. Push to sprite via multipart /sync/apply.
-	if err := mc.applyToSprite(r.Context(), hostRef.URL, hostRef.Transport, hostRef.AuthToken, wt.DisplayName, manifestBytes, headBytes, incrBytes); err != nil {
+	// 4. Push to sprite via multipart /sync/apply. Use the worktree
+	// ID as the sprite-side directory name so session-create can
+	// resolve it later via host.Service.workDirFor (~/work/<id>/).
+	if err := mc.applyToSprite(r.Context(), hostRef.URL, hostRef.Transport, hostRef.AuthToken, wt.ID, manifestBytes, headBytes, incrBytes); err != nil {
 		g.log.Printf("gateway migrate: apply to sprite: %v", err)
 		http.Error(w, "apply to sprite: "+err.Error(), http.StatusBadGateway)
 		return
@@ -263,10 +265,12 @@ func (m *migrationClient) fetchBlob(ctx context.Context, url string) ([]byte, er
 
 // applyToSprite POSTs a multipart checkpoint to the sprite's
 // /sync/apply endpoint using the HostRef's transport (which injects
-// the sprite-side bearer).
-func (m *migrationClient) applyToSprite(ctx context.Context, spriteURL string, transport http.RoundTripper, authToken, repoSlug string, manifestBytes, headBytes, incrBytes []byte) error {
-	if repoSlug == "" {
-		return fmt.Errorf("repo slug is required")
+// the sprite-side bearer). worktreeID becomes the sprite-side
+// directory name (~/work/<worktreeID>/), agreeing with
+// host.Service.workDirFor's lookup convention.
+func (m *migrationClient) applyToSprite(ctx context.Context, spriteURL string, transport http.RoundTripper, authToken, worktreeID string, manifestBytes, headBytes, incrBytes []byte) error {
+	if worktreeID == "" {
+		return fmt.Errorf("worktree id is required")
 	}
 
 	var body bytes.Buffer
@@ -284,7 +288,7 @@ func (m *migrationClient) applyToSprite(ctx context.Context, spriteURL string, t
 		return fmt.Errorf("close multipart: %w", err)
 	}
 
-	target := strings.TrimRight(spriteURL, "/") + "/sync/apply?repo=" + url.QueryEscape(sanitizeRepoSlug(repoSlug))
+	target := strings.TrimRight(spriteURL, "/") + "/sync/apply?repo=" + url.QueryEscape(worktreeID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, &body)
 	if err != nil {
 		return err
@@ -377,26 +381,6 @@ func writePart(mw *multipart.Writer, name, filename, contentType string, data []
 		return fmt.Errorf("write part %s: %w", name, err)
 	}
 	return nil
-}
-
-// sanitizeRepoSlug derives a sprite-side directory name from a
-// worktree display_name. Strips path separators and confines to a
-// single segment so it survives validRepoSlug on the sprite. Falls
-// back to "workspace" if nothing usable remains.
-func sanitizeRepoSlug(s string) string {
-	s = strings.ReplaceAll(s, "/", "-")
-	s = strings.ReplaceAll(s, "\\", "-")
-	s = strings.ReplaceAll(s, "..", "")
-	s = strings.TrimSpace(s)
-	// Take just the first whitespace-delimited token so display names
-	// like "myrepo (main)" become "myrepo" rather than "myrepo (main)".
-	if i := strings.IndexAny(s, " \t"); i > 0 {
-		s = s[:i]
-	}
-	if s == "" {
-		s = "workspace"
-	}
-	return s
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

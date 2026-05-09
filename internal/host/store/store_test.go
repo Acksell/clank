@@ -63,7 +63,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 		Status:     agent.StatusBusy,
 		Visibility: agent.VisibilityDone,
 		FollowUp:   true,
-		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", RemoteURL: "https://github.com/x/y", WorktreeBranch: "feat/login"},
+		GitRef:     agent.GitRef{LocalPath: "/tmp/repo", WorktreeID: "https://github.com/x/y", WorktreeBranch: "feat/login"},
 		Prompt:     "Fix the login bug",
 		Title:      "Fix authentication",
 		TicketID:   "TICKET-42",
@@ -91,7 +91,7 @@ func TestUpsertAndGetSession(t *testing.T) {
 	if !got.FollowUp {
 		t.Error("follow_up was lost")
 	}
-	if got.GitRef.LocalPath != info.GitRef.LocalPath || got.GitRef.RemoteURL != info.GitRef.RemoteURL || got.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
+	if got.GitRef.LocalPath != info.GitRef.LocalPath || got.GitRef.WorktreeID != info.GitRef.WorktreeID || got.GitRef.WorktreeBranch != info.GitRef.WorktreeBranch {
 		t.Errorf("gitref:\n got %+v\nwant %+v", got.GitRef, info.GitRef)
 	}
 	if !got.LastReadAt.Equal(now) {
@@ -246,7 +246,7 @@ func TestPrimaryAgents_RoundTrip(t *testing.T) {
 	s := mustOpen(t)
 	ctx := context.Background()
 
-	ref := agent.GitRef{LocalPath: "/repo", RemoteURL: "https://github.com/x/y"}
+	ref := agent.GitRef{LocalPath: "/repo", WorktreeID: "https://github.com/x/y"}
 	want := []agent.AgentInfo{
 		{Name: "plan", Description: "Plan", Mode: "primary"},
 		{Name: "code", Description: "Code", Mode: "primary"},

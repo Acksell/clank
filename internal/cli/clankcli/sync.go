@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/syncclient"
 )
 
@@ -78,7 +79,7 @@ func syncPushCmd() *cobra.Command {
 			}
 			ctx := context.Background()
 
-			worktreeID, err := loadWorktreeID(absRepo)
+			worktreeID, err := agent.ReadLocalWorktreeID(absRepo)
 			if err != nil {
 				return fmt.Errorf("load cached worktree id: %w", err)
 			}
@@ -91,7 +92,7 @@ func syncPushCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("register worktree: %w", err)
 				}
-				if err := saveWorktreeID(absRepo, worktreeID); err != nil {
+				if err := agent.WriteLocalWorktreeID(absRepo, worktreeID); err != nil {
 					return fmt.Errorf("cache worktree id: %w", err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
@@ -140,25 +141,6 @@ func ensureDeviceID() (string, error) {
 		return "", err
 	}
 	return id, nil
-}
-
-func loadWorktreeID(repoPath string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(repoPath, ".clank", "worktree-id"))
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-func saveWorktreeID(repoPath, id string) error {
-	dir := filepath.Join(repoPath, ".clank")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "worktree-id"), []byte(id+"\n"), 0o644)
 }
 
 func shortSHA(s string) string {
