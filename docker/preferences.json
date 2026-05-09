@@ -1,0 +1,6 @@
+{
+  "default_launch_host_provider": "local",
+  "remote_hub": {
+    "auth_token": "clank-dev-token-change-me"
+  }
+}
