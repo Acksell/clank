@@ -7,23 +7,23 @@ import (
 )
 
 // CallerKind enumerates the actor types that can call the sync API.
-// New values require coordination with the worktree ownership model.
+// Mirrors OwnerKind — see its godoc on local/remote naming.
 type CallerKind string
 
 const (
-	CallerKindLaptop CallerKind = "laptop"
-	CallerKindSprite CallerKind = "sprite"
+	CallerKindLocal  CallerKind = "local"
+	CallerKindRemote CallerKind = "remote"
 )
 
 // Caller is the authenticated identity of an inbound request to the
-// new /v1/worktrees + /v1/checkpoints endpoints. UserID always comes
-// from verified claims; DeviceID or HostID identifies the specific
-// device or sprite (exactly one is non-empty per Kind).
+// /v1/worktrees + /v1/checkpoints endpoints. UserID always comes from
+// verified claims; DeviceID or HostID identifies the specific device
+// or remote host (exactly one is non-empty per Kind).
 type Caller struct {
 	UserID   string
 	Kind     CallerKind
-	DeviceID string // set when Kind == laptop
-	HostID   string // set when Kind == sprite
+	DeviceID string // set when Kind == local
+	HostID   string // set when Kind == remote
 }
 
 // CallerVerifier extracts and validates a Caller from an HTTP request.
@@ -83,9 +83,9 @@ func (v *HeaderCallerVerifier) VerifyCaller(r *http.Request) (Caller, error) {
 	case deviceID != "" && hostID != "":
 		return Caller{}, ErrAmbiguousCaller
 	case deviceID != "":
-		return Caller{UserID: userID, Kind: CallerKindLaptop, DeviceID: deviceID}, nil
+		return Caller{UserID: userID, Kind: CallerKindLocal, DeviceID: deviceID}, nil
 	case hostID != "":
-		return Caller{UserID: userID, Kind: CallerKindSprite, HostID: hostID}, nil
+		return Caller{UserID: userID, Kind: CallerKindRemote, HostID: hostID}, nil
 	default:
 		return Caller{}, ErrNoCallerIdentity
 	}

@@ -193,7 +193,7 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 
 	// 8. POST migrate.
 	migrateBody, _ := json.Marshal(map[string]any{
-		"direction": "to_sprite",
+		"direction": "to_remote",
 		"confirm":   true,
 	})
 	migrateReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -221,7 +221,7 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 	if err := json.Unmarshal(respBody, &migrateResp); err != nil {
 		t.Fatalf("decode migrate response: %v", err)
 	}
-	if migrateResp.NewOwnerKind != "sprite" || migrateResp.NewOwnerID != hostID {
+	if migrateResp.NewOwnerKind != "remote" || migrateResp.NewOwnerID != hostID {
 		t.Fatalf("migrate response owner: want sprite/%s, got %s/%s", hostID, migrateResp.NewOwnerKind, migrateResp.NewOwnerID)
 	}
 	if migrateResp.CheckpointID != pushRes.CheckpointID {
@@ -233,7 +233,7 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wt.OwnerKind != "sprite" || wt.OwnerID != hostID {
+	if wt.OwnerKind != "remote" || wt.OwnerID != hostID {
 		t.Fatalf("sync DB owner: want sprite/%s, got %s/%s", hostID, wt.OwnerKind, wt.OwnerID)
 	}
 
@@ -320,7 +320,7 @@ func TestMigrate_RejectsWhenLaptopNotOwner(t *testing.T) {
 	gwHTTP := httptest.NewServer(gw.Handler())
 	defer gwHTTP.Close()
 
-	body, _ := json.Marshal(map[string]any{"direction": "to_sprite", "confirm": true})
+	body, _ := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(body))
 	req.Header.Set("X-Clank-Device-Id", "imposter-dev")
@@ -380,7 +380,7 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 	gwHTTP := httptest.NewServer(gw.Handler())
 	defer gwHTTP.Close()
 
-	body, _ := json.Marshal(map[string]any{"direction": "to_sprite", "confirm": true})
+	body, _ := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(body))
 	req.Header.Set("X-Clank-Device-Id", deviceID)

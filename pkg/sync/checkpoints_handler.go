@@ -93,7 +93,7 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.ToKind != OwnerKindLaptop && req.ToKind != OwnerKindSprite {
+	if req.ToKind != OwnerKindLocal && req.ToKind != OwnerKindRemote {
 		http.Error(w, "to_kind must be laptop or sprite", http.StatusBadRequest)
 		return
 	}
@@ -161,7 +161,7 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if caller.Kind != CallerKindLaptop {
+	if caller.Kind != CallerKindLocal {
 		http.Error(w, "only laptop callers may register worktrees", http.StatusForbidden)
 		return
 	}
@@ -181,7 +181,7 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 		ID:          newULID(),
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
-		OwnerKind:   OwnerKindLaptop,
+		OwnerKind:   OwnerKindLocal,
 		OwnerID:     caller.DeviceID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -416,7 +416,7 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 		}
 		return Caller{}, false
 	}
-	if c.Kind == CallerKindSprite && s.cfg.HostStore != nil {
+	if c.Kind == CallerKindRemote && s.cfg.HostStore != nil {
 		host, err := s.cfg.HostStore.GetHostByID(r.Context(), c.HostID)
 		if err != nil {
 			http.Error(w, "unknown sprite host", http.StatusUnauthorized)
@@ -436,10 +436,10 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 // via DeviceID; sprite callers via HostID.
 func callerOwnsWorktree(c Caller, wt Worktree) bool {
 	switch c.Kind {
-	case CallerKindLaptop:
-		return wt.OwnerKind == OwnerKindLaptop && wt.OwnerID == c.DeviceID
-	case CallerKindSprite:
-		return wt.OwnerKind == OwnerKindSprite && wt.OwnerID == c.HostID
+	case CallerKindLocal:
+		return wt.OwnerKind == OwnerKindLocal && wt.OwnerID == c.DeviceID
+	case CallerKindRemote:
+		return wt.OwnerKind == OwnerKindRemote && wt.OwnerID == c.HostID
 	default:
 		return false
 	}
@@ -451,10 +451,10 @@ func callerOwnsWorktree(c Caller, wt Worktree) bool {
 // handleTransferOwnership.
 func callerMatches(c Caller, kind OwnerKind, id string) bool {
 	switch kind {
-	case OwnerKindLaptop:
-		return c.Kind == CallerKindLaptop && c.DeviceID == id
-	case OwnerKindSprite:
-		return c.Kind == CallerKindSprite && c.HostID == id
+	case OwnerKindLocal:
+		return c.Kind == CallerKindLocal && c.DeviceID == id
+	case OwnerKindRemote:
+		return c.Kind == CallerKindRemote && c.HostID == id
 	default:
 		return false
 	}
@@ -463,9 +463,9 @@ func callerMatches(c Caller, kind OwnerKind, id string) bool {
 // createdByFor returns the canonical CreatedBy stamp for a caller.
 func createdByFor(c Caller) string {
 	switch c.Kind {
-	case CallerKindLaptop:
+	case CallerKindLocal:
 		return "laptop:" + c.DeviceID
-	case CallerKindSprite:
+	case CallerKindRemote:
 		return "sprite:" + c.HostID
 	default:
 		return string(c.Kind) + ":" + c.UserID

@@ -178,7 +178,7 @@ func TestCheckpointFlow_HappyPath(t *testing.T) {
 	if worktreeID == "" {
 		t.Fatalf("missing id in worktree response: %v", wt)
 	}
-	if wt["owner_kind"] != "laptop" {
+	if wt["owner_kind"] != "local" {
 		t.Fatalf("owner_kind = %v, want laptop", wt["owner_kind"])
 	}
 

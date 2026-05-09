@@ -20,7 +20,7 @@ const HeaderDeviceID = "X-Clank-Device-Id"
 
 // migrateRequest is the body of POST /v1/migrate/worktrees/{id}.
 type migrateRequest struct {
-	Direction string `json:"direction"` // "to_sprite" only in P3
+	Direction string `json:"direction"` // "to_remote" only in P3
 	Confirm   bool   `json:"confirm"`
 }
 
@@ -82,8 +82,8 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Direction != "to_sprite" && req.Direction != "to_laptop" {
-		http.Error(w, "direction must be to_sprite or to_laptop", http.StatusBadRequest)
+	if req.Direction != "to_remote" && req.Direction != "to_local" {
+		http.Error(w, "direction must be to_remote or to_local", http.StatusBadRequest)
 		return
 	}
 	if !req.Confirm {
@@ -99,20 +99,20 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 	}
 
 	switch req.Direction {
-	case "to_sprite":
-		g.migrateToSprite(w, r, mc, wt, userID, deviceID)
-	case "to_laptop":
-		g.migrateToLaptop(w, r, mc, wt, deviceID)
+	case "to_remote":
+		g.migrateToRemote(w, r, mc, wt, userID, deviceID)
+	case "to_local":
+		g.migrateToLocal(w, r, mc, wt, deviceID)
 	}
 }
 
-// migrateToSprite is the §D happy path: pre-checked → wake → push →
+// migrateToRemote is the §D happy path: pre-checked → wake → push →
 // atomic transfer. Idempotent for re-runs against the same sprite —
 // if the worktree is already owned by some sprite for this user, we
 // no-op rather than 403, which means a user who calls migrate twice
 // gets the same answer the second time.
-func (g *Gateway) migrateToSprite(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, userID, deviceID string) {
-	if wt.OwnerKind == "sprite" {
+func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, userID, deviceID string) {
+	if wt.OwnerKind == "remote" {
 		// Already sprite-owned. Treat as no-op success.
 		writeJSON(w, http.StatusOK, migrateResponse{
 			WorktreeID:   wt.ID,
@@ -122,7 +122,7 @@ func (g *Gateway) migrateToSprite(w http.ResponseWriter, r *http.Request, mc *mi
 		})
 		return
 	}
-	if wt.OwnerKind != "laptop" || wt.OwnerID != deviceID {
+	if wt.OwnerKind != "local" || wt.OwnerID != deviceID {
 		http.Error(w, "caller is not the current laptop owner of this worktree", http.StatusForbidden)
 		return
 	}
@@ -167,7 +167,7 @@ func (g *Gateway) migrateToSprite(w http.ResponseWriter, r *http.Request, mc *mi
 		return
 	}
 
-	updated, err := mc.transferOwnership(r.Context(), wt.ID, "sprite", hostRef.HostID, deviceID)
+	updated, err := mc.transferOwnership(r.Context(), wt.ID, "remote", hostRef.HostID, deviceID)
 	if err != nil {
 		mc.respond(w, "transfer ownership", err)
 		return
@@ -181,15 +181,15 @@ func (g *Gateway) migrateToSprite(w http.ResponseWriter, r *http.Request, mc *mi
 	})
 }
 
-// migrateToLaptop reclaims ownership from a sprite. Implements the
+// migrateToLocal reclaims ownership from a sprite. Implements the
 // "Keep local" semantic: ownership transfers, sprite-side changes are
 // abandoned. The "Pull from sandbox" variant — download the sprite's
 // latest checkpoint, apply it locally, then transfer — needs sprite-
 // side push (P4) and isn't here yet.
 //
 // Idempotent: if already laptop-owned by this device, no-op success.
-func (g *Gateway) migrateToLaptop(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, deviceID string) {
-	if wt.OwnerKind == "laptop" && wt.OwnerID == deviceID {
+func (g *Gateway) migrateToLocal(w http.ResponseWriter, r *http.Request, mc *migrationClient, wt worktreeView, deviceID string) {
+	if wt.OwnerKind == "local" && wt.OwnerID == deviceID {
 		writeJSON(w, http.StatusOK, migrateResponse{
 			WorktreeID:   wt.ID,
 			NewOwnerKind: wt.OwnerKind,
@@ -198,12 +198,12 @@ func (g *Gateway) migrateToLaptop(w http.ResponseWriter, r *http.Request, mc *mi
 		})
 		return
 	}
-	if wt.OwnerKind != "sprite" {
+	if wt.OwnerKind != "remote" {
 		http.Error(w, "worktree is not currently sprite-owned", http.StatusForbidden)
 		return
 	}
 
-	updated, err := mc.transferOwnership(r.Context(), wt.ID, "laptop", deviceID, wt.OwnerID)
+	updated, err := mc.transferOwnership(r.Context(), wt.ID, "local", deviceID, wt.OwnerID)
 	if err != nil {
 		mc.respond(w, "transfer ownership", err)
 		return

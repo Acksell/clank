@@ -21,8 +21,8 @@ type (
 )
 
 const (
-	OwnerKindLaptop = clanksync.OwnerKindLaptop
-	OwnerKindSprite = clanksync.OwnerKindSprite
+	OwnerKindLocal = clanksync.OwnerKindLocal
+	OwnerKindRemote = clanksync.OwnerKindRemote
 )
 
 var (
@@ -89,7 +89,7 @@ func (s *Store) InsertWorktree(ctx context.Context, w Worktree) error {
 		w.CreatedAt = w.UpdatedAt
 	}
 	if w.OwnerKind == "" {
-		w.OwnerKind = OwnerKindLaptop
+		w.OwnerKind = OwnerKindLocal
 	}
 	return s.q.InsertWorktree(ctx, sqlitedb.InsertWorktreeParams{
 		ID:                     w.ID,

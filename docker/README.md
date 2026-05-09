@@ -51,35 +51,38 @@ docker compose -f docker/docker-compose.yml logs -f clank-sync clankd
 From the laptop, with the stack running:
 
 ```sh
-# 1. Push a checkpoint of any local repo.
+cd ~/some-real-repo
 export CLANK_SYNC_URL=http://localhost:8081
-go run ./cmd/clank sync push ~/some-real-repo
+
+# Set up your laptop to talk to the docker gateway by default. Add to
+# ~/.clank/preferences.json:
+#   { "active_hub": "remote",
+#     "remote_hub": { "url": "http://localhost:7878",
+#                     "auth_token": "clank-dev-token-change-me" } }
+
+# 1. Push a checkpoint AND hand off ownership to the remote.
+clank push --migrate
 
 # Output:
 #   registered worktree 01J… as 'some-real-repo'
 #   pushed checkpoint   01J… (HEAD a1b2c3d4)
+#   migrated worktree   01J… → remote/<host_id>
 #
-# The bundles + manifest now live in minio:
+# The bundles + manifest live in minio; the remote host has the
+# materialized worktree at /root/work/<id>:
 docker compose -f docker/docker-compose.yml exec -T minio \
   mc ls --recursive local/clank/checkpoints/
+docker compose -f docker/docker-compose.yml exec clankd ls /root/work/
 
-# 2. Trigger a migration. clankd's TCP listener requires the bearer
-# token from docker/preferences.json (default: clank-dev-token-change-me).
-WORKTREE_ID=$(cat ~/some-real-repo/.clank/worktree-id)
-DEVICE_ID=$(cat ~/.config/clank/device-id)
-curl -X POST http://localhost:7878/v1/migrate/worktrees/$WORKTREE_ID \
-  -H "Authorization: Bearer clank-dev-token-change-me" \
-  -H "X-Clank-Device-Id: $DEVICE_ID" \
-  -d '{"direction":"to_sprite","confirm":true}'
+# 2. Open a session against the synced worktree. clank-host inside
+# the clankd container resolves the WorktreeID to /root/work/<id>/
+# and spawns opencode there — no clone, no GitHub auth needed.
+clank code "summarize this codebase"
 
-# Output:
-#   {"worktree_id":"…","new_owner_kind":"sprite","new_owner_id":"…","checkpoint_id":"…"}
-
-# 3. Inspect what the local provisioner did. clank-host runs as a
-# subprocess inside the clankd container; the working tree should
-# now contain your repo's files at /root/work/<repo>:
-docker compose -f docker/docker-compose.yml exec clankd \
-  ls -la /root/work/
+# 3. When you want to keep working on the laptop, reclaim ownership.
+# Today this discards any sandbox-side filesystem changes (the
+# "Pull from sandbox" variant lands in P4).
+clank pull --migrate
 ```
 
 ## What's actually self-hosted

@@ -52,8 +52,8 @@ func Command() *cobra.Command {
 	root.AddCommand(
 		codeCmd(),
 		inboxCmd(),
-		syncCmd(),
-		migrateCmd(),
+		pushCmd(),
+		pullCmd(),
 	)
 
 	return root

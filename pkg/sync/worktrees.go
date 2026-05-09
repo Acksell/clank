@@ -23,11 +23,17 @@ var ErrOwnerMismatch = errors.New("sync: worktree owner mismatch (concurrent mig
 // OwnerKind enumerates which actor type owns a worktree's write
 // authority. New values require schema-level coordination — never use
 // raw string literals at call sites.
+//
+// "local" and "remote" are deliberately abstract: "local" covers the
+// user's laptop today and any other on-user-device client (mobile,
+// future) tomorrow; "remote" covers fly.io sprites today and any
+// other off-user-device runtime (daytona, k8s, etc.) tomorrow. The
+// concrete provisioner choice lives in the host store, not here.
 type OwnerKind string
 
 const (
-	OwnerKindLaptop OwnerKind = "laptop"
-	OwnerKindSprite OwnerKind = "sprite"
+	OwnerKindLocal  OwnerKind = "local"
+	OwnerKindRemote OwnerKind = "remote"
 )
 
 // Worktree is a per-user persistent unit of sync ownership. One row

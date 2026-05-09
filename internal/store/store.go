@@ -357,6 +357,21 @@ func (s *Store) migrate() error {
 		}
 		version = 21
 	}
+	if version < 22 {
+		// Earlier dev installs created worktrees.owner_kind with the
+		// values 'laptop' and 'sprite'. Renamed to 'local' and 'remote'
+		// to match the user-facing CLI verbs and to drop fly.io's
+		// "sprite" jargon from the wire-format. Convert in place.
+		_, err := s.db.Exec(`
+			UPDATE worktrees SET owner_kind = 'local'  WHERE owner_kind = 'laptop';
+			UPDATE worktrees SET owner_kind = 'remote' WHERE owner_kind = 'sprite';
+			PRAGMA user_version = 22;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v22: %w", err)
+		}
+		version = 22
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

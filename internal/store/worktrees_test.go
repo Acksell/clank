@@ -18,7 +18,7 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 		ID:          "wt-1",
 		UserID:      "user-A",
 		DisplayName: "myrepo (main)",
-		OwnerKind:   store.OwnerKindLaptop,
+		OwnerKind:   store.OwnerKindLocal,
 		OwnerID:     "dev-1",
 	}
 	if err := s.InsertWorktree(ctx, w); err != nil {
@@ -29,7 +29,7 @@ func TestWorktrees_InsertGetList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorktreeByID: %v", err)
 	}
-	if got.UserID != "user-A" || got.OwnerID != "dev-1" || got.OwnerKind != store.OwnerKindLaptop {
+	if got.UserID != "user-A" || got.OwnerID != "dev-1" || got.OwnerKind != store.OwnerKindLocal {
 		t.Fatalf("worktree round-trip mismatch: %+v", got)
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
@@ -55,31 +55,31 @@ func TestWorktrees_OwnerTransferAtomic(t *testing.T) {
 	ctx := context.Background()
 
 	if err := s.InsertWorktree(ctx, store.Worktree{
-		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindLaptop, OwnerID: "dev-1",
+		ID: "wt", UserID: "u", DisplayName: "r", OwnerKind: store.OwnerKindLocal, OwnerID: "dev-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Successful transfer: caller knows the current owner.
-	if err := s.UpdateWorktreeOwner(ctx, "wt", "dev-1", store.OwnerKindSprite, "sprite-X"); err != nil {
+	if err := s.UpdateWorktreeOwner(ctx, "wt", "dev-1", store.OwnerKindRemote, "sprite-X"); err != nil {
 		t.Fatalf("UpdateWorktreeOwner (happy): %v", err)
 	}
 	got, err := s.GetWorktreeByID(ctx, "wt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.OwnerKind != store.OwnerKindSprite || got.OwnerID != "sprite-X" {
+	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
 		t.Fatalf("post-transfer owner mismatch: %+v", got)
 	}
 
 	// Stale transfer: caller's expected owner is the old laptop ID.
 	// Should return ErrOwnerMismatch and leave the row unchanged.
-	err = s.UpdateWorktreeOwner(ctx, "wt", "dev-1", store.OwnerKindLaptop, "dev-1")
+	err = s.UpdateWorktreeOwner(ctx, "wt", "dev-1", store.OwnerKindLocal, "dev-1")
 	if !errors.Is(err, store.ErrOwnerMismatch) {
 		t.Fatalf("expected ErrOwnerMismatch on stale transfer, got %v", err)
 	}
 	got, _ = s.GetWorktreeByID(ctx, "wt")
-	if got.OwnerKind != store.OwnerKindSprite || got.OwnerID != "sprite-X" {
+	if got.OwnerKind != store.OwnerKindRemote || got.OwnerID != "sprite-X" {
 		t.Fatalf("row mutated by failed transfer: %+v", got)
 	}
 }

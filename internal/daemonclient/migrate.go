@@ -12,12 +12,11 @@ import (
 )
 
 // MigrateDirection enumerates the supported MigrateWorktree directions.
-// Only "to_sprite" is implemented today; "to_laptop" is a P5 stub.
 type MigrateDirection string
 
 const (
-	MigrateToSprite MigrateDirection = "to_sprite"
-	MigrateToLaptop MigrateDirection = "to_laptop"
+	MigrateToRemote MigrateDirection = "to_remote"
+	MigrateToLocal  MigrateDirection = "to_local"
 )
 
 // MigrateResponse mirrors the gateway's reply to POST
@@ -39,7 +38,7 @@ func (c *Client) MigrateWorktree(ctx context.Context, worktreeID, deviceID strin
 		return nil, fmt.Errorf("MigrateWorktree: worktreeID is required")
 	}
 	if direction == "" {
-		direction = MigrateToSprite
+		direction = MigrateToRemote
 	}
 
 	body, err := json.Marshal(map[string]any{
