@@ -2,5 +2,10 @@
   "remote_hub": {
     "auth_token": "411e9c1935324c648c29b3c7251331c6df2427a122b84f4293eeaf1aa298bc32"
   },
-  "default_launch_host_provider": "local"
+  "default_launch_host_provider": "flyio",
+  "flyio": {
+    "api_token": "axel-engstrom/1621779/69bddb30193f7564fe58754f47f12793/3a4864da7acaa4e706a7fa78c120385c929eec016fbd9e1e1af36a1b6f731110",
+    "organization_slug": "axel-engstrom",
+    "sprite_name_prefix": "test-clank-docker-123"
+  }
 }

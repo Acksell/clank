@@ -563,13 +563,13 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		if res.Usable {
 			base = ref.LocalPath
 		} else if ref.WorktreeID == "" {
-			return "", fmt.Errorf("local_path %q not usable: %w", ref.LocalPath, res.SoftFail)
+			return "", fmt.Errorf("local_path %q not usable on this host (%w) and no worktree_id was provided — run `clank push` to register and sync this repo, then retry", ref.LocalPath, res.SoftFail)
 		}
 	}
 
 	if base == "" {
 		if ref.WorktreeID == "" {
-			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id")
+			return "", fmt.Errorf("git ref must set at least one of local_path or worktree_id — run `clank push` from your repo to register a worktree")
 		}
 		root, err := workRootDir()
 		if err != nil {
