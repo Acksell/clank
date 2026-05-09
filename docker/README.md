@@ -92,6 +92,35 @@ The "sandbox" in the default setup is a clank-host subprocess inside
 the clankd container (the `local` provisioner) — useful for
 end-to-end smoke testing but not what you'd run in production.
 
+### Cloning from GitHub (sessions, not the migration smoke test)
+
+The migration smoke recipe above doesn't need git auth — it transfers
+a bundle. But if you create a session via the TUI, clank-host has to
+`git clone` the repo. Two cases:
+
+**Public repo / HTTPS URL** — works with no setup. Use
+`https://github.com/<owner>/<repo>.git` instead of `git@github.com:...`
+when creating the session.
+
+**SSH clone (private repo or `git@github.com:...` URL)** — forward
+your laptop's ssh-agent into the container. On macOS Docker Desktop:
+
+```sh
+export SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+make docker-up
+```
+
+On Linux, set `SSH_AUTH_SOCK` to your actual agent socket
+(`echo $SSH_AUTH_SOCK`) before `make docker-up`. The compose file
+mounts that socket at `/ssh-agent` inside the container, and the
+clank-host subprocess inherits `SSH_AUTH_SOCK=/ssh-agent`. github.com's
+host keys are pre-baked into the image, so the first clone won't
+fail with "Host key verification failed".
+
+For real fly.io sprites, this stack does **not** forward your
+ssh-agent — sprites would need their own credentials story
+(typically a GitHub App or deploy key). That's a separate concern.
+
 ### Switching to fly.io provisioner
 
 Edit `docker/preferences.json`:

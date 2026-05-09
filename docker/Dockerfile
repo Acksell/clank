@@ -33,13 +33,22 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.20 AS runtime
 
-# git: needed by clank-host for sync/apply (git fetch <bundle>) and by
-# checkpoint construction inside clank-sync's tests if anyone wants to
-# run them in-container.
-# ca-certificates: outbound HTTPS (S3, fly.io, etc.).
-# tini: PID 1 reaper so signals propagate cleanly to clank-host
-# subprocesses spawned by the local provisioner.
-RUN apk add --no-cache git ca-certificates tini sqlite-libs
+# git:               clank-host clones repos and applies bundles.
+# openssh-client:    git clone git@github.com:... requires ssh.
+# ca-certificates:   outbound HTTPS (S3, fly.io, GitHub HTTPS clones).
+# tini:              PID 1 reaper so signals propagate cleanly to
+#                    clank-host subprocesses spawned by the local
+#                    provisioner.
+# sqlite-libs:       runtime dep of the cgo sqlite driver.
+RUN apk add --no-cache git openssh-client ca-certificates tini sqlite-libs
+
+# Pre-load github.com's host keys so `git clone git@github.com:...`
+# doesn't fail with "Host key verification failed". The keys are
+# regularly rotated; for higher assurance mount your own
+# ~/.ssh/known_hosts via docker-compose.
+RUN mkdir -p /root/.ssh && \
+    ssh-keyscan -H github.com >> /root/.ssh/known_hosts 2>/dev/null && \
+    chmod 600 /root/.ssh/known_hosts
 
 # Persistent state. clank-sync writes its sqlite db here; clankd's local
 # provisioner stores host.db here too. Mount as a named volume in

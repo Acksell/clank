@@ -102,16 +102,24 @@ services:
       # `make cloud-hub`).
       - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://clank-sync:8081}"
     environment:
-      # The local provisioner spawns clank-host as a subprocess. With
-      # --listen=tcp, clankd's bearer-token middleware demands
-      # preferences.remote_hub.auth_token; baked here as a config file.
       HOME: /root
+      # Forward the laptop's ssh-agent socket so clank-host can use the
+      # user's keys for `git clone git@github.com:...` without copying
+      # private keys into the image. On macOS Docker Desktop, set
+      #   SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+      # before `docker compose up` (the magic per-host socket DD exposes).
+      # On Linux, set SSH_AUTH_SOCK to your real $SSH_AUTH_SOCK.
+      SSH_AUTH_SOCK: /ssh-agent
     ports:
       - "${CLANKD_PORT:-7878}:7878"
     volumes:
       - clankd-data:/root/.clank
       # Provide the prefs file with the bearer token + provisioner choice.
       - ./preferences.json:/root/.clank/preferences.json:ro
+      # ssh-agent socket from the host. Defaults to /dev/null so the
+      # stack still boots when SSH_AUTH_SOCK is unset (no SSH support
+      # in that case — public HTTPS clones still work).
+      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7878/ping || exit 1"]
       interval: 5s
