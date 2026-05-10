@@ -192,8 +192,8 @@ func resolveLocalRepo(cwd string) (string, agent.GitRef) {
 		return "", agent.GitRef{}
 	}
 	ref := agent.GitRef{LocalPath: root}
-	if url, err := git.RemoteURL(root, "origin"); err == nil {
-		ref.RemoteURL = url
+	if id, _ := agent.ReadLocalWorktreeID(root); id != "" {
+		ref.WorktreeID = id
 	}
 	if err := ref.Validate(); err != nil {
 		return "", agent.GitRef{}
@@ -846,7 +846,7 @@ func (m *InboxModel) filteredSessions() []agent.SessionInfo {
 	// Filter by repo identity (canonical GitRef). Sessions without a
 	// GitRef (e.g. adopted backends with no origin remote) are dropped
 	// from the project view since they can't be attributed to this repo.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.WorktreeID != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {
@@ -986,7 +986,7 @@ func (m *InboxModel) buildSearchResults(sessions []agent.SessionInfo) {
 	// Apply client-side structured filters (e.g. project, branch) on
 	// top of the daemon's text search results so the search view
 	// honours the same sidebar selection as the unfiltered list.
-	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.RemoteURL != "") {
+	if m.projectFilter && (m.gitRef.LocalPath != "" || m.gitRef.WorktreeID != "") {
 		filtered := make([]agent.SessionInfo, 0, len(sessions))
 		for _, s := range sessions {
 			if agent.RepoKey(s.GitRef) == agent.RepoKey(m.gitRef) {

@@ -313,6 +313,65 @@ func (s *Store) migrate() error {
 		}
 		version = 20
 	}
+	if version < 21 {
+		// Sync re-architecture: worktrees + checkpoints back the new
+		// object-storage substrate. See pkg/sync/{storage,checkpoint}.
+		// worktrees: per-user persistent unit of sync ownership.
+		// owner_kind/owner_id track which actor (laptop device vs.
+		// sandbox sprite) currently holds write authority.
+		// checkpoints: per-push manifest pointer. Bundle bytes live in
+		// object storage; the row is metadata only. uploaded_at stays
+		// NULL until /v1/checkpoints/<id>/commit confirms upload.
+		_, err := s.db.Exec(`
+			CREATE TABLE worktrees (
+				id                          TEXT PRIMARY KEY,
+				user_id                     TEXT NOT NULL,
+				display_name                TEXT NOT NULL,
+				owner_kind                  TEXT NOT NULL DEFAULT 'laptop',
+				owner_id                    TEXT NOT NULL DEFAULT '',
+				latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',
+				created_at                  DATETIME NOT NULL,
+				updated_at                  DATETIME NOT NULL
+			);
+			CREATE INDEX worktrees_user_id_idx ON worktrees(user_id);
+			CREATE INDEX worktrees_owner_idx   ON worktrees(owner_kind, owner_id);
+
+			CREATE TABLE checkpoints (
+				id                  TEXT PRIMARY KEY,
+				worktree_id         TEXT NOT NULL,
+				head_commit         TEXT NOT NULL,
+				head_ref            TEXT NOT NULL DEFAULT '',
+				index_tree          TEXT NOT NULL,
+				worktree_tree       TEXT NOT NULL,
+				incremental_commit  TEXT NOT NULL,
+				created_at          DATETIME NOT NULL,
+				created_by          TEXT NOT NULL DEFAULT '',
+				uploaded_at         DATETIME
+			);
+			CREATE INDEX checkpoints_worktree_idx ON checkpoints(worktree_id, created_at DESC);
+
+			PRAGMA user_version = 21;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v21: %w", err)
+		}
+		version = 21
+	}
+	if version < 22 {
+		// Earlier dev installs created worktrees.owner_kind with the
+		// values 'laptop' and 'sprite'. Renamed to 'local' and 'remote'
+		// to match the user-facing CLI verbs and to drop fly.io's
+		// "sprite" jargon from the wire-format. Convert in place.
+		_, err := s.db.Exec(`
+			UPDATE worktrees SET owner_kind = 'local'  WHERE owner_kind = 'laptop';
+			UPDATE worktrees SET owner_kind = 'remote' WHERE owner_kind = 'sprite';
+			PRAGMA user_version = 22;
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v22: %w", err)
+		}
+		version = 22
+	}
 	_ = version // suppress unused warning after last migration
 
 	return nil

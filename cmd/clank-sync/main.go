@@ -1,27 +1,30 @@
-// clank-sync is the cloud sync middleware: it accepts streamed git
-// bundles from laptops and flushes them (debounced) into per-user
-// sandboxes via clank's Provisioner. The sandbox volume is the
-// persistence layer; this process is just a buffer in front of it.
-//
-// Single Fly app. Stateless w.r.t. long-term storage — restart drops
-// in-flight bundles, which laptops re-push via syncclient's outbox.
+// clank-sync is the persistent checkpoint substrate. It mints
+// presigned URLs for an S3-compatible object store, tracks worktree +
+// checkpoint metadata in SQLite, and exposes ownership transitions
+// over HTTP. Bundle bytes never traverse this process — laptops and
+// the gateway upload/download via the presigned URLs directly.
 //
 // Env (laptop dev / single-tenant deployment):
 //
 //	CLANK_SYNC_LISTEN_ADDR  — HTTP listen (default ":8081")
-//	CLANK_SYNC_DB_PATH      — SQLite path for the HostStore the
-//	                           provisioner uses (default
+//	CLANK_SYNC_DB_PATH      — SQLite path for the SyncStore (default
 //	                           ~/.local/state/clank/clank.db)
-//	SPRITES_TOKEN           — sprites API token (required)
-//	SPRITES_ORG             — optional Sprites org slug
-//	SPRITES_REGION          — optional Sprites region
-//	MIRROR_BASE_URL         — placeholder (provisioner validates non-empty)
-//	MIRROR_AUTH_TOKEN       — placeholder
-//	CLANK_SYNC_DEBOUNCE     — Go duration; default "30s"
 //
-// For multi-tenant cloud deployments, run this binary with the
-// same env your cloud gateway uses; auth defaults to permissive (PR follow-up:
-// add a Supabase verifier flag here, or wrap pkg/sync.Server
+// Object storage (S3-compatible — AWS S3, R2, Tigris, MinIO).
+// All four credentials are required.
+//
+//	CLANK_SYNC_S3_BUCKET     — bucket name
+//	CLANK_SYNC_S3_REGION     — region (use "auto" for R2)
+//	CLANK_SYNC_S3_ENDPOINT   — optional; set for R2/Tigris/MinIO
+//	CLANK_SYNC_S3_ACCESS_KEY — access key
+//	CLANK_SYNC_S3_SECRET_KEY — secret key
+//	CLANK_SYNC_S3_PATH_STYLE — "1"/"true" for path-style addressing
+//	                            (required for MinIO and most R2 setups)
+//	CLANK_SYNC_PRESIGN_TTL   — Go duration; default "5m"
+//
+// For multi-tenant cloud deployments, run this binary with the same
+// env your cloud gateway uses; auth defaults to permissive (PR
+// follow-up: add a Supabase verifier flag here, or wrap pkg/sync.Server
 // with its own auth layer in a separate binary).
 package main
 
@@ -33,19 +36,19 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/acksell/clank/internal/store"
-	clankflyio "github.com/acksell/clank/pkg/provisioner/flyio"
 	clanksync "github.com/acksell/clank/pkg/sync"
+	"github.com/acksell/clank/pkg/sync/storage"
 )
 
 const defaultListenAddr = ":8081"
 
 func main() {
 	addr := envOrDefault("CLANK_SYNC_LISTEN_ADDR", defaultListenAddr)
-	spritesToken := mustEnv("SPRITES_TOKEN")
 
 	dbPath := os.Getenv("CLANK_SYNC_DB_PATH")
 	if dbPath == "" {
@@ -62,35 +65,30 @@ func main() {
 	}
 	defer st.Close()
 
-	flyOpts := clankflyio.Options{
-		APIToken:         spritesToken,
-		OrganizationSlug: os.Getenv("SPRITES_ORG"),
-		Region:           os.Getenv("SPRITES_REGION"),
-		MirrorBaseURL:    envOrDefault("MIRROR_BASE_URL", "https://mirror.placeholder.invalid"),
-		MirrorAuthToken:  envOrDefault("MIRROR_AUTH_TOKEN", "phase-c-placeholder"),
-	}
-	flyProv, err := clankflyio.New(flyOpts, st, log.Default())
+	s3Cfg := mustLoadS3Config()
+	ctxInit, cancelInit := context.WithTimeout(context.Background(), 30*time.Second)
+	bucket, err := storage.NewS3(ctxInit, s3Cfg)
+	cancelInit()
 	if err != nil {
-		log.Fatalf("flyio provisioner: %v", err)
+		log.Fatalf("storage S3: %v", err)
 	}
 
-	debounce := 30 * time.Second
-	if d := os.Getenv("CLANK_SYNC_DEBOUNCE"); d != "" {
-		parsed, err := time.ParseDuration(d)
+	syncCfg := clanksync.Config{
+		Store:   st,
+		Storage: bucket,
+	}
+	if ttl := os.Getenv("CLANK_SYNC_PRESIGN_TTL"); ttl != "" {
+		parsed, err := time.ParseDuration(ttl)
 		if err != nil {
-			log.Fatalf("CLANK_SYNC_DEBOUNCE: %v", err)
+			log.Fatalf("CLANK_SYNC_PRESIGN_TTL: %v", err)
 		}
-		debounce = parsed
+		syncCfg.PresignTTL = parsed
 	}
 
-	srv, err := clanksync.NewServer(clanksync.Config{
-		Provisioner:   flyProv,
-		FlushDebounce: debounce,
-	}, log.Default())
+	srv, err := clanksync.NewServer(syncCfg, log.Default())
 	if err != nil {
 		log.Fatalf("sync server: %v", err)
 	}
-	defer srv.Stop()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -102,7 +100,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("clank-sync listening on %s", addr)
+		log.Printf("clank-sync listening on %s (bucket=%s region=%s)", addr, s3Cfg.Bucket, s3Cfg.Region)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)
 		}
@@ -130,17 +128,43 @@ func defaultDBPath() (string, error) {
 	return filepath.Join(dir, "clank.db"), nil
 }
 
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// mustLoadS3Config reads CLANK_SYNC_S3_* env vars and exits if any
+// required field is missing. clank-sync has no useful behavior without
+// object storage; failing fast is preferable to silent half-config.
+func mustLoadS3Config() storage.S3Config {
+	bucket := mustEnv("CLANK_SYNC_S3_BUCKET")
+	region := mustEnv("CLANK_SYNC_S3_REGION")
+	access := mustEnv("CLANK_SYNC_S3_ACCESS_KEY")
+	secret := mustEnv("CLANK_SYNC_S3_SECRET_KEY")
+	pathStyle := false
+	if v := os.Getenv("CLANK_SYNC_S3_PATH_STYLE"); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			log.Fatalf("CLANK_SYNC_S3_PATH_STYLE: %v", err)
+		}
+		pathStyle = parsed
+	}
+	return storage.S3Config{
+		Bucket:       bucket,
+		Region:       region,
+		Endpoint:     os.Getenv("CLANK_SYNC_S3_ENDPOINT"),
+		AccessKey:    access,
+		SecretKey:    secret,
+		UsePathStyle: pathStyle,
+	}
+}
+
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
 		log.Fatalf("%s must be set", key)
 	}
 	return v
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
