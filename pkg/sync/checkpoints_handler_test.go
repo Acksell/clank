@@ -80,14 +80,14 @@ func (m *memSyncStore) UpdateWorktreePointer(_ context.Context, id, checkpointID
 	m.worktrees[id] = w
 	return nil
 }
-func (m *memSyncStore) UpdateWorktreeOwner(_ context.Context, id, expected string, newKind clanksync.OwnerKind, newOwnerID string) error {
+func (m *memSyncStore) UpdateWorktreeOwner(_ context.Context, id string, expectedKind clanksync.OwnerKind, expectedOwnerID string, newKind clanksync.OwnerKind, newOwnerID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w, ok := m.worktrees[id]
 	if !ok {
 		return clanksync.ErrWorktreeNotFound
 	}
-	if w.OwnerID != expected {
+	if w.OwnerKind != expectedKind || w.OwnerID != expectedOwnerID {
 		return clanksync.ErrOwnerMismatch
 	}
 	w.OwnerKind = newKind

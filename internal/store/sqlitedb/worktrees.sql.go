@@ -277,26 +277,29 @@ func (q *Queries) MarkCheckpointUploaded(ctx context.Context, arg MarkCheckpoint
 const updateWorktreeOwner = `-- name: UpdateWorktreeOwner :execrows
 UPDATE worktrees
 SET owner_kind = ?, owner_id = ?, updated_at = ?
-WHERE id = ? AND owner_id = ?
+WHERE id = ? AND owner_kind = ? AND owner_id = ?
 `
 
 type UpdateWorktreeOwnerParams struct {
-	OwnerKind string
-	OwnerID   string
-	UpdatedAt time.Time
-	ID        string
-	OwnerID_2 string
+	OwnerKind   string
+	OwnerID     string
+	UpdatedAt   time.Time
+	ID          string
+	OwnerKind_2 string
+	OwnerID_2   string
 }
 
-// Atomic ownership transfer: only succeeds if the requester knows the
-// current owner_id. Returns the number of rows affected so the wrapper
-// can surface ErrOwnerMismatch when zero rows match.
+// Atomic ownership transfer: only succeeds when the requester knows
+// the full current (owner_kind, owner_id) tuple. Both are matched so
+// a stale or cross-kind transfer cannot mutate the row even if the
+// two kinds reuse the same id namespace by accident.
 func (q *Queries) UpdateWorktreeOwner(ctx context.Context, arg UpdateWorktreeOwnerParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateWorktreeOwner,
 		arg.OwnerKind,
 		arg.OwnerID,
 		arg.UpdatedAt,
 		arg.ID,
+		arg.OwnerKind_2,
 		arg.OwnerID_2,
 	)
 	if err != nil {

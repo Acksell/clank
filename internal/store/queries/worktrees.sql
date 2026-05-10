@@ -24,12 +24,13 @@ SET latest_synced_checkpoint = ?, updated_at = ?
 WHERE id = ?;
 
 -- name: UpdateWorktreeOwner :execrows
--- Atomic ownership transfer: only succeeds if the requester knows the
--- current owner_id. Returns the number of rows affected so the wrapper
--- can surface ErrOwnerMismatch when zero rows match.
+-- Atomic ownership transfer: only succeeds when the requester knows
+-- the full current (owner_kind, owner_id) tuple. Both are matched so
+-- a stale or cross-kind transfer cannot mutate the row even if the
+-- two kinds reuse the same id namespace by accident.
 UPDATE worktrees
 SET owner_kind = ?, owner_id = ?, updated_at = ?
-WHERE id = ? AND owner_id = ?;
+WHERE id = ? AND owner_kind = ? AND owner_id = ?;
 
 -- name: DeleteWorktree :exec
 DELETE FROM worktrees WHERE id = ?;

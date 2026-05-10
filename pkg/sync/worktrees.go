@@ -76,10 +76,11 @@ type SyncStore interface {
 	UpdateWorktreePointer(ctx context.Context, id, checkpointID string) error
 
 	// UpdateWorktreeOwner performs an atomic optimistic-concurrency
-	// transfer: the row's owner is updated only if the current
-	// owner_id equals expectedOwnerID. Returns ErrOwnerMismatch if the
-	// guard fails (the caller's view of "current owner" was stale).
-	UpdateWorktreeOwner(ctx context.Context, id, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error
+	// transfer: the row's owner is updated only if the full current
+	// (owner_kind, owner_id) tuple matches the expected pair. Returns
+	// ErrOwnerMismatch when the guard fails (stale read or
+	// concurrent migration).
+	UpdateWorktreeOwner(ctx context.Context, id string, expectedKind OwnerKind, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error
 
 	GetCheckpointByID(ctx context.Context, id string) (Checkpoint, error)
 	ListCheckpointsByWorktree(ctx context.Context, worktreeID string, limit int) ([]Checkpoint, error)

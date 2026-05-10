@@ -114,15 +114,17 @@ func (s *Store) UpdateWorktreePointer(ctx context.Context, id, checkpointID stri
 }
 
 // UpdateWorktreeOwner atomically transfers ownership iff the current
-// owner_id matches expectedOwnerID. Returns ErrOwnerMismatch if the
-// guard fails (a concurrent migration or a stale read).
-func (s *Store) UpdateWorktreeOwner(ctx context.Context, id, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error {
+// (owner_kind, owner_id) tuple matches expectedKind/expectedOwnerID.
+// Returns ErrOwnerMismatch on a failed guard (stale read or
+// concurrent migration).
+func (s *Store) UpdateWorktreeOwner(ctx context.Context, id string, expectedKind OwnerKind, expectedOwnerID string, newKind OwnerKind, newOwnerID string) error {
 	rows, err := s.q.UpdateWorktreeOwner(ctx, sqlitedb.UpdateWorktreeOwnerParams{
-		OwnerKind: string(newKind),
-		OwnerID:   newOwnerID,
-		UpdatedAt: time.Now(),
-		ID:        id,
-		OwnerID_2: expectedOwnerID,
+		OwnerKind:   string(newKind),
+		OwnerID:     newOwnerID,
+		UpdatedAt:   time.Now(),
+		ID:          id,
+		OwnerKind_2: string(expectedKind),
+		OwnerID_2:   expectedOwnerID,
 	})
 	if err != nil {
 		return fmt.Errorf("update worktree owner (id=%s): %w", id, err)

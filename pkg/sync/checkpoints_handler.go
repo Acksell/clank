@@ -137,7 +137,7 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		expected = wt.OwnerID
 	}
 
-	if err := s.cfg.Store.UpdateWorktreeOwner(r.Context(), id, expected, req.ToKind, req.ToID); err != nil {
+	if err := s.cfg.Store.UpdateWorktreeOwner(r.Context(), id, wt.OwnerKind, expected, req.ToKind, req.ToID); err != nil {
 		if errors.Is(err, ErrOwnerMismatch) {
 			http.Error(w, "owner mismatch (concurrent migration?)", http.StatusConflict)
 			return
