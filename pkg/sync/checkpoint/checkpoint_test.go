@@ -107,6 +107,67 @@ func TestApply_RejectsUnknownVersion(t *testing.T) {
 	}
 }
 
+// TestApply_RemovesStaleUntracked pins the contract that re-applying
+// a checkpoint produces *exactly* the manifest's worktreeTree —
+// untracked files left over from a previous session must not survive.
+func TestApply_RemovesStaleUntracked(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	repo := setupRepo(t, ctx)
+	writeFile(t, repo, "tracked.txt", "tracked\n")
+	gitMustRun(t, ctx, repo, "add", "tracked.txt")
+	gitMustRun(t, ctx, repo, "commit", "-m", "init")
+
+	builder := checkpoint.NewBuilder(repo, "test:laptop")
+	res, err := builder.Build(ctx, "ck-stale-clean")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Cleanup()
+
+	dest := t.TempDir()
+
+	openBundles := func() (*os.File, *os.File) {
+		head, err := os.Open(res.HeadCommitBundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		incr, err := os.Open(res.IncrementalBundle)
+		if err != nil {
+			head.Close()
+			t.Fatal(err)
+		}
+		return head, incr
+	}
+
+	head1, incr1 := openBundles()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, head1, incr1); err != nil {
+		t.Fatalf("first Apply: %v", err)
+	}
+	head1.Close()
+	incr1.Close()
+
+	// Drop a stray untracked file that is NOT in the checkpoint. A
+	// re-apply must clean it up.
+	stray := filepath.Join(dest, "stray.txt")
+	if err := os.WriteFile(stray, []byte("left over from a previous session\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	head2, incr2 := openBundles()
+	if err := checkpoint.Apply(ctx, dest, res.Manifest, head2, incr2); err != nil {
+		t.Fatalf("second Apply: %v", err)
+	}
+	head2.Close()
+	incr2.Close()
+
+	if _, err := os.Stat(stray); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stale untracked file survived re-apply: stat err=%v", err)
+	}
+}
+
 // TestManifest_RoundTripJSON verifies Marshal/UnmarshalManifest are
 // stable.
 func TestManifest_RoundTripJSON(t *testing.T) {

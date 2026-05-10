@@ -289,6 +289,13 @@ func Apply(ctx context.Context, repoPath string, manifest *Manifest, headCommitB
 		}
 	}
 
+	// Drop pre-existing untracked files so the post-Apply state really
+	// matches the manifest. read-tree --reset -u only touches tracked
+	// paths; without this clean step, untracked files left over from a
+	// prior session survive the restore.
+	if err := gitRunIn(ctx, repoPath, nil, "clean", "-fd"); err != nil {
+		return fmt.Errorf("clean stale untracked: %w", err)
+	}
 	// Restore working tree from worktreeTree first (this also moves the
 	// index there). Then restore the index from indexTree.
 	if err := gitRunIn(ctx, repoPath, nil, "read-tree", "--reset", "-u", manifest.WorktreeTree); err != nil {
