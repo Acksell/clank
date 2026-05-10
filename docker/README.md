@@ -21,7 +21,7 @@ to dial that hostname when uploading bundles, add a single
 make docker-setup
 ```
 
-Without this, `clank sync push` from the laptop fails with
+Without this, `clank push` from the laptop fails with
 `dial tcp: lookup clank-minio: no such host` on the bundle PUT.
 
 ## Bringing the stack up

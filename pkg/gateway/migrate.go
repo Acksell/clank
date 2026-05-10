@@ -51,14 +51,16 @@ type migrateResponse struct {
 // only and cannot tamper because the sprite verifies the manifest
 // signature.
 func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) {
-	if g.cfg.SyncBaseURL == "" {
-		http.Error(w, "migration not configured (SyncBaseURL unset)", http.StatusServiceUnavailable)
-		return
-	}
-
 	if _, err := g.cfg.Auth.Verify(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Auth gates the deployment-state signal so an unauthenticated
+	// caller can't probe whether migration is wired up.
+	if g.cfg.SyncBaseURL == "" {
+		http.Error(w, "migration not configured (SyncBaseURL unset)", http.StatusServiceUnavailable)
 		return
 	}
 	userID := g.cfg.ResolveUserID(r)

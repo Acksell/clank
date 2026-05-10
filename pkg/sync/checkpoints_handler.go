@@ -94,7 +94,7 @@ func (s *Server) handleTransferOwnership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.ToKind != OwnerKindLocal && req.ToKind != OwnerKindRemote {
-		http.Error(w, "to_kind must be laptop or sprite", http.StatusBadRequest)
+		http.Error(w, `to_kind must be "local" or "remote"`, http.StatusBadRequest)
 		return
 	}
 	if req.ToID == "" {

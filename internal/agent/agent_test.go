@@ -101,7 +101,7 @@ func TestStartRequest_Validate_GitRef(t *testing.T) {
 			name: "git_ref_invalid_propagates",
 			req: agent.StartRequest{
 				Backend: agent.BackendOpenCode,
-				GitRef:  agent.GitRef{WorktreeID: ""}, // missing URL
+				GitRef:  agent.GitRef{LocalPath: "rel"}, // present but invalid: not absolute
 				Prompt:  "hi",
 			},
 			wantErr: true,
