@@ -1,6 +1,6 @@
 # Self-hosted clank stack (docker compose)
 
-Brings up a complete clank backend on your laptop:
+Brings up a complete clank backend on your laptop (primarily for development & testing purposes, and as an example setup):
 
 - **minio** — S3-compatible object storage for checkpoint bundles
 - **clank-sync** — checkpoint substrate (presigned URLs + sqlite metadata)
@@ -12,16 +12,28 @@ needed. Useful for smoke-testing the sync/migration flow end-to-end.
 
 ## One-time setup
 
-The presigned URLs that clank-sync mints for the laptop reference
-the minio container by its hostname (`clank-minio`). For your laptop
-to dial that hostname when uploading bundles, add a single
-`/etc/hosts` line. The Make target handles it (sudo prompt):
-
 ```sh
-make docker-setup
+make docker-setup    # adds `127.0.0.1 clank-minio` to /etc/hosts (sudo prompt)
 ```
 
-Without this, `clank push` from the laptop fails with
+### Why
+
+clank-sync mints SigV4-signed presigned S3 URLs. SigV4 signs the
+**Host** header into the canonical request, so the URL bears one
+hostname and that hostname must resolve to a reachable address from
+*every* consumer:
+
+- Containers (clankd fetching bundles) resolve `clank-minio` via
+  Docker DNS → minio container.
+- The laptop (uploading bundles) needs the same hostname pointed at
+  minio's published port — hence the `/etc/hosts` entry.
+
+Rewriting the URL host on the consumer side would invalidate the
+signature; running minio under a different name on each side would
+too. Until clank-sync grows a separate signing-vs-public-endpoint
+config, the shared hostname is the only mechanism that works.
+
+Without this entry, `clank push` from the laptop fails with
 `dial tcp: lookup clank-minio: no such host` on the bundle PUT.
 
 ## Bringing the stack up
@@ -94,35 +106,6 @@ secrets ever leave the docker network.
 The "sandbox" in the default setup is a clank-host subprocess inside
 the clankd container (the `local` provisioner) — useful for
 end-to-end smoke testing but not what you'd run in production.
-
-### Cloning from GitHub (sessions, not the migration smoke test)
-
-The migration smoke recipe above doesn't need git auth — it transfers
-a bundle. But if you create a session via the TUI, clank-host has to
-`git clone` the repo. Two cases:
-
-**Public repo / HTTPS URL** — works with no setup. Use
-`https://github.com/<owner>/<repo>.git` instead of `git@github.com:...`
-when creating the session.
-
-**SSH clone (private repo or `git@github.com:...` URL)** — forward
-your laptop's ssh-agent into the container. On macOS Docker Desktop:
-
-```sh
-export SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
-make docker-up
-```
-
-On Linux, set `SSH_AUTH_SOCK` to your actual agent socket
-(`echo $SSH_AUTH_SOCK`) before `make docker-up`. The compose file
-mounts that socket at `/ssh-agent` inside the container, and the
-clank-host subprocess inherits `SSH_AUTH_SOCK=/ssh-agent`. github.com's
-host keys are pre-baked into the image, so the first clone won't
-fail with "Host key verification failed".
-
-For real fly.io sprites, this stack does **not** forward your
-ssh-agent — sprites would need their own credentials story
-(typically a GitHub App or deploy key). That's a separate concern.
 
 ### Switching to fly.io provisioner
 

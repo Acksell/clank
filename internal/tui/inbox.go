@@ -231,7 +231,7 @@ func NewInboxModel(client *daemonclient.Client) *InboxModel {
 	// Resolve cwd → (hostname, gitRef). On failure we leave both zero; the
 	// sidebar's branch load will then return a clear error to the user.
 	// The host adds the repo to its registry implicitly on the first
-	// CreateSession that carries Dir / AllowClone (§7.5).
+	// CreateSession that carries Dir (§7.5).
 	hostname, gitRef := resolveLocalRepo(cwd)
 	bp := NewSidebarModel(client, hostname, gitRef, cwd)
 	return &InboxModel{

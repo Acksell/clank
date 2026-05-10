@@ -1,12 +1,15 @@
-# Self-hosted clank stack: minio (object storage) + clank-sync
+# Self-hosted clank example stack: minio (object storage) + clank-sync
 # (checkpoint substrate) + clankd (gateway with local provisioner).
 #
 # Run:  docker compose -f docker/docker-compose.yml up -d --build
 # Stop: docker compose -f docker/docker-compose.yml down
 #
-# Prereq: see docker/README.md for the one-time /etc/hosts entry that
-# lets your laptop reach minio under the same hostname containers use,
-# so presigned URLs work universally.
+# One-time prereq: `make docker-setup` adds `127.0.0.1 clank-minio` to
+# your /etc/hosts. Reason: clank-sync mints SigV4-signed presigned S3
+# URLs whose Host header is part of the signature — laptop and
+# containers must dial the *same* hostname for the signature to verify.
+# Containers resolve `clank-minio` via Docker DNS; the laptop needs the
+# /etc/hosts entry to do the same. See docker/README.md for details.
 
 name: clank
 
@@ -101,25 +104,12 @@ services:
       # publicly reachable URL (e.g. a cloudflared tunnel — see
       # `make cloud-hub`).
       - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://clank-sync:8081}"
-    environment:
-      HOME: /root
-      # Forward the laptop's ssh-agent socket so clank-host can use the
-      # user's keys for `git clone git@github.com:...` without copying
-      # private keys into the image. On macOS Docker Desktop, set
-      #   SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
-      # before `docker compose up` (the magic per-host socket DD exposes).
-      # On Linux, set SSH_AUTH_SOCK to your real $SSH_AUTH_SOCK.
-      SSH_AUTH_SOCK: /ssh-agent
     ports:
       - "${CLANKD_PORT:-7878}:7878"
     volumes:
       - clankd-data:/root/.clank
       # Provide the prefs file with the bearer token + provisioner choice.
       - ./preferences.json:/root/.clank/preferences.json:ro
-      # ssh-agent socket from the host. Defaults to /dev/null so the
-      # stack still boots when SSH_AUTH_SOCK is unset (no SSH support
-      # in that case — public HTTPS clones still work).
-      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7878/ping || exit 1"]
       interval: 5s

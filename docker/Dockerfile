@@ -33,8 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM debian:bookworm-slim AS runtime
 
 # git:               clank-host applies bundles via `git fetch <bundle>`.
-# openssh-client:    `git clone git@github.com:...` requires ssh.
-# ca-certificates:   outbound HTTPS (S3, fly.io, GitHub HTTPS).
+# ca-certificates:   outbound HTTPS (S3, fly.io).
 # tini:              PID 1 reaper so signals propagate cleanly to
 #                    clank-host subprocesses spawned by the local
 #                    provisioner.
@@ -45,7 +44,7 @@ FROM debian:bookworm-slim AS runtime
 # Debian (glibc) base because opencode-ai's npm package ships only
 # glibc binaries via optionalDependencies; alpine/musl can't run them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git openssh-client ca-certificates tini libsqlite3-0 \
+        git ca-certificates tini libsqlite3-0 \
         nodejs npm \
         wget curl \
     && rm -rf /var/lib/apt/lists/*
@@ -54,14 +53,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # by the host's BackendManager. Installed globally so /usr/local/bin/opencode
 # resolves on PATH for the clank-host subprocess.
 RUN npm install -g opencode-ai && opencode --version
-
-# Pre-load github.com's host keys so `git clone git@github.com:...`
-# doesn't fail with "Host key verification failed". The keys are
-# regularly rotated; for higher assurance mount your own
-# ~/.ssh/known_hosts via docker-compose.
-RUN mkdir -p /root/.ssh && \
-    ssh-keyscan -H github.com >> /root/.ssh/known_hosts 2>/dev/null && \
-    chmod 600 /root/.ssh/known_hosts
 
 # Persistent state. clank-sync writes its sqlite db here; clankd's local
 # provisioner stores host.db here too. Mount as a named volume in
