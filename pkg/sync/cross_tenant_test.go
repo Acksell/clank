@@ -212,6 +212,68 @@ func TestCrossTenantIsolation_PropertyFuzz(t *testing.T) {
 	}
 }
 
+// TestRemoteCaller_RejectedWhenHostStoreUnset pins the
+// belt-and-suspenders behavior added when sprite-push surface is not
+// yet enabled: any caller presenting X-Clank-Host-Id (sprite kind)
+// must be rejected with 403 when HostStore is nil, instead of
+// silently bypassing the cross-tenant guard.
+func TestRemoteCaller_RejectedWhenHostStoreUnset(t *testing.T) {
+	t.Parallel()
+
+	dbPath := tempDBPathHelper(t)
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	mem := storage.NewMemory()
+	t.Cleanup(mem.Close)
+
+	srv, err := clanksync.NewServer(clanksync.Config{
+		Auth:       headerUserAuth{},
+		Store:      st,
+		Storage:    mem,
+		PresignTTL: time.Minute,
+		// HostStore deliberately nil — production deployment without
+		// the cross-tenant store should still refuse remote callers.
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// First seed a worktree as a normal laptop caller so there's
+	// something to read.
+	worktreeID, err := callRegisterWorktree(ctx, httpSrv.URL, "user-A", "dev-A", "wt")
+	if err != nil {
+		t.Fatalf("register worktree: %v", err)
+	}
+
+	// Now attempt to read it as a sprite caller (X-Clank-Host-Id
+	// instead of X-Clank-Device-Id). Must 403, not 200.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		httpSrv.URL+"/v1/worktrees/"+worktreeID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Test-User-Id", "user-A")
+	req.Header.Set("X-Clank-Host-Id", "sprite-imposter")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403 forbidden for remote caller without HostStore, got %d", resp.StatusCode)
+	}
+}
+
 // callRegisterWorktree posts /v1/worktrees as the given user/device.
 func callRegisterWorktree(ctx context.Context, baseURL, userID, deviceID, displayName string) (string, error) {
 	var resp struct {

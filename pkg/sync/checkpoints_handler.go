@@ -416,7 +416,15 @@ func (s *Server) callerOrUnauthorized(w http.ResponseWriter, r *http.Request) (C
 		}
 		return Caller{}, false
 	}
-	if c.Kind == CallerKindRemote && s.cfg.HostStore != nil {
+	if c.Kind == CallerKindRemote {
+		// Without a HostStore the cross-tenant guard cannot run. Refuse
+		// remote-kind callers entirely rather than silently bypassing
+		// the check and trusting the X-Clank-Host-Id header alone.
+		if s.cfg.HostStore == nil {
+			s.log.Printf("sync: rejecting remote caller (host_id=%s, user=%s): HostStore not configured", c.HostID, c.UserID)
+			http.Error(w, "remote callers not enabled on this server", http.StatusForbidden)
+			return Caller{}, false
+		}
 		host, err := s.cfg.HostStore.GetHostByID(r.Context(), c.HostID)
 		if err != nil {
 			http.Error(w, "unknown sprite host", http.StatusUnauthorized)
