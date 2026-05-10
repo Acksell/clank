@@ -576,10 +576,14 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 			return "", err
 		}
 		base = filepath.Join(root, ref.WorktreeID)
-		if _, err := os.Stat(base); os.IsNotExist(err) {
+		fi, err := os.Stat(base)
+		switch {
+		case os.IsNotExist(err):
 			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank sync push` then migrate)", ref.WorktreeID, base)
-		} else if err != nil {
+		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
+		case !fi.IsDir():
+			return "", fmt.Errorf("worktree %s path %q is not a directory", ref.WorktreeID, base)
 		}
 	}
 

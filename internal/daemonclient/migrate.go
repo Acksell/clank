@@ -66,7 +66,10 @@ func (c *Client) MigrateWorktree(ctx context.Context, worktreeID, deviceID strin
 		return nil, fmt.Errorf("migrate request: %w", err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		return nil, fmt.Errorf("read migrate response: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("migrate %s: %d: %s", worktreeID, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}

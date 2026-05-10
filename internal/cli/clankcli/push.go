@@ -4,6 +4,7 @@ import (
 	cryptorand "crypto/rand"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -158,6 +159,11 @@ func ensureDeviceID() (string, error) {
 		if id != "" {
 			return id, nil
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		// A permission/IO error here would otherwise silently mint a
+		// fresh device id and break ownership against existing
+		// worktrees.
+		return "", fmt.Errorf("read device id %s: %w", path, err)
 	}
 	buf := make([]byte, 16)
 	if _, err := cryptorand.Read(buf); err != nil {
