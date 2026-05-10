@@ -311,6 +311,8 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
+	// TODO(coderabbit): parallelize the three Storage.Exists calls when commit becomes a hot path
+	// https://github.com/Acksell/clank/pull/16
 	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
 		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
 		if err != nil {

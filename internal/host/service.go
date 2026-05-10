@@ -601,6 +601,9 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 // for migrated worktrees. Test-only hook — production callers leave
 // this empty and rely on $HOME via os.UserHomeDir(). Avoids t.Setenv
 // in parallel-heavy test packages.
+//
+// TODO(coderabbit): add sync.RWMutex if any test ever runs SetWorkRootForTest with t.Parallel()
+// https://github.com/Acksell/clank/pull/16#discussion_r3213461979
 var workRootForTest string
 
 // workRootDir returns $HOME/work — the parent under which migrated

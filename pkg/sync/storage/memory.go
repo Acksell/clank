@@ -102,6 +102,8 @@ func (m *Memory) signedURL(key, op string, ttl time.Duration) string {
 	q := url.Values{}
 	q.Set("op", op)
 	q.Set("exp", strconv.FormatInt(exp, 10))
+	// TODO(coderabbit): escape key via url.URL.Path/RawQuery to mirror real S3 behavior
+	// https://github.com/Acksell/clank/pull/16#discussion_r3213462004
 	return m.srv.URL + "/" + key + "?" + q.Encode()
 }
 

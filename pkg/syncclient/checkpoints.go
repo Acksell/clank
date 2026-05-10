@@ -93,6 +93,8 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	// side.
 	res.Manifest.CheckpointID = createResp.CheckpointID
 
+	// TODO(coderabbit): clean up server-side rows on partial-upload failure (abort endpoint or reaper)
+	// https://github.com/Acksell/clank/pull/16
 	if err := uploadFile(ctx, c.client, createResp.HeadCommitPutURL, res.HeadCommitBundle); err != nil {
 		return nil, fmt.Errorf("upload headCommit: %w", err)
 	}

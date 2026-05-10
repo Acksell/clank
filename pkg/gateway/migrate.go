@@ -317,6 +317,8 @@ func (m *migrationClient) fetchBlob(ctx context.Context, url string) ([]byte, er
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("blob GET %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	// TODO(coderabbit): cap response body via io.LimitReader; surface typed err at limit
+	// https://github.com/Acksell/clank/pull/16#discussion_r3213461997
 	return io.ReadAll(resp.Body)
 }
 
@@ -325,6 +327,9 @@ func (m *migrationClient) fetchBlob(ctx context.Context, url string) ([]byte, er
 // the sprite-side bearer). worktreeID becomes the sprite-side
 // directory name (~/work/<worktreeID>/), agreeing with
 // host.Service.workDirFor's lookup convention.
+//
+// TODO(coderabbit): stream multipart via io.Pipe so bundle bytes don't all sit in RAM
+// https://github.com/Acksell/clank/pull/16#discussion_r3213461995
 func (m *migrationClient) applyToSprite(ctx context.Context, spriteURL string, transport http.RoundTripper, authToken, worktreeID string, manifestBytes, headBytes, incrBytes []byte) error {
 	if worktreeID == "" {
 		return fmt.Errorf("worktree id is required")
@@ -406,6 +411,8 @@ func (m *migrationClient) transferOwnership(ctx context.Context, worktreeID, new
 
 func (m *migrationClient) attachHeaders(req *http.Request) {
 	req.Header.Set(HeaderDeviceID, m.deviceID)
+	// TODO(coderabbit): forward Authorization to clank-sync once it stops accepting PermissiveAuth
+	// https://github.com/Acksell/clank/pull/16#discussion_r3213461996
 }
 
 // respond maps a sync-server error to an HTTP status surfaced to the
