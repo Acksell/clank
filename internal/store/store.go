@@ -327,7 +327,7 @@ func (s *Store) migrate() error {
 				id                          TEXT PRIMARY KEY,
 				user_id                     TEXT NOT NULL,
 				display_name                TEXT NOT NULL,
-				owner_kind                  TEXT NOT NULL DEFAULT 'laptop',
+				owner_kind                  TEXT NOT NULL DEFAULT 'local',
 				owner_id                    TEXT NOT NULL DEFAULT '',
 				latest_synced_checkpoint    TEXT NOT NULL DEFAULT '',
 				created_at                  DATETIME NOT NULL,
@@ -336,6 +336,11 @@ func (s *Store) migrate() error {
 			CREATE INDEX worktrees_user_id_idx ON worktrees(user_id);
 			CREATE INDEX worktrees_owner_idx   ON worktrees(owner_kind, owner_id);
 
+			-- TODO(coderabbit): worktree_id has no FK back to worktrees(id),
+			-- so DeleteWorktree leaves orphan checkpoints rows. Next schema
+			-- bump should add FOREIGN KEY (worktree_id) REFERENCES
+			-- worktrees(id) ON DELETE CASCADE.
+			-- https://github.com/Acksell/clank/pull/15#discussion_r3214891044
 			CREATE TABLE checkpoints (
 				id                  TEXT PRIMARY KEY,
 				worktree_id         TEXT NOT NULL,

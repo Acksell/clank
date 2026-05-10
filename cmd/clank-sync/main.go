@@ -116,12 +116,23 @@ func main() {
 	}
 }
 
+// defaultDBPath returns the SQLite path for the SyncStore. Honors
+// XDG_STATE_HOME when set (Linux/XDG-compliant); otherwise resolves to
+// ~/.local/state/clank/clank.db. Server state belongs in a state dir,
+// not a config dir — keeps the path stable across users who only set
+// XDG_CONFIG_HOME, and makes "where do I find/back up the db" obvious.
 func defaultDBPath() (string, error) {
-	state, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+	var base string
+	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
+		base = v
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".local", "state")
 	}
-	dir := filepath.Join(state, "clank")
+	dir := filepath.Join(base, "clank")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

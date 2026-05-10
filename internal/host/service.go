@@ -579,7 +579,7 @@ func (s *Service) workDirFor(ctx context.Context, ref agent.GitRef) (string, err
 		fi, err := os.Stat(base)
 		switch {
 		case os.IsNotExist(err):
-			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank sync push` then migrate)", ref.WorktreeID, base)
+			return "", fmt.Errorf("worktree %s not present at %s — run MigrateWorktree first (or `clank push` to sync, then migrate)", ref.WorktreeID, base)
 		case err != nil:
 			return "", fmt.Errorf("stat worktree dir %q: %w", base, err)
 		case !fi.IsDir():

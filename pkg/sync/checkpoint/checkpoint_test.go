@@ -1,7 +1,6 @@
 package checkpoint_test
 
 import (
-	cryptorand "crypto/rand"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -402,9 +401,8 @@ func seedRandomTree(t *testing.T, ctx context.Context, dir string, rng *mathrand
 
 func randString(rng *mathrand.Rand, n int) string {
 	buf := make([]byte, n)
-	if _, err := cryptorand.Read(buf); err != nil {
-		panic(err)
+	for i := range buf {
+		buf[i] = byte(rng.UintN(256))
 	}
-	_ = rng // keep deterministic ordering above; content can be cryptographically random
 	return hex.EncodeToString(buf) + "\n"
 }
