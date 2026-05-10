@@ -220,7 +220,7 @@ func (b *Builder) captureWorktreeTree(ctx context.Context, headCommit string) (s
 	_ = tmp.Close()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	env := append(os.Environ(), "GIT_INDEX_FILE="+tmpPath)
+	env := append(scrubGitEnv(os.Environ()), "GIT_INDEX_FILE="+tmpPath)
 
 	if err := b.gitRun(ctx, env, "read-tree", headCommit); err != nil {
 		return "", fmt.Errorf("read-tree HEAD into temp index: %w", err)
@@ -396,6 +396,39 @@ func gitRunIn(ctx context.Context, repoPath string, env []string, args ...string
 		return fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// scrubGitEnv strips GIT_* variables that override repository discovery
+// from env, so `git -C repoPath` is authoritative even when the parent
+// shell has GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_CONFIG* set
+// (e.g. when `clank push` is invoked from inside another git tool).
+// Without scrubbing, captureWorktreeTree silently produces the wrong
+// manifest tree.
+func scrubGitEnv(env []string) []string {
+	bad := map[string]struct{}{
+		"GIT_DIR":              {},
+		"GIT_WORK_TREE":        {},
+		"GIT_OBJECT_DIRECTORY": {},
+		"GIT_COMMON_DIR":       {},
+		"GIT_NAMESPACE":        {},
+		"GIT_INDEX_FILE":       {},
+		"GIT_CONFIG":           {},
+		"GIT_CONFIG_GLOBAL":    {},
+		"GIT_CONFIG_SYSTEM":    {},
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			out = append(out, kv)
+			continue
+		}
+		if _, drop := bad[kv[:eq]]; drop {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func gitOutputIn(ctx context.Context, repoPath string, env []string, args ...string) (string, error) {
