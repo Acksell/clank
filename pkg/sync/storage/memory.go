@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -173,7 +172,3 @@ func (m *Memory) handle(w http.ResponseWriter, r *http.Request) {
 
 // compile-time check
 var _ Storage = (*Memory)(nil)
-
-// errNotImplemented is unused but reserved for the s3 backend's
-// not-yet-implemented operations during incremental build-out.
-var errNotImplemented = errors.New("storage: not implemented")

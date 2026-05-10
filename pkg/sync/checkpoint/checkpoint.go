@@ -217,8 +217,8 @@ func (b *Builder) captureWorktreeTree(ctx context.Context, headCommit string) (s
 		return "", err
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	env := append(os.Environ(), "GIT_INDEX_FILE="+tmpPath)
 
@@ -339,15 +339,15 @@ func fetchBundle(ctx context.Context, repoPath string, bundle io.Reader, label s
 		return fmt.Errorf("temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	bw := bufio.NewWriter(tmp)
 	if _, err := io.Copy(bw, bundle); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write bundle: %w", err)
 	}
 	if err := bw.Flush(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("flush bundle: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -374,7 +374,7 @@ func tempBundleFile(prefix string) (string, error) {
 		return "", err
 	}
 	name := f.Name()
-	f.Close()
+	_ = f.Close()
 	return name, nil
 }
 
