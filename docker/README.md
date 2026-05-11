@@ -51,9 +51,17 @@ for you to paste into `docker/.env` manually.
 
 clankd's embedded sync mints SigV4-signed presigned URLs. SigV4 signs
 the **Host** header into the canonical request, so the URL bears one
-hostname and every consumer (laptop, gateway, sprite) must dial that
-exact name. Rewriting the host on a consumer would invalidate the
+hostname and every consumer (laptop, sprite) must dial that exact
+name. Rewriting the host on a consumer would invalidate the
 signature.
+
+The gateway itself short-circuits this: it dials minio at the
+docker-internal hostname (`http://clank-minio:9000`) for its own
+direct SDK calls (HeadObject at commit time, etc.) while minting
+presigned URLs with `CLANK_SYNC_S3_PUBLIC_ENDPOINT` — usually the
+cloudflared tunnel URL. Avoids round-tripping its own traffic
+through cloudflared, which would rewrite the Host header and trip
+the SigV4 check.
 
 ## Bringing the stack up
 

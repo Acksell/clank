@@ -58,17 +58,23 @@ fi
 echo "Tunnel ready: $TUNNEL_URL"
 
 # Seed docker/.env from .env.example on first run, then upsert the
-# tunnel URL line. Avoids os-specific sed -i tooling differences.
+# tunnel URL line. The gateway uses the internal docker hostname
+# (http://clank-minio:9000) for its OWN calls — the tunnel URL only
+# rides in the presigned URLs handed to the laptop and remote sprites,
+# so we set CLANK_SYNC_S3_PUBLIC_ENDPOINT (not CLANK_SYNC_S3_ENDPOINT).
+# Avoids os-specific sed -i tooling differences by rewriting via tmp.
 mkdir -p docker
 if [ ! -f "$ENV_FILE" ] && [ -f docker/.env.example ]; then
         cp docker/.env.example "$ENV_FILE"
 fi
 touch "$ENV_FILE"
 TMP_ENV="$(mktemp)"
-grep -v '^CLANK_SYNC_S3_ENDPOINT=' "$ENV_FILE" > "$TMP_ENV" || true
-echo "CLANK_SYNC_S3_ENDPOINT=$TUNNEL_URL" >> "$TMP_ENV"
+grep -v '^CLANK_SYNC_S3_PUBLIC_ENDPOINT=' "$ENV_FILE" \
+        | grep -v '^CLANK_SYNC_S3_ENDPOINT=' \
+        > "$TMP_ENV" || true
+echo "CLANK_SYNC_S3_PUBLIC_ENDPOINT=$TUNNEL_URL" >> "$TMP_ENV"
 mv "$TMP_ENV" "$ENV_FILE"
-echo "Updated $ENV_FILE with CLANK_SYNC_S3_ENDPOINT."
+echo "Updated $ENV_FILE with CLANK_SYNC_S3_PUBLIC_ENDPOINT=$TUNNEL_URL."
 
 # Bring up the stack with the new env. --build so the dev image
 # picks up any local edits without a separate `make docker-build`.

@@ -29,10 +29,16 @@ import (
 //
 // Optional:
 //
-//	CLANK_SYNC_S3_ENDPOINT   — set for R2/Tigris/MinIO
-//	CLANK_SYNC_S3_PATH_STYLE — "1"/"true" for path-style addressing
-//	CLANK_SYNC_DB_PATH       — SQLite path (default ~/.local/state/clank/clank.db)
-//	CLANK_SYNC_PRESIGN_TTL   — Go duration, default 5m
+//	CLANK_SYNC_S3_ENDPOINT        — backing-storage URL the gateway dials
+//	                                directly (e.g. http://clank-minio:9000)
+//	CLANK_SYNC_S3_PUBLIC_ENDPOINT — URL baked into presigned URLs handed
+//	                                to laptop + sprite. Falls back to
+//	                                CLANK_SYNC_S3_ENDPOINT when unset.
+//	                                Set this to the cloudflared tunnel URL
+//	                                so a remote sprite can pull.
+//	CLANK_SYNC_S3_PATH_STYLE      — "1"/"true" for path-style addressing
+//	CLANK_SYNC_DB_PATH            — SQLite path (default ~/.local/state/clank/clank.db)
+//	CLANK_SYNC_PRESIGN_TTL        — Go duration, default 5m
 func loadSyncFromEnv(ctx context.Context, lg *log.Logger) (*clanksync.Server, error) {
 	bucket := os.Getenv("CLANK_SYNC_S3_BUCKET")
 	if bucket == "" {
@@ -73,12 +79,13 @@ func loadSyncFromEnv(ctx context.Context, lg *log.Logger) (*clanksync.Server, er
 	}
 
 	s3Cfg := storage.S3Config{
-		Bucket:       bucket,
-		Region:       region,
-		Endpoint:     os.Getenv("CLANK_SYNC_S3_ENDPOINT"),
-		AccessKey:    access,
-		SecretKey:    secret,
-		UsePathStyle: pathStyle,
+		Bucket:         bucket,
+		Region:         region,
+		Endpoint:       os.Getenv("CLANK_SYNC_S3_ENDPOINT"),
+		PublicEndpoint: os.Getenv("CLANK_SYNC_S3_PUBLIC_ENDPOINT"),
+		AccessKey:      access,
+		SecretKey:      secret,
+		UsePathStyle:   pathStyle,
 	}
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
