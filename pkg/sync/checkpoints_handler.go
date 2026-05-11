@@ -248,7 +248,7 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !callerOwnsWorktree(caller, wt) {
-		http.Error(w, "not the current owner", http.StatusForbidden)
+		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
 
@@ -453,6 +453,21 @@ func callerOwnsWorktree(c Caller, wt Worktree) bool {
 	default:
 		return false
 	}
+}
+
+// ownerMismatchMessage renders a 403 body that names the actual owner
+// and tells the caller what to do — most useful when a laptop tries to
+// push to a worktree the remote currently owns.
+func ownerMismatchMessage(c Caller, wt Worktree) string {
+	switch {
+	case c.Kind == CallerKindLocal && wt.OwnerKind == OwnerKindRemote:
+		return "not the current owner: worktree is owned by remote (run `clank pull --migrate` to reclaim ownership before pushing again)"
+	case c.Kind == CallerKindLocal && wt.OwnerKind == OwnerKindLocal && wt.OwnerID != c.DeviceID:
+		return fmt.Sprintf("not the current owner: worktree is owned by a different device (%s); only that device can push", wt.OwnerID)
+	case c.Kind == CallerKindRemote && wt.OwnerKind == OwnerKindLocal:
+		return "not the current owner: worktree is owned by laptop (sprite can only checkpoint while it owns the worktree)"
+	}
+	return "not the current owner"
 }
 
 // callerMatches returns true when the caller's identity equals the
