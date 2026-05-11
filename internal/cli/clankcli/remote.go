@@ -176,7 +176,11 @@ with device flow, leave --token empty and use ` + "`clank login`" + ` to populat
 	}
 	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "Gateway URL (required)")
 	cmd.Flags().StringVar(&authURL, "auth-url", "", "Auth-server URL for device flow (optional)")
-	cmd.Flags().StringVar(&token, "token", "", "Bearer token for the gateway (optional — populated by `clank login` later)")
+	// No backticks in the description — pflag treats backtick-quoted
+	// substrings as the placeholder type name, which renders
+	// "--token clank login" in --help and looks like the flag takes two
+	// arguments.
+	cmd.Flags().StringVar(&token, "token", "", "Bearer token for the gateway (optional; populated by 'clank login')")
 	return cmd
 }
 

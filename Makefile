@@ -117,11 +117,19 @@ cloud-hub: install
 # docker/README.md for the full smoke recipe (register worktree, push
 # checkpoint, trigger migration).
 
-.PHONY: dev
+.PHONY: dev dev-rebuild
 # One-command local dev: spawn a Cloudflare quick tunnel pointing at
 # minio, write the URL into docker/.env, bring the stack up. Foreground;
 # ctrl-c tears down both. See scripts/dev.sh for details.
 dev:
+	@bash scripts/dev.sh
+
+# Like `make dev` but rebuilds the docker image from scratch first.
+# Use when a code change isn't picking up — podman/docker layer cache
+# can occasionally hold a stale `go build` layer when the surrounding
+# context didn't visibly change.
+dev-rebuild:
+	docker compose -f docker/docker-compose.yml build --no-cache
 	@bash scripts/dev.sh
 
 .PHONY: docker-setup docker-up docker-down docker-build docker-logs tunnel
