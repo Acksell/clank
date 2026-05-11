@@ -24,6 +24,11 @@ type Mux struct {
 	svc       *host.Service
 	log       *log.Logger
 	authToken string
+
+	// builds tracks in-progress pull-back checkpoint builds keyed by
+	// build_id. See internal/host/mux/sync.go for the three-step flow
+	// (build → upload → delete) that uses this.
+	builds *spriteBuildStore
 }
 
 // New constructs a Mux. log may be nil.
@@ -34,7 +39,7 @@ func New(svc *host.Service, lg *log.Logger) *Mux {
 	if lg == nil {
 		lg = log.Default()
 	}
-	return &Mux{svc: svc, log: lg}
+	return &Mux{svc: svc, log: lg, builds: newSpriteBuildStore()}
 }
 
 // SetAuthToken configures the bearer-token middleware. When non-empty,
@@ -108,14 +113,24 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// Provider authentication. See internal/host/mux/auth.go.
 	m.registerAuth(mx)
 
-	// Cloud-sync ingress. The gateway POSTs here during migration:
-	//   - /sync/apply              — multipart (legacy byte-push, kept for tests/rollback)
-	//   - /sync/apply-from-urls    — JSON with presigned GETs; sandbox pulls from S3
-	//   - /sync/checkpoint         — capture sandbox state to a new checkpoint
+	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
+	// through these endpoints; the sandbox is a pure responder.
+	//
+	//   - POST /sync/apply              — apply a checkpoint from multipart bytes
+	//                                     (legacy; kept for tests / rollback escape).
+	//   - POST /sync/apply-from-urls    — apply a checkpoint by pulling presigned
+	//                                     GET URLs the gateway minted. Push path.
+	//   - POST /sync/build?repo=<id>    — pull-back step 1: build bundles to local
+	//                                     disk, return metadata + build_id.
+	//   - POST /sync/builds/{id}/upload — pull-back step 2: PUT bundles to the
+	//                                     presigned URLs in the request body.
+	//   - DELETE /sync/builds/{id}      — pull-back step 3 (idempotent cleanup).
 	// See sync.go.
 	mx.HandleFunc("POST /sync/apply", m.handleSyncApply)
 	mx.HandleFunc("POST /sync/apply-from-urls", m.handleSyncApplyFromURLs)
-	mx.HandleFunc("POST /sync/checkpoint", m.handleSyncCheckpoint)
+	mx.HandleFunc("POST /sync/build", m.handleSyncBuild)
+	mx.HandleFunc("POST /sync/builds/{id}/upload", m.handleSyncBuildsUpload)
+	mx.HandleFunc("DELETE /sync/builds/{id}", m.handleSyncBuildsDelete)
 }
 
 // --- helpers ---

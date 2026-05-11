@@ -37,18 +37,6 @@ type Config struct {
 	// route calls sync methods directly rather than via HTTP.
 	// When nil, the migration route returns 503.
 	Sync *clanksync.Server
-
-	// SyncPublicURL is the externally-reachable URL the gateway passes
-	// to the sprite during a migrate-back's /sync/checkpoint call, so
-	// the sprite knows where to upload its checkpoint. Typically the
-	// gateway's own public URL — the sprite hits the same clankd that
-	// orchestrates the migration.
-	SyncPublicURL string
-
-	// SyncAuthToken is the bearer the sprite presents to SyncPublicURL.
-	// Same gating as Auth — for PermissiveAuth dev deployments any
-	// value works.
-	SyncAuthToken string
 }
 
 // Gateway is the public ingress.

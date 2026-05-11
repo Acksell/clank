@@ -14,13 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // migrationTokenTTL bounds how long a materialize → commit pair can
 // straddle. 10 minutes is generous enough for a slow apply on a big
-// worktree and short enough that a stale token doesn't grant indefinite
-// commit authority.
+// worktree and short enough that a stale token doesn't grant
+// indefinite commit authority.
 const migrationTokenTTL = 10 * time.Minute
 
 // materializeResponse is the body returned by
@@ -37,22 +38,23 @@ type materializeResponse struct {
 	MigrationExpiry int64  `json:"migration_expiry"` // unix seconds
 }
 
-// commitRequest is the body for /commit. The migration token gates this
-// call: it proves the laptop just successfully materialized the named
+// commitRequest is the body for /commit. The migration token gates
+// this call: it proves the laptop just materialized the named
 // checkpoint and is calling commit on the same migration attempt.
 type commitRequest struct {
 	CheckpointID   string `json:"checkpoint_id"`
 	MigrationToken string `json:"migration_token"`
 }
 
-// handleMigrateMaterialize asks the sprite to checkpoint its current
-// state and returns presigned GET URLs the laptop can download from.
-// No ownership change yet — that happens on the matching commit call.
+// handleMigrateMaterialize orchestrates a sprite-to-laptop checkpoint
+// pull. Sprite-as-pure-responder model: gateway tells the sprite to
+// build bundles, gateway mints presigned PUT URLs from its in-process
+// sync server, gateway tells the sprite to upload to S3 via those URLs,
+// gateway commits the checkpoint. Sprite holds no credentials and makes
+// no outbound HTTP calls except to S3 via short-lived presigned URLs.
 //
-// The migration token returned here proves identity continuity between
-// the two phases: only the laptop that called materialize can commit
-// (mismatched device_id rejects), and only for the same checkpoint
-// (a newer checkpoint landing in between fails commit).
+// No ownership change yet — the matching /commit call flips ownership
+// after the laptop has successfully downloaded + applied the bundles.
 func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Request) {
 	if _, err := g.cfg.Auth.Verify(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
@@ -61,10 +63,6 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 	}
 	if g.cfg.Sync == nil {
 		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
-		return
-	}
-	if g.cfg.SyncPublicURL == "" {
-		http.Error(w, "migration not configured (SyncPublicURL unset)", http.StatusServiceUnavailable)
 		return
 	}
 	userID := g.cfg.ResolveUserID(r)
@@ -101,34 +99,73 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 	}
 
 	cli := &http.Client{Timeout: 5 * time.Minute}
-	checkpointID, headCommit, err := triggerSpriteCheckpoint(r.Context(), cli, hostRef.URL, hostRef.Transport, hostRef.AuthToken, spriteCheckpointParams{
-		Repo:          wt.ID,
-		WorktreeID:    wt.ID,
-		HostID:        hostRef.HostID,
-		SyncBaseURL:   g.cfg.SyncPublicURL,
-		SyncAuthToken: g.cfg.SyncAuthToken,
-	})
+
+	// Step 1: sprite builds bundles to local disk, returns metadata.
+	build, err := triggerSpriteBuild(r.Context(), cli, hostRef, wt.ID)
 	if err != nil {
-		g.log.Printf("gateway materialize: trigger sprite checkpoint: %v", err)
-		http.Error(w, "sprite checkpoint: "+err.Error(), http.StatusBadGateway)
+		g.log.Printf("gateway materialize: sprite build: %v", err)
+		http.Error(w, "sprite build: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	urls, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, checkpointID)
+	// Idempotent cleanup. The sprite's upload handler deletes the
+	// build on success, so this DELETE is a no-op when the happy path
+	// completes; on failure (gateway exits between steps) it reclaims
+	// the sprite's local disk eagerly without waiting for the reaper.
+	defer func() {
+		_ = deleteSpriteBuild(context.Background(), cli, hostRef, build.BuildID)
+	}()
+
+	// Step 2: gateway creates the checkpoint row + mints presigned PUT URLs.
+	ck, err := g.cfg.Sync.CreateCheckpoint(r.Context(), userID, clanksync.CreateCheckpointRequest{
+		WorktreeID:        wt.ID,
+		HeadCommit:        build.HeadCommit,
+		HeadRef:           build.HeadRef,
+		IndexTree:         build.IndexTree,
+		WorktreeTree:      build.WorktreeTree,
+		IncrementalCommit: build.IncrementalCommit,
+		CreatedBy:         "sprite:" + hostRef.HostID,
+	})
+	if err != nil {
+		syncErrToHTTP(w, "create checkpoint", err)
+		return
+	}
+
+	// Step 3: sprite PUTs the bundles to S3 via the presigned URLs.
+	if err := triggerSpriteUpload(r.Context(), cli, hostRef, build.BuildID, spriteUploadParams{
+		CheckpointID:      ck.CheckpointID,
+		ManifestPutURL:    ck.ManifestPutURL,
+		HeadCommitPutURL:  ck.HeadCommitPutURL,
+		IncrementalPutURL: ck.IncrementalURL,
+	}); err != nil {
+		g.log.Printf("gateway materialize: sprite upload: %v", err)
+		http.Error(w, "sprite upload: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	// Step 4: gateway commits the checkpoint (advances
+	// latest_synced_checkpoint after verifying all blobs in storage).
+	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID); err != nil {
+		syncErrToHTTP(w, "commit checkpoint", err)
+		return
+	}
+
+	// Step 5: mint presigned GET URLs for the laptop to pull from.
+	gets, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, ck.CheckpointID)
 	if err != nil {
 		syncErrToHTTP(w, "download checkpoint URLs", err)
 		return
 	}
 
 	expiry := time.Now().Add(migrationTokenTTL).Unix()
-	token := g.signMigrationToken(wt.ID, checkpointID, deviceID, expiry)
+	token := g.signMigrationToken(wt.ID, ck.CheckpointID, deviceID, expiry)
 
 	writeJSON(w, http.StatusOK, materializeResponse{
-		CheckpointID:    checkpointID,
-		HeadCommit:      headCommit,
-		ManifestURL:     urls.ManifestGetURL,
-		HeadCommitURL:   urls.HeadCommitGetURL,
-		IncrementalURL:  urls.IncrementalURL,
+		CheckpointID:    ck.CheckpointID,
+		HeadCommit:      build.HeadCommit,
+		ManifestURL:     gets.ManifestGetURL,
+		HeadCommitURL:   gets.HeadCommitGetURL,
+		IncrementalURL:  gets.IncrementalURL,
 		MigrationToken:  token,
 		MigrationExpiry: expiry,
 	})
@@ -136,8 +173,7 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 
 // handleMigrateCommit verifies the migration token, double-checks that
 // the sync server's latest_synced_checkpoint still points at the one
-// the laptop just applied (i.e. no race where the sprite checkpointed
-// again in between), and atomically transfers ownership to the laptop.
+// the laptop just applied, and atomically transfers ownership.
 func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
 	if _, err := g.cfg.Auth.Verify(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
@@ -206,60 +242,119 @@ func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// spriteCheckpointParams mirrors the JSON body of the sprite's
-// /sync/checkpoint endpoint (internal/host/mux/sync.go's
-// createCheckpointRequest). Kept here as a separate struct to avoid an
-// import cycle between gateway and host packages.
-type spriteCheckpointParams struct {
-	Repo          string `json:"repo"`
-	WorktreeID    string `json:"worktree_id"`
-	HostID        string `json:"host_id"`
-	SyncBaseURL   string `json:"sync_base_url"`
-	SyncAuthToken string `json:"sync_auth_token"`
+// --- sprite RPC helpers --------------------------------------------
+
+// spriteBuildResult mirrors the JSON body of POST /sync/build's response
+// (internal/host/mux/sync.go's buildResponse).
+type spriteBuildResult struct {
+	BuildID           string `json:"build_id"`
+	HeadCommit        string `json:"head_commit"`
+	HeadRef           string `json:"head_ref"`
+	IndexTree         string `json:"index_tree"`
+	WorktreeTree      string `json:"worktree_tree"`
+	IncrementalCommit string `json:"incremental_commit"`
 }
 
-// triggerSpriteCheckpoint POSTs to the sprite's /sync/checkpoint and
-// returns the canonical checkpoint ID + head commit SHA. Uses the
-// HostRef's transport for the sprite-side bearer.
-func triggerSpriteCheckpoint(ctx context.Context, baseClient *http.Client, spriteURL string, transport http.RoundTripper, authToken string, params spriteCheckpointParams) (checkpointID, headCommit string, err error) {
-	body, err := json.Marshal(params)
-	if err != nil {
-		return "", "", fmt.Errorf("marshal: %w", err)
+// triggerSpriteBuild POSTs to /sync/build?repo=<id> on the sprite.
+func triggerSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, worktreeID string) (*spriteBuildResult, error) {
+	if worktreeID == "" {
+		return nil, fmt.Errorf("worktree id is required")
 	}
-	target := strings.TrimRight(spriteURL, "/") + "/sync/checkpoint"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/build?repo=" + worktreeID
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+authToken)
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
 	}
 	cli := baseClient
-	if transport != nil {
-		cli = &http.Client{Transport: transport, Timeout: baseClient.Timeout}
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("sprite checkpoint %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("sprite build %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	var parsed struct {
-		CheckpointID string `json:"checkpoint_id"`
-		HeadCommit   string `json:"head_commit"`
+	var out spriteBuildResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
 	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", "", fmt.Errorf("decode: %w", err)
+	if out.BuildID == "" {
+		return nil, fmt.Errorf("sprite returned empty build_id")
 	}
-	if parsed.CheckpointID == "" {
-		return "", "", fmt.Errorf("sprite returned empty checkpoint_id")
-	}
-	return parsed.CheckpointID, parsed.HeadCommit, nil
+	return &out, nil
 }
+
+// spriteUploadParams is the JSON body of POST /sync/builds/{id}/upload.
+type spriteUploadParams struct {
+	CheckpointID      string `json:"checkpoint_id"`
+	ManifestPutURL    string `json:"manifest_put_url"`
+	HeadCommitPutURL  string `json:"head_commit_put_url"`
+	IncrementalPutURL string `json:"incremental_put_url"`
+}
+
+// triggerSpriteUpload POSTs to /sync/builds/{id}/upload on the sprite.
+// Sprite PUTs the bundles to S3 using the supplied presigned URLs.
+func triggerSpriteUpload(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, buildID string, params spriteUploadParams) error {
+	body, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/builds/" + buildID + "/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
+	}
+	cli := baseClient
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	preview, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	return fmt.Errorf("sprite upload %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+}
+
+// deleteSpriteBuild DELETEs a build on the sprite. Best-effort
+// cleanup; the sprite's reaper picks up orphans we miss.
+func deleteSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, buildID string) error {
+	target := strings.TrimRight(hostRef.URL, "/") + "/sync/builds/" + buildID
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	if err != nil {
+		return err
+	}
+	if hostRef.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+hostRef.AuthToken)
+	}
+	cli := baseClient
+	if hostRef.Transport != nil {
+		cli = &http.Client{Transport: hostRef.Transport, Timeout: baseClient.Timeout}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// --- migration token -----------------------------------------------
 
 // signMigrationToken issues an HMAC-SHA256 over
 // "<worktreeID>:<checkpointID>:<deviceID>:<expiryUnix>" using the

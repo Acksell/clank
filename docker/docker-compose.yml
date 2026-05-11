@@ -86,12 +86,6 @@ services:
       - "start"
       - "--foreground"
       - "--listen=tcp://0.0.0.0:7878"
-      # PublicBaseURL is the URL sprites can reach back at when they
-      # push checkpoints (P6). Required by daytona/flyio provisioner
-      # validation; unused by the local provisioner. For real cloud
-      # sprites override CLANK_PUBLIC_BASE_URL with a publicly reachable
-      # URL (e.g. a cloudflared tunnel — see `make cloud-hub`).
-      - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://localhost:7878}"
     environment:
       # Bearer the TCP listener requires on every inbound request.
       # Laptop sets cloud.access_token to the same value (or a JWT once

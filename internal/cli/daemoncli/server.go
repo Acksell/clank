@@ -131,29 +131,13 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		}
 	}
 
-	// Pass the sprite-reachable URL of this clankd to the gateway so
-	// migrate-back can tell the sprite where to upload its checkpoint.
-	// PublicBaseURL is the same value already validated by the cloud
-	// provisioners; reuse it. SyncAuthToken is the bearer the sprite
-	// presents back to this gateway — same source as tcpAuthToken so
-	// the sprite's call passes the bearer middleware.
-	syncPublicURL := opts.PublicBaseURL
-	syncAuthToken := ""
-	if syncSrv != nil {
-		if tok, err := tcpAuthToken(); err == nil {
-			syncAuthToken = tok
-		}
-	}
-
 	gw, err := gateway.NewGateway(gateway.Config{
 		Provisioner: prov,
 		Auth:        gateway.PermissiveAuth{},
 		ResolveUserID: func(*http.Request) string {
 			return "local" // single-user laptop today
 		},
-		Sync:          syncSrv,
-		SyncPublicURL: syncPublicURL,
-		SyncAuthToken: syncAuthToken,
+		Sync: syncSrv,
 	}, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)

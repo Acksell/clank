@@ -34,16 +34,11 @@ func Command() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			foreground, _ := cmd.Flags().GetBool("foreground")
 			listen, _ := cmd.Flags().GetString("listen")
-			publicBaseURL, _ := cmd.Flags().GetString("public-base-url")
-			return RunStart(foreground, ServerOptions{
-				Listen:        listen,
-				PublicBaseURL: publicBaseURL,
-			})
+			return RunStart(foreground, ServerOptions{Listen: listen})
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
 	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires CLANK_AUTH_TOKEN env to be set and authorizes inbound calls with that bearer token.")
-	startCmd.Flags().String("public-base-url", "", "Externally-reachable base URL of this hub. Used by TCP-mode hubs to tell sandboxes where to fetch git mirrors from.")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -67,17 +62,14 @@ func Command() *cobra.Command {
 
 // ServerOptions configures the listener for the clankd Hub. Empty Listen
 // means default Unix socket mode (laptop); "tcp://addr:port" enables TCP
-// mode (self-hosted/cloud) with bearer-token auth. PublicBaseURL is the
-// externally-reachable URL of the hub, used in TCP mode to tell sandboxes
-// where to fetch synced data.
+// mode (self-hosted/cloud) with bearer-token auth.
 //
 // In TCP mode, runGatewayServer reads CLANK_SYNC_S3_* env vars via
 // loadSyncFromEnv and, when present, mounts an embedded sync server in
 // the gateway. Unix-socket mode keeps Sync nil — the laptop has no S3
 // access and exposes no sync routes.
 type ServerOptions struct {
-	Listen        string
-	PublicBaseURL string
+	Listen string
 }
 
 // RunStart starts the daemon, either in foreground or as a background process.
@@ -166,9 +158,6 @@ func RunStart(foreground bool, opts ServerOptions) error {
 	bgArgs := []string{"start", "--foreground"}
 	if opts.Listen != "" {
 		bgArgs = append(bgArgs, "--listen", opts.Listen)
-	}
-	if opts.PublicBaseURL != "" {
-		bgArgs = append(bgArgs, "--public-base-url", opts.PublicBaseURL)
 	}
 	bgCmd := exec.Command(exe, bgArgs...)
 	bgCmd.Stdout = logFile

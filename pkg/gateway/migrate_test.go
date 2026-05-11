@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/store"
 	"github.com/acksell/clank/pkg/gateway"
@@ -333,11 +336,6 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 		spriteAppliedRepo string
 	)
 
-	// The cloud clankd's external URL. In this test, it's the same
-	// httptest server that hosts the gateway — sprite calls it via the
-	// same URL as the laptop.
-	var spriteSyncURL string
-
 	spriteHandler := http.NewServeMux()
 	spriteHandler.HandleFunc("POST /sync/apply-from-urls", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -385,41 +383,97 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// Sprite-side /sync/checkpoint: build a checkpoint of the sprite's
-	// current working tree using a real syncclient pointed at the
-	// gateway. This is the exact same flow the production sprite-side
-	// handler runs (just inline here to avoid pulling in the host mux
-	// package from a gateway test).
-	spriteHandler.HandleFunc("POST /sync/checkpoint", func(w http.ResponseWriter, r *http.Request) {
+	// Sprite-side pull-back endpoints, mocked. The production sprite
+	// (internal/host/mux/sync.go) has /sync/build, /sync/builds/{id}/upload,
+	// and DELETE /sync/builds/{id}. Inlined here to avoid pulling the
+	// host-mux package into a gateway test.
+	type spriteBuild struct {
+		result *checkpoint.Result
+		repo   string
+	}
+	var (
+		spriteBuildsMu sync.Mutex
+		spriteBuilds   = map[string]*spriteBuild{}
+	)
+	spriteHandler.HandleFunc("POST /sync/build", func(w http.ResponseWriter, r *http.Request) {
+		repo := r.URL.Query().Get("repo")
+		if repo == "" {
+			http.Error(w, "repo required", http.StatusBadRequest)
+			return
+		}
+		repoPath := filepath.Join(spriteRoot, repo)
+		builder := checkpoint.NewBuilder(repoPath, "sprite")
+		buildID := newTestULID()
+		res, err := builder.Build(r.Context(), buildID)
+		if err != nil {
+			http.Error(w, "build: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		spriteBuildsMu.Lock()
+		spriteBuilds[buildID] = &spriteBuild{result: res, repo: repo}
+		spriteBuildsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"build_id":           buildID,
+			"head_commit":        res.Manifest.HeadCommit,
+			"head_ref":           res.Manifest.HeadRef,
+			"index_tree":         res.Manifest.IndexTree,
+			"worktree_tree":      res.Manifest.WorktreeTree,
+			"incremental_commit": res.Manifest.IncrementalCommit,
+		})
+	})
+	spriteHandler.HandleFunc("POST /sync/builds/{id}/upload", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
 		var body struct {
-			Repo          string `json:"repo"`
-			WorktreeID    string `json:"worktree_id"`
-			HostID        string `json:"host_id"`
-			SyncBaseURL   string `json:"sync_base_url"`
-			SyncAuthToken string `json:"sync_auth_token"`
+			CheckpointID      string `json:"checkpoint_id"`
+			ManifestPutURL    string `json:"manifest_put_url"`
+			HeadCommitPutURL  string `json:"head_commit_put_url"`
+			IncrementalPutURL string `json:"incremental_put_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		cli, err := syncclient.New(syncclient.Config{
-			BaseURL:   body.SyncBaseURL,
-			AuthToken: body.SyncAuthToken,
-			HostID:    body.HostID,
-		})
-		if err != nil {
-			http.Error(w, "syncclient: "+err.Error(), http.StatusInternalServerError)
+		spriteBuildsMu.Lock()
+		b := spriteBuilds[id]
+		spriteBuildsMu.Unlock()
+		if b == nil {
+			http.Error(w, "build not found", http.StatusNotFound)
 			return
 		}
-		res, err := cli.PushCheckpoint(r.Context(), body.WorktreeID, filepath.Join(spriteRoot, body.Repo))
+		b.result.Manifest.CheckpointID = body.CheckpointID
+		manifestBytes, err := b.result.Manifest.Marshal()
 		if err != nil {
-			http.Error(w, "push: "+err.Error(), http.StatusBadGateway)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"checkpoint_id": res.CheckpointID,
-			"head_commit":   res.Manifest.HeadCommit,
-		})
+		if err := putFile(r.Context(), body.HeadCommitPutURL, b.result.HeadCommitBundle); err != nil {
+			http.Error(w, "head: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := putFile(r.Context(), body.IncrementalPutURL, b.result.IncrementalBundle); err != nil {
+			http.Error(w, "incr: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := putBytes(r.Context(), body.ManifestPutURL, manifestBytes); err != nil {
+			http.Error(w, "manifest: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		spriteBuildsMu.Lock()
+		delete(spriteBuilds, id)
+		spriteBuildsMu.Unlock()
+		b.result.Cleanup()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	spriteHandler.HandleFunc("DELETE /sync/builds/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		spriteBuildsMu.Lock()
+		b := spriteBuilds[id]
+		delete(spriteBuilds, id)
+		spriteBuildsMu.Unlock()
+		if b != nil {
+			b.result.Cleanup()
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	spriteHTTP := httptest.NewServer(spriteHandler)
 	defer spriteHTTP.Close()
@@ -429,29 +483,12 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 		Provisioner:   prov,
 		ResolveUserID: func(*http.Request) string { return userID },
 		Sync:          syncSrv,
-		// SyncPublicURL is set after we know the gateway's httptest URL.
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	gwHTTP := httptest.NewServer(gw.Handler())
 	defer gwHTTP.Close()
-	spriteSyncURL = gwHTTP.URL
-
-	// Setting SyncPublicURL after gateway init via a small helper: the
-	// test needs to know gwHTTP.URL first. In production it's set in
-	// daemoncli before NewGateway. Reach into the gateway via a wrapper
-	// — for the test we just re-construct.
-	gw2, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
-		SyncPublicURL: spriteSyncURL,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gwHTTP.Config.Handler = gw2.Handler()
 
 	// 1. Laptop pushes a checkpoint.
 	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL, DeviceID: deviceID})
@@ -884,6 +921,60 @@ func fetchSpriteURL(ctx context.Context, u string) ([]byte, error) {
 		return nil, errors.New("status " + http.StatusText(resp.StatusCode) + ": " + strings.TrimSpace(string(preview)))
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// putFile streams a local file to a presigned PUT URL — the fake
+// sprite's upload step. Same semantic as the production sprite's
+// uploadFile in internal/host/mux/sync.go, just terser.
+func putFile(ctx context.Context, putURL, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, f)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = stat.Size()
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return fmt.Errorf("PUT %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+	}
+	return nil
+}
+
+func putBytes(ctx context.Context, putURL string, data []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.ContentLength = int64(len(data))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return fmt.Errorf("PUT %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+	}
+	return nil
+}
+
+func newTestULID() string {
+	return ulid.Make().String()
 }
 
 // --- helpers ---

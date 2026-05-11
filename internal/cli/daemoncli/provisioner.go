@@ -63,9 +63,6 @@ func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.P
 	if prefs.Daytona == nil || prefs.Daytona.APIKey == "" {
 		return nil, nil, fmt.Errorf("daytona provisioner: preferences.daytona.api_key required")
 	}
-	if opts.PublicBaseURL == "" {
-		return nil, nil, fmt.Errorf("daytona provisioner: --public-base-url required so sandboxes can reach the hub")
-	}
 	prov, err := daytonaprov.New(daytonaprov.Options{
 		APIKey:   prefs.Daytona.APIKey,
 		Snapshot: prefs.Daytona.Snapshot,
@@ -82,9 +79,6 @@ func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.P
 func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Preferences) (provisioner.Provisioner, func(), error) {
 	if prefs.FlyIO == nil || prefs.FlyIO.APIToken == "" {
 		return nil, nil, fmt.Errorf("flyio provisioner: preferences.flyio.api_token required")
-	}
-	if opts.PublicBaseURL == "" {
-		return nil, nil, fmt.Errorf("flyio provisioner: --public-base-url required")
 	}
 	prov, err := flyioprov.New(flyioprov.Options{
 		APIToken:         prefs.FlyIO.APIToken,
