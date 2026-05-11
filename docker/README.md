@@ -104,8 +104,8 @@ clank remote add dev \
 clank login
 
 # Verify:
-clank remote list
-# * dev — http://localhost:7878  dev@clank.local
+clank remote -v
+# * dev	http://localhost:7878  dev@clank.local
 
 # 1. Push a checkpoint AND hand off ownership to the remote.
 clank push --migrate

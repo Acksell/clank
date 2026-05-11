@@ -13,12 +13,17 @@ import (
 // remoteCmd registers `clank remote` — manage the named clank
 // deployments (gateway + auth URLs + session) the user can target.
 // Modeled on git remotes: one Active at a time, named entries,
-// add/list/switch/remove subcommands.
+// add/switch/remove subcommands.
+//
+// Bare `clank remote` lists names (active marked with `*`); `-v`
+// includes URLs and signed-in identity. Matches `git remote` /
+// `git remote -v` so it's immediately familiar.
 //
 // Remotes let the user keep several deployments wired up (dev docker
 // stack, managed cloud, enterprise self-host) without rewriting
 // preferences when they switch.
 func remoteCmd() *cobra.Command {
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "remote",
 		Short: "Manage clank-deployment remotes (like git remotes)",
@@ -26,10 +31,16 @@ func remoteCmd() *cobra.Command {
 
 A remote bundles a gateway URL, an auth-server URL, and the device-flow
 session for one deployment. One remote is active at a time; push, pull,
-migration, and the TUI auth panel all target it.`,
+migration, and the TUI auth panel all target it.
+
+With no subcommand, prints the configured remotes — active marked with
+` + "`*`" + `. Pass -v for URLs and signed-in identity.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteList(cmd, verbose)
+		},
 	}
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Include gateway URL and signed-in identity")
 	cmd.AddCommand(
-		remoteListCmd(),
 		remoteSwitchCmd(),
 		remoteAddCmd(),
 		remoteRemoveCmd(),
@@ -37,44 +48,46 @@ migration, and the TUI auth panel all target it.`,
 	return cmd
 }
 
-func remoteListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List configured remotes",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			prefs, err := config.LoadPreferences()
-			if err != nil {
-				return fmt.Errorf("load preferences: %w", err)
-			}
-			if prefs.Remote == nil || len(prefs.Remote.Profiles) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "no remotes configured. Use `clank remote add <name>` to create one.")
-				return nil
-			}
-			names := make([]string, 0, len(prefs.Remote.Profiles))
-			for k := range prefs.Remote.Profiles {
-				names = append(names, k)
-			}
-			sort.Strings(names)
-			active := prefs.Remote.Active
-			for _, name := range names {
-				r := prefs.Remote.Profiles[name]
-				marker := "  "
-				if name == active {
-					marker = "* "
-				}
-				gw := r.GatewayURL
-				if gw == "" {
-					gw = "(no gateway_url)"
-				}
-				email := ""
-				if r.UserEmail != "" {
-					email = "  " + r.UserEmail
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s%s — %s%s\n", marker, name, gw, email)
-			}
-			return nil
-		},
+// runRemoteList renders the configured remotes. Bare form is just the
+// names (with `*` on active); verbose adds the gateway URL and
+// signed-in email, mirroring `git remote -v`.
+func runRemoteList(cmd *cobra.Command, verbose bool) error {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return fmt.Errorf("load preferences: %w", err)
 	}
+	if prefs.Remote == nil || len(prefs.Remote.Profiles) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no remotes configured. Use `clank remote add <name>` to create one.")
+		return nil
+	}
+	names := make([]string, 0, len(prefs.Remote.Profiles))
+	for k := range prefs.Remote.Profiles {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	active := prefs.Remote.Active
+	out := cmd.OutOrStdout()
+	for _, name := range names {
+		marker := "  "
+		if name == active {
+			marker = "* "
+		}
+		if !verbose {
+			fmt.Fprintf(out, "%s%s\n", marker, name)
+			continue
+		}
+		r := prefs.Remote.Profiles[name]
+		gw := r.GatewayURL
+		if gw == "" {
+			gw = "(no gateway_url)"
+		}
+		identity := ""
+		if r.UserEmail != "" {
+			identity = "  " + r.UserEmail
+		}
+		fmt.Fprintf(out, "%s%s\t%s%s\n", marker, name, gw, identity)
+	}
+	return nil
 }
 
 func remoteSwitchCmd() *cobra.Command {
@@ -102,7 +115,7 @@ func remoteSwitchCmd() *cobra.Command {
 				return err
 			}
 			if !found {
-				return fmt.Errorf("no remote named %q — `clank remote list` to see configured remotes", name)
+				return fmt.Errorf("no remote named %q — run `clank remote` to see configured remotes", name)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "active remote: %s\n", name)
 			return nil
