@@ -44,7 +44,7 @@ func loadCloudAuthStatus() cloudAuthStatus {
 	if err != nil {
 		return cloudStatusNotConfigured
 	}
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	if p == nil || p.AuthURL == "" {
 		return cloudStatusNotConfigured
 	}

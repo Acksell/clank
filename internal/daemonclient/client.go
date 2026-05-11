@@ -98,7 +98,7 @@ func NewTCPClient(baseURL, authToken string) *Client {
 }
 
 // NewDefaultClient creates a client using, in priority order:
-//  1. preferences.ActiveHub == "remote" with the active cloud profile's
+//  1. preferences.ActiveHub == "remote" with the active remote's
 //     gateway_url set.
 //  2. The local Unix socket.
 //
@@ -110,7 +110,7 @@ func NewDefaultClient() (*Client, error) {
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
 	if prefs.ActiveHub == "remote" {
-		if p := prefs.ActiveCloud(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
 			return NewTCPClient(p.GatewayURL, p.AccessToken), nil
 		}
 	}
@@ -131,23 +131,23 @@ func NewLocalClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
-// NewCloudClient returns a TCP client targeting the active cloud
-// profile's gateway_url with its access_token as the bearer. Use for
-// sync/migration calls that must hit the cloud gateway regardless of
+// NewRemoteClient returns a TCP client targeting the active remote's
+// gateway_url with its access_token as the bearer. Use for sync/
+// migration calls that must hit the remote gateway regardless of
 // ActiveHub (the laptop daemon's gateway has Sync=nil and doesn't
 // orchestrate migration).
 //
-// Returns an error when no active cloud profile is configured —
-// surfaces a clear setup message rather than silently falling back to
-// a transport that would fail later.
-func NewCloudClient() (*Client, error) {
+// Returns an error when no active remote is configured — surfaces a
+// clear setup message rather than silently falling back to a
+// transport that would fail later.
+func NewRemoteClient() (*Client, error) {
 	prefs, err := config.LoadPreferences()
 	if err != nil {
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	if p == nil || strings.TrimSpace(p.GatewayURL) == "" {
-		return nil, fmt.Errorf("no active cloud profile configured; set up one via `clank cloud add` (or edit preferences.cloud)")
+		return nil, fmt.Errorf("no active remote configured; run `clank remote add <name> --gateway-url=...`")
 	}
 	return NewTCPClient(p.GatewayURL, p.AccessToken), nil
 }
@@ -163,7 +163,7 @@ func IsRemoteActive() bool {
 	if prefs.ActiveHub != "remote" {
 		return false
 	}
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	return p != nil && strings.TrimSpace(p.GatewayURL) != ""
 }
 
@@ -177,7 +177,7 @@ func ActiveHubLabel() string {
 		return "unknown (prefs unreadable)"
 	}
 	if prefs.ActiveHub == "remote" {
-		if p := prefs.ActiveCloud(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+		if p := prefs.ActiveRemote(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
 			return "remote (" + p.GatewayURL + ")"
 		}
 	}

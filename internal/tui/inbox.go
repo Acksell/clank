@@ -2476,7 +2476,7 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 		if err != nil {
 			return worktreePushResultMsg{err: fmt.Errorf("load preferences: %w", err)}
 		}
-		profile := prefs.ActiveCloud()
+		profile := prefs.ActiveRemote()
 		if profile == nil || profile.GatewayURL == "" {
 			return worktreePushResultMsg{err: fmt.Errorf("no active cloud profile with gateway_url configured")}
 		}

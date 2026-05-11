@@ -149,7 +149,7 @@ func newCloudView() cloudView {
 // profile only — switching profiles is a separate user action.
 func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	m.cloudURL = ""
 	if p != nil {
 		m.cloudURL = p.AuthURL
@@ -559,7 +559,7 @@ func maxInt(a, b int) int {
 
 // --- pref helpers ---------------------------------------------------
 
-func cloudTokenExpired(p *config.CloudProfile) bool {
+func cloudTokenExpired(p *config.Remote) bool {
 	if p == nil || p.ExpiresAt == 0 {
 		return false
 	}
@@ -579,7 +579,7 @@ func persistSession(s *cloud.Session) error {
 
 func clearSession() error {
 	return config.UpdatePreferences(func(p *config.Preferences) {
-		profile := p.ActiveCloud()
+		profile := p.ActiveRemote()
 		if profile == nil {
 			return
 		}
@@ -594,18 +594,18 @@ func clearSession() error {
 // ensureActiveProfile resolves (or creates) the active cloud profile
 // so the device-flow grant has somewhere to write. Used by
 // persistSession — clear is a no-op when nothing is active.
-func ensureActiveProfile(p *config.Preferences) *config.CloudProfile {
-	if p.Cloud == nil {
-		p.Cloud = &config.CloudConfig{Active: "default", Profiles: map[string]*config.CloudProfile{}}
+func ensureActiveProfile(p *config.Preferences) *config.Remote {
+	if p.Remote == nil {
+		p.Remote = &config.RemoteConfig{Active: "default", Profiles: map[string]*config.Remote{}}
 	}
-	if p.Cloud.Profiles == nil {
-		p.Cloud.Profiles = map[string]*config.CloudProfile{}
+	if p.Remote.Profiles == nil {
+		p.Remote.Profiles = map[string]*config.Remote{}
 	}
-	if p.Cloud.Active == "" {
-		p.Cloud.Active = "default"
+	if p.Remote.Active == "" {
+		p.Remote.Active = "default"
 	}
-	if _, ok := p.Cloud.Profiles[p.Cloud.Active]; !ok {
-		p.Cloud.Profiles[p.Cloud.Active] = &config.CloudProfile{}
+	if _, ok := p.Remote.Profiles[p.Remote.Active]; !ok {
+		p.Remote.Profiles[p.Remote.Active] = &config.Remote{}
 	}
-	return p.Cloud.Profiles[p.Cloud.Active]
+	return p.Remote.Profiles[p.Remote.Active]
 }

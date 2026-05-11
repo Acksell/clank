@@ -170,40 +170,43 @@ type Preferences struct {
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
 
-	// Cloud configures the user's cloud deployments. One or more named
-	// profiles, each with its own gateway/auth endpoint and session, plus
-	// an Active selector pointing at the live one. clank push/pull, the
-	// TUI cloud panel, and `clank cloud` all read the active profile via
-	// Preferences.ActiveCloud().
-	Cloud *CloudConfig `json:"cloud,omitempty"`
+	// Remote configures the user's named clank deployments. One or more
+	// remotes, each with its own gateway/auth endpoint and session, plus
+	// an Active selector pointing at the live one. Modeled on git
+	// remotes: same mental model, same `add/list/switch/remove` UX.
+	// clank push/pull, the TUI auth panel, and `clank remote` all read
+	// the active remote via Preferences.ActiveRemote().
+	Remote *RemoteConfig `json:"remote,omitempty"`
 }
 
-// CloudConfig holds one or more named cloud profiles plus the Active
-// selector. Lets the user switch between e.g. a dev docker stack, a
-// managed cloud, and an enterprise self-hosted instance without
-// rewriting preferences.
+// RemoteConfig holds one or more named clank deployments plus the
+// Active selector. Lets the user switch between e.g. a dev docker
+// stack, a managed cloud, and an enterprise self-hosted instance
+// without rewriting preferences.
 //
 // JSON marshalling auto-detects the legacy flat shape (single profile
-// inline under "cloud") and normalizes to the multi-profile shape on
-// load — saves rewrite to the new shape on the next SavePreferences.
-type CloudConfig struct {
+// inline under "cloud" or "remote") and normalizes to the multi-profile
+// shape on load — saves rewrite to the new shape on the next
+// SavePreferences.
+type RemoteConfig struct {
 	// Active is the key in Profiles whose endpoints/session are used by
 	// push/pull/TUI right now. Empty falls back to "default".
 	Active string `json:"active,omitempty"`
 
 	// Profiles maps a user-chosen name to its configuration. At least
-	// one named profile is expected when Cloud is set at all; a missing
-	// Active points at a missing profile renders ActiveCloud() nil.
-	Profiles map[string]*CloudProfile `json:"profiles,omitempty"`
+	// one entry is expected when Remote is set at all; an Active that
+	// points at a missing entry renders ActiveRemote() nil.
+	Profiles map[string]*Remote `json:"profiles,omitempty"`
 }
 
-// CloudProfile holds one cloud deployment's endpoints + device-flow
-// session.
+// Remote holds one clank deployment's endpoints + device-flow session.
+// Mirrors a single entry in a git-remote-style config.
 //
 // Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
-// the cloud, and the cloud (hosted or self-hosted) owns the user-auth
-// mechanism — Supabase, GitHub OIDC, magic links, whatever. clank only
-// needs two URLs: one for auth and one for the gateway.
+// the gateway's auth plane, and the deployment (hosted or self-hosted)
+// owns the user-auth mechanism — Supabase, GitHub OIDC, magic links,
+// whatever. clank only needs two URLs: one for auth and one for the
+// gateway.
 //
 // AuthURL and GatewayURL are intentionally separate so they can live
 // on different hosts today (auth plane vs. gateway/sync plane) and be
@@ -212,7 +215,7 @@ type CloudConfig struct {
 // Session fields are populated after a successful device-flow grant
 // and used for subsequent /me and sync calls. AccessToken expires;
 // the user is prompted to sign in again on 401.
-type CloudProfile struct {
+type Remote struct {
 	// AuthURL is the base URL of the cloud auth plane, e.g.
 	// "https://auth.example.com". Required for sign-in (/me, device flow).
 	AuthURL string `json:"auth_url,omitempty"`
@@ -232,12 +235,12 @@ type CloudProfile struct {
 
 // UnmarshalJSON accepts both the multi-profile shape and the legacy
 // single-profile flat shape. Legacy gets normalized to a single
-// "default" profile selected as Active.
-func (c *CloudConfig) UnmarshalJSON(data []byte) error {
+// "default" entry selected as Active.
+func (c *RemoteConfig) UnmarshalJSON(data []byte) error {
 	// Multi-profile shape first.
 	type alias struct {
-		Active   string                   `json:"active"`
-		Profiles map[string]*CloudProfile `json:"profiles"`
+		Active   string             `json:"active"`
+		Profiles map[string]*Remote `json:"profiles"`
 	}
 	var newShape alias
 	if err := json.Unmarshal(data, &newShape); err == nil && len(newShape.Profiles) > 0 {
@@ -246,49 +249,49 @@ func (c *CloudConfig) UnmarshalJSON(data []byte) error {
 		if c.Active == "" {
 			// Pick a deterministic default so callers don't randomly
 			// resolve to different profiles between runs.
-			c.Active = firstProfileName(c.Profiles)
+			c.Active = firstRemoteName(c.Profiles)
 		}
 		return nil
 	}
 	// Legacy flat shape. Tolerate Profiles being absent and trust the
 	// inline fields. Empty object {} also lands here and yields no
 	// active profile.
-	var legacy CloudProfile
+	var legacy Remote
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
-	if isZeroProfile(legacy) {
+	if isZeroRemote(legacy) {
 		c.Active = ""
 		c.Profiles = nil
 		return nil
 	}
 	c.Active = "default"
-	c.Profiles = map[string]*CloudProfile{"default": &legacy}
+	c.Profiles = map[string]*Remote{"default": &legacy}
 	return nil
 }
 
-// ActiveProfile returns the active CloudProfile or nil if none.
-func (c *CloudConfig) ActiveProfile() *CloudProfile {
+// ActiveProfile returns the active Remote or nil if none.
+func (c *RemoteConfig) ActiveProfile() *Remote {
 	if c == nil || len(c.Profiles) == 0 {
 		return nil
 	}
 	if p, ok := c.Profiles[c.Active]; ok {
 		return p
 	}
-	return c.Profiles[firstProfileName(c.Profiles)]
+	return c.Profiles[firstRemoteName(c.Profiles)]
 }
 
-// ActiveCloud is a Preferences-level convenience for the very common
-// "what's the live cloud profile" check. Returns nil if Cloud or its
-// Active profile is unset.
-func (p *Preferences) ActiveCloud() *CloudProfile {
-	if p == nil || p.Cloud == nil {
+// ActiveRemote is a Preferences-level convenience for the very common
+// "what's the live remote" check. Returns nil if Remote or its Active
+// entry is unset.
+func (p *Preferences) ActiveRemote() *Remote {
+	if p == nil || p.Remote == nil {
 		return nil
 	}
-	return p.Cloud.ActiveProfile()
+	return p.Remote.ActiveProfile()
 }
 
-func firstProfileName(m map[string]*CloudProfile) string {
+func firstRemoteName(m map[string]*Remote) string {
 	names := make([]string, 0, len(m))
 	for k := range m {
 		names = append(names, k)
@@ -302,8 +305,26 @@ func firstProfileName(m map[string]*CloudProfile) string {
 	return names[0]
 }
 
-func isZeroProfile(p CloudProfile) bool {
-	return p == CloudProfile{}
+func isZeroRemote(p Remote) bool {
+	return p == Remote{}
+}
+
+// UnmarshalJSON on Preferences migrates the legacy top-level "cloud"
+// key to "remote" when the new key is absent. The next SavePreferences
+// emits only "remote", quietly upgrading the file.
+func (p *Preferences) UnmarshalJSON(data []byte) error {
+	type alias Preferences
+	aux := struct {
+		*alias
+		LegacyCloud *RemoteConfig `json:"cloud,omitempty"`
+	}{alias: (*alias)(p)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if p.Remote == nil && aux.LegacyCloud != nil {
+		p.Remote = aux.LegacyCloud
+	}
+	return nil
 }
 
 // preferencesPath returns the path to the preferences file.

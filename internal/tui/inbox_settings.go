@@ -17,7 +17,7 @@ import (
 func (m *InboxModel) showSettings() {
 	prefs, _ := config.LoadPreferences()
 	remoteURL := ""
-	if p := prefs.ActiveCloud(); p != nil {
+	if p := prefs.ActiveRemote(); p != nil {
 		remoteURL = p.GatewayURL
 	}
 	m.settings = newSettingsView(prefs.ColorScheme, prefs.DefaultBackend, prefs.ActiveHub, remoteURL)
@@ -96,7 +96,7 @@ func (m *InboxModel) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// TUI for it to take effect (hot-swap would orphan the SSE).
 			prefs, _ := config.LoadPreferences()
 			remoteURL := ""
-			if p := prefs.ActiveCloud(); p != nil {
+			if p := prefs.ActiveRemote(); p != nil {
 				remoteURL = p.GatewayURL
 			}
 			next := nextActiveHub(prefs.ActiveHub)

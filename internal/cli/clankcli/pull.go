@@ -89,9 +89,9 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				}
 			}
 
-			dc, err := daemonclient.NewCloudClient()
+			dc, err := daemonclient.NewRemoteClient()
 			if err != nil {
-				return fmt.Errorf("cloud client: %w", err)
+				return fmt.Errorf("remote client: %w", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()

@@ -76,7 +76,7 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(cloudOpenURLPickerMsg); ok {
 		prefs, _ := config.LoadPreferences()
 		currentURL := ""
-		if p := prefs.ActiveCloud(); p != nil {
+		if p := prefs.ActiveRemote(); p != nil {
 			currentURL = p.AuthURL
 		}
 		m.cloudURLPicker = newCloudURLPicker(currentURL)

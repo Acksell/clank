@@ -104,7 +104,7 @@ func tcpAuthToken() (string, error) {
 // Modes:
 //   - Unix socket (default): laptop mode. File mode is the gate. Sync
 //     stays nil — laptop has no S3 access and exposes no sync routes.
-//     Push/pull goes through the cloud gateway (prefs.Cloud.GatewayURL).
+//     Push/pull goes through the cloud gateway (prefs.Remote.GatewayURL).
 //   - TCP (opts.Listen non-empty): self-hosted/cloud mode. Wraps with
 //     bearer-token middleware enforced before reaching the gateway's
 //     own auth. If CLANK_SYNC_S3_BUCKET is set, an embedded sync.Server

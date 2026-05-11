@@ -77,7 +77,7 @@ is no longer the owner — to resume work locally, run
 				if err != nil {
 					return fmt.Errorf("load preferences: %w", err)
 				}
-				if p := prefs.ActiveCloud(); p != nil {
+				if p := prefs.ActiveRemote(); p != nil {
 					if baseURL == "" {
 						baseURL = p.GatewayURL
 					}
@@ -87,7 +87,7 @@ is no longer the owner — to resume work locally, run
 				}
 			}
 			if baseURL == "" {
-				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active cloud profile via `clank cloud add`)")
+				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active remote via `clank remote add`)")
 			}
 			if deviceID == "" {
 				deviceID, err = ensureDeviceID()
@@ -133,14 +133,14 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
-				// Migration goes directly to the cloud gateway, not the
-				// local daemon: the laptop daemon has Sync=nil by design
-				// and would return 503. NewCloudClient reads
-				// prefs.Cloud.{GatewayURL,AccessToken} — the same place
-				// the checkpoint upload above already targets.
-				dc, err := daemonclient.NewCloudClient()
+				// Migration goes directly to the active remote's gateway,
+				// not the local daemon: the laptop daemon has Sync=nil
+				// by design and would return 503. NewRemoteClient reads
+				// the active remote's gateway_url + access_token — same
+				// fields the checkpoint upload above already targets.
+				dc, err := daemonclient.NewRemoteClient()
 				if err != nil {
-					return fmt.Errorf("cloud client: %w", err)
+					return fmt.Errorf("remote client: %w", err)
 				}
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
@@ -154,8 +154,8 @@ is no longer the owner — to resume work locally, run
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: cloud.gateway_url from preferences)")
-	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: cloud.access_token from preferences)")
+	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
+	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().StringVar(&deviceID, "device-id", envOrDefault("CLANK_DEVICE_ID", ""), "device id (default: ~/.config/clank/device-id, auto-generated on first run)")
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")

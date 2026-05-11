@@ -98,13 +98,13 @@ func TestPreferences_LegacyCloudFlatShapeMigrates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPreferences: %v", err)
 	}
-	if prefs.Cloud == nil {
+	if prefs.Remote == nil {
 		t.Fatal("Cloud should not be nil after legacy migration")
 	}
-	if prefs.Cloud.Active != "default" {
-		t.Errorf("Active: got %q, want default", prefs.Cloud.Active)
+	if prefs.Remote.Active != "default" {
+		t.Errorf("Active: got %q, want default", prefs.Remote.Active)
 	}
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	if p == nil {
 		t.Fatal("ActiveCloud should resolve to the migrated profile")
 	}
@@ -138,10 +138,10 @@ func TestPreferences_MultiProfileLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPreferences: %v", err)
 	}
-	if prefs.Cloud == nil || len(prefs.Cloud.Profiles) != 2 {
-		t.Fatalf("expected 2 profiles, got %+v", prefs.Cloud)
+	if prefs.Remote == nil || len(prefs.Remote.Profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %+v", prefs.Remote)
 	}
-	p := prefs.ActiveCloud()
+	p := prefs.ActiveRemote()
 	if p == nil || p.GatewayURL != "https://api.example.com" {
 		t.Errorf("ActiveCloud should resolve to managed profile, got %+v", p)
 	}
