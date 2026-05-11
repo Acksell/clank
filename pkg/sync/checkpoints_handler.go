@@ -228,11 +228,10 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" || req.WorktreeTree == "" || req.IncrementalCommit == "" {
-		http.Error(w, "worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required", http.StatusBadRequest)
-		return
-	}
 
+	// Caller-identity check (laptop/sprite ownership) lives at this
+	// layer; tenancy is the service method's concern. Look up the
+	// worktree once here, then pass through.
 	wt, err := s.cfg.Store.GetWorktreeByID(r.Context(), req.WorktreeID)
 	if errors.Is(err, ErrWorktreeNotFound) {
 		http.Error(w, worktreeNotFoundMsg(req.WorktreeID), http.StatusNotFound)
@@ -252,39 +251,28 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	now := time.Now().UTC()
-	checkpointID := newULID()
-	ck := Checkpoint{
-		ID:                checkpointID,
-		WorktreeID:        wt.ID,
+	result, err := s.CreateCheckpoint(r.Context(), caller.UserID, CreateCheckpointRequest{
+		WorktreeID:        req.WorktreeID,
 		HeadCommit:        req.HeadCommit,
 		HeadRef:           req.HeadRef,
 		IndexTree:         req.IndexTree,
 		WorktreeTree:      req.WorktreeTree,
 		IncrementalCommit: req.IncrementalCommit,
-		CreatedAt:         now,
 		CreatedBy:         createdByFor(caller),
-	}
-	if err := s.cfg.Store.InsertCheckpoint(r.Context(), ck); err != nil {
-		s.log.Printf("sync: insert checkpoint: %v", err)
-		http.Error(w, "insert checkpoint", http.StatusInternalServerError)
-		return
-	}
-
-	urls, err := s.presignCheckpointPuts(r.Context(), wt.UserID, wt.ID, checkpointID)
+	})
 	if err != nil {
-		s.log.Printf("sync: presign puts: %v", err)
-		http.Error(w, "presign", http.StatusInternalServerError)
+		s.log.Printf("sync: create checkpoint: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, createCheckpointResponse{
-		CheckpointID:     checkpointID,
-		HeadCommitPutURL: urls[storage.BlobHeadCommit],
-		IncrementalURL:   urls[storage.BlobIncremental],
-		ManifestPutURL:   urls[storage.BlobManifest],
-		TTLSeconds:       int(s.cfg.PresignTTL.Seconds()),
-		CreatedAt:        now,
+		CheckpointID:     result.CheckpointID,
+		HeadCommitPutURL: result.HeadCommitPutURL,
+		IncrementalURL:   result.IncrementalURL,
+		ManifestPutURL:   result.ManifestPutURL,
+		TTLSeconds:       int(result.PresignTTL.Seconds()),
+		CreatedAt:        result.CreatedAt,
 	})
 }
 
@@ -304,48 +292,32 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
+	// Caller-identity authorization (must own the worktree). Tenancy
+	// is rechecked inside Server.CommitCheckpoint.
+	_, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
-
-	ctx := r.Context()
-	// TODO(coderabbit): parallelize the three Storage.Exists calls when commit becomes a hot path
-	// https://github.com/Acksell/clank/pull/16
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
-		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
-		if err != nil {
-			http.Error(w, "build key: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		exists, err := s.cfg.Storage.Exists(ctx, key)
-		if err != nil {
-			s.log.Printf("sync: storage exists: %v", err)
-			http.Error(w, "storage check", http.StatusInternalServerError)
-			return
-		}
-		if !exists {
-			http.Error(w, "blob "+string(blob)+" not yet uploaded", http.StatusConflict)
-			return
-		}
-	}
-
-	now := time.Now().UTC()
-	if err := s.cfg.Store.MarkCheckpointUploaded(r.Context(), ck.ID, now); err != nil {
-		s.log.Printf("sync: mark uploaded: %v", err)
-		http.Error(w, "mark uploaded", http.StatusInternalServerError)
+	if !callerOwnsWorktree(caller, wt) {
+		http.Error(w, ownerMismatchMessage(caller, wt), http.StatusForbidden)
 		return
 	}
-	if err := s.cfg.Store.UpdateWorktreePointer(r.Context(), wt.ID, ck.ID); err != nil {
-		s.log.Printf("sync: advance pointer: %v", err)
-		http.Error(w, "advance pointer", http.StatusInternalServerError)
+
+	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID)
+	if err != nil {
+		s.log.Printf("sync: commit checkpoint: %v", err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrBlobNotUploaded) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, commitCheckpointResponse{
-		CheckpointID: ck.ID,
-		UploadedAt:   now,
+		CheckpointID: result.CheckpointID,
+		UploadedAt:   result.UploadedAt,
 	})
 }
 
@@ -371,37 +343,17 @@ func (s *Server) handleDownloadCheckpoint(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ck, wt, err := s.lookupCheckpointForUser(r.Context(), checkpointID, caller.UserID)
+	urls, err := s.DownloadCheckpointURLs(r.Context(), caller.UserID, checkpointID)
 	if err != nil {
+		s.log.Printf("sync: download urls: %v", err)
 		http.Error(w, err.Error(), httpStatusForLookupErr(err))
 		return
 	}
-	if ck.UploadedAt.IsZero() {
-		http.Error(w, "checkpoint not yet uploaded", http.StatusConflict)
-		return
-	}
-
-	urls := make(map[storage.Blob]string, 3)
-	for _, blob := range []storage.Blob{storage.BlobHeadCommit, storage.BlobIncremental, storage.BlobManifest} {
-		key, err := storage.KeyFor(wt.UserID, wt.ID, ck.ID, blob)
-		if err != nil {
-			http.Error(w, "build key: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		u, err := s.cfg.Storage.PresignGet(r.Context(), key, s.cfg.PresignTTL)
-		if err != nil {
-			s.log.Printf("sync: presign get: %v", err)
-			http.Error(w, "presign", http.StatusInternalServerError)
-			return
-		}
-		urls[blob] = u
-	}
-
 	writeJSON(w, http.StatusOK, downloadCheckpointResponse{
-		CheckpointID:     ck.ID,
-		HeadCommitGetURL: urls[storage.BlobHeadCommit],
-		IncrementalURL:   urls[storage.BlobIncremental],
-		ManifestGetURL:   urls[storage.BlobManifest],
+		CheckpointID:     urls.CheckpointID,
+		HeadCommitGetURL: urls.HeadCommitGetURL,
+		IncrementalURL:   urls.IncrementalURL,
+		ManifestGetURL:   urls.ManifestGetURL,
 		TTLSeconds:       int(s.cfg.PresignTTL.Seconds()),
 	})
 }
