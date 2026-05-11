@@ -63,16 +63,6 @@ type ModelPreference struct {
 	ProviderID string `json:"provider_id"`
 }
 
-// RemoteHubPreference configures hub-to-hub sync. Populated symmetrically
-// on both ends: the laptop hub sets URL+AuthToken to know where to push
-// synced git data; a TCP-listening hub uses AuthToken to validate inbound
-// bearer tokens. URL may be empty on a hub that only acts as a sync
-// receiver.
-type RemoteHubPreference struct {
-	URL       string `json:"url,omitempty"`
-	AuthToken string `json:"auth_token,omitempty"`
-}
-
 // DaytonaPreference configures the Daytona host launcher on a cloud
 // hub. APIKey enables the launcher; everything else is optional and
 // has sensible defaults. Forwarded into spawned sandboxes via env so
@@ -142,25 +132,17 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
-	// RemoteHub configures hub-to-hub sync. See RemoteHubPreference.
-	RemoteHub *RemoteHubPreference `json:"remote_hub,omitempty"`
-
-	// ActiveHub picks which hub the local TUI/CLI talks to:
+	// ActiveHub picks which clankd the local TUI/CLI talks to:
 	//
 	//   ""        — implicit "local"; the local Unix-socket daemon.
 	//   "local"   — explicit "local"; same behavior as "".
-	//   "remote"  — talk to RemoteHub.URL with RemoteHub.AuthToken
-	//               over TCP. Requires RemoteHub to be set.
+	//   "remote"  — talk to cloud.gateway_url with cloud.access_token
+	//               over TCP. Requires the Cloud preference to be set.
 	//
 	// Used by daemonclient.NewDefaultClient to pick the transport. Only
 	// affects clients (TUI, clankcli); the local clankd daemon always
 	// listens on its own socket regardless of this value.
 	ActiveHub string `json:"active_hub,omitempty"`
-
-	// SyncedRepos lists git RemoteURLs that the laptop sync agent will
-	// push to RemoteHub. Repos not on this list are ignored — explicit
-	// opt-in avoids accidental data exfiltration.
-	SyncedRepos []string `json:"synced_repos,omitempty"`
 
 	// Daytona configures the cloud-hub-side Daytona launcher. Only
 	// effective on a TCP-listening hub. Empty = launcher disabled

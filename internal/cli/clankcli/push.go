@@ -72,13 +72,18 @@ is no longer the owner — to resume work locally, run
 				return fmt.Errorf("resolve repo path: %w", err)
 			}
 
-			if baseURL == "" {
+			if baseURL == "" || token == "" {
 				prefs, err := config.LoadPreferences()
 				if err != nil {
 					return fmt.Errorf("load preferences: %w", err)
 				}
 				if prefs.Cloud != nil {
-					baseURL = prefs.Cloud.GatewayURL
+					if baseURL == "" {
+						baseURL = prefs.Cloud.GatewayURL
+					}
+					if token == "" {
+						token = prefs.Cloud.AccessToken
+					}
 				}
 			}
 			if baseURL == "" {
@@ -149,8 +154,8 @@ is no longer the owner — to resume work locally, run
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL")
-	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for clank-sync")
+	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: cloud.gateway_url from preferences)")
+	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: cloud.access_token from preferences)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().StringVar(&deviceID, "device-id", envOrDefault("CLANK_DEVICE_ID", ""), "device id (default: ~/.config/clank/device-id, auto-generated on first run)")
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")

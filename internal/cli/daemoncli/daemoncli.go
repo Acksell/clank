@@ -42,7 +42,7 @@ func Command() *cobra.Command {
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
-	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires preferences.remote_hub.auth_token to be set and authorizes inbound calls with that bearer token.")
+	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires CLANK_AUTH_TOKEN env to be set and authorizes inbound calls with that bearer token.")
 	startCmd.Flags().String("public-base-url", "", "Externally-reachable base URL of this hub. Used by TCP-mode hubs to tell sandboxes where to fetch git mirrors from.")
 
 	stopCmd := &cobra.Command{

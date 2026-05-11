@@ -70,6 +70,11 @@ services:
       # URL (e.g. a cloudflared tunnel — see `make cloud-hub`).
       - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://localhost:7878}"
     environment:
+      # Bearer the TCP listener requires on every inbound request.
+      # Laptop sets cloud.access_token to the same value (or a JWT once
+      # the gateway grows JWT mode). Required when --listen is set.
+      CLANK_AUTH_TOKEN: "${CLANK_AUTH_TOKEN:-clank-dev-token-change-me}"
+
       # Embedded sync substrate. clankd's runGatewayServer reads these
       # in TCP mode via loadSyncFromEnv and mounts a sync server when
       # CLANK_SYNC_S3_BUCKET is set. Unix-socket mode (laptop) ignores

@@ -60,6 +60,12 @@ docker compose -f docker/docker-compose.yml logs -f clankd
 
 ## Smoke-testing the migration flow
 
+The dev stack uses a single static bearer token for both sides. The
+server reads it from the `CLANK_AUTH_TOKEN` env var (default
+`clank-dev-token-change-me` if you haven't created `docker/.env`); the
+laptop reads it from `cloud.access_token` in `~/.clank/preferences.json`.
+**Both must match.**
+
 From the laptop, with the stack running:
 
 ```sh
@@ -67,8 +73,14 @@ cd ~/some-real-repo
 
 # Point the laptop's `clank` CLI at the docker clankd. Add to
 # ~/.clank/preferences.json:
-#   { "cloud": { "gateway_url": "http://localhost:7878",
-#                "access_token": "clank-dev-token-change-me" } }
+#   {
+#     "cloud": {
+#       "gateway_url":  "http://localhost:7878",
+#       "access_token": "clank-dev-token-change-me"
+#     }
+#   }
+# The access_token value MUST match the docker stack's CLANK_AUTH_TOKEN
+# (see docker/.env or docker-compose.yml default).
 
 # 1. Push a checkpoint AND hand off ownership to the remote.
 clank push --migrate

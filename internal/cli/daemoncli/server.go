@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/socketutil"
 	"github.com/acksell/clank/pkg/gateway"
@@ -89,18 +88,15 @@ func parseTCPListen(s string) (string, error) {
 	return s, nil
 }
 
-// tcpAuthToken returns the configured bearer or refuses startup —
-// an unauthenticated TCP listener would expose every session to the
-// network.
+// tcpAuthToken returns the static bearer that gates incoming requests
+// to the TCP listener. Read from CLANK_AUTH_TOKEN env. An
+// unauthenticated TCP listener would expose every session to the
+// network, so we refuse startup when the env is unset.
 func tcpAuthToken() (string, error) {
-	prefs, err := config.LoadPreferences()
-	if err != nil {
-		return "", fmt.Errorf("load preferences: %w", err)
+	if v := strings.TrimSpace(os.Getenv("CLANK_AUTH_TOKEN")); v != "" {
+		return v, nil
 	}
-	if prefs.RemoteHub == nil || strings.TrimSpace(prefs.RemoteHub.AuthToken) == "" {
-		return "", fmt.Errorf("--listen tcp:// requires preferences.remote_hub.auth_token to be set")
-	}
-	return prefs.RemoteHub.AuthToken, nil
+	return "", fmt.Errorf("--listen tcp:// requires CLANK_AUTH_TOKEN env to be set")
 }
 
 // runGatewayServer mounts the daemon gateway on opts.Listen.
@@ -138,14 +134,14 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	// Pass the sprite-reachable URL of this clankd to the gateway so
 	// migrate-back can tell the sprite where to upload its checkpoint.
 	// PublicBaseURL is the same value already validated by the cloud
-	// provisioners; reuse it instead of asking the operator to set a
-	// second one. SyncAuthToken comes from RemoteHub.AuthToken (same
-	// bearer pattern as everything else in the self-hosted dev stack).
+	// provisioners; reuse it. SyncAuthToken is the bearer the sprite
+	// presents back to this gateway — same source as tcpAuthToken so
+	// the sprite's call passes the bearer middleware.
 	syncPublicURL := opts.PublicBaseURL
 	syncAuthToken := ""
 	if syncSrv != nil {
-		if prefs, err := config.LoadPreferences(); err == nil && prefs.RemoteHub != nil {
-			syncAuthToken = prefs.RemoteHub.AuthToken
+		if tok, err := tcpAuthToken(); err == nil {
+			syncAuthToken = tok
 		}
 	}
 
