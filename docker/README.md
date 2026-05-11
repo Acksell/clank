@@ -12,29 +12,48 @@ needed. Useful for smoke-testing the sync/migration flow end-to-end.
 
 ## One-time setup
 
+There are two dev modes depending on where your sandbox runs.
+
+### Mode A — laptop-only (`local` provisioner, sandbox in the clankd container)
+
 ```sh
 make docker-setup    # adds `127.0.0.1 clank-minio` to /etc/hosts (sudo prompt)
+make docker-up
 ```
 
-### Why
+The /etc/hosts entry makes `clank-minio` resolve to localhost from the
+laptop, matching how the docker network resolves it from inside.
 
-clankd's embedded sync mints SigV4-signed presigned S3 URLs. SigV4
-signs the **Host** header into the canonical request, so the URL bears
-one hostname and that hostname must resolve to a reachable address
-from *every* consumer:
+### Mode B — real cloud sandbox (`flyio` / `daytona` provisioner)
 
-- Containers (clankd fetching bundles, sprites pulling them) resolve
-  `clank-minio` via Docker DNS → minio container.
-- The laptop (uploading bundles) needs the same hostname pointed at
-  minio's published port — hence the `/etc/hosts` entry.
+A fly.io sprite can't resolve `clank-minio` — it lives on its own
+network with no host-file injection. Expose minio publicly via a
+Cloudflare quick tunnel and point clankd at the public URL.
 
-Rewriting the URL host on the consumer side would invalidate the
-signature; running minio under a different name on each side would
-too. Until clankd grows a separate signing-vs-public-endpoint config,
-the shared hostname is the only mechanism that works.
+```sh
+# Terminal 1: keep this running
+make tunnel
+# Prints: https://<random-words>.trycloudflare.com — copy it.
 
-Without this entry, `clank push` from the laptop fails with
-`dial tcp: lookup clank-minio: no such host` on the bundle PUT.
+# In docker/.env (or your shell env):
+CLANK_SYNC_S3_ENDPOINT=https://<random-words>.trycloudflare.com
+
+# Terminal 2:
+make docker-up
+```
+
+Presigned URLs are now signed with the public hostname; laptop and
+sprite both reach it via public DNS, signatures match. Quick tunnels
+rotate per restart, so re-run `make tunnel` and update the env on
+each session.
+
+### Why presigned URLs need one hostname
+
+clankd's embedded sync mints SigV4-signed presigned URLs. SigV4 signs
+the **Host** header into the canonical request, so the URL bears one
+hostname and every consumer (laptop, gateway, sprite) must dial that
+exact name. Rewriting the host on a consumer would invalidate the
+signature.
 
 ## Bringing the stack up
 

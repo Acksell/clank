@@ -82,10 +82,14 @@ services:
       CLANK_SYNC_S3_BUCKET: "${CLANK_BUCKET:-clank}"
       CLANK_SYNC_S3_REGION: "us-east-1"
       # The hostname here is what gets baked into presigned URLs.
-      # See docker/README.md: laptop uses /etc/hosts to map this to
-      # 127.0.0.1 so the same URL resolves from gateway, laptop, AND
-      # sprites that pull from S3 directly.
-      CLANK_SYNC_S3_ENDPOINT: "http://clank-minio:9000"
+      # For laptop-only dev: add `127.0.0.1 clank-minio` to /etc/hosts
+      # so the laptop resolves the same name the docker network does.
+      # For dev against a real cloud sprite (fly.io etc.): the sprite
+      # has no way to resolve `clank-minio`. Set CLANK_SYNC_S3_ENDPOINT
+      # in docker/.env to a publicly-reachable URL (e.g. a cloudflared
+      # tunnel pointing at minio: `cloudflared tunnel --url http://localhost:9000`)
+      # and the laptop + sprite both hit the same public endpoint.
+      CLANK_SYNC_S3_ENDPOINT: "${CLANK_SYNC_S3_ENDPOINT:-http://clank-minio:9000}"
       CLANK_SYNC_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
       CLANK_SYNC_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"
       CLANK_SYNC_S3_PATH_STYLE: "true"

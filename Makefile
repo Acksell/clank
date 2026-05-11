@@ -117,7 +117,7 @@ cloud-hub: install
 # docker/README.md for the full smoke recipe (register worktree, push
 # checkpoint, trigger migration).
 
-.PHONY: docker-setup docker-up docker-down docker-build docker-logs
+.PHONY: docker-setup docker-up docker-down docker-build docker-logs tunnel
 docker-setup:
 	@if ! grep -q '^[^#]*[[:space:]]clank-minio\b' /etc/hosts; then \
 	    echo "Adding 'clank-minio' → 127.0.0.1 to /etc/hosts (sudo prompt)..."; \
@@ -128,8 +128,25 @@ docker-setup:
 docker-build:
 	docker compose -f docker/docker-compose.yml build
 docker-up: docker-setup
-	docker compose -f docker/docker-compose.yml up -d --build
+	docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --build 2>/dev/null \
+	  || docker compose -f docker/docker-compose.yml up -d --build
 docker-down:
 	docker compose -f docker/docker-compose.yml down
 docker-logs:
 	docker compose -f docker/docker-compose.yml logs -f --tail=100
+
+# Opens a Cloudflare quick tunnel pointing at the local minio port
+# (9000 by default). Print the trycloudflare URL and exit — copy it
+# into docker/.env as CLANK_SYNC_S3_ENDPOINT, then `make docker-up`
+# to rebuild with public-reachable presigned URLs. Required when
+# pushing checkpoints to a sandbox that isn't on the same network as
+# minio (e.g. fly.io). Without this the sprite can't resolve
+# `clank-minio` and the pull-based migration step fails.
+#
+# Foreground; ctrl-c to stop. Quick tunnels are anonymous (no Cloudflare
+# account needed) and rotate per restart, so re-set CLANK_SYNC_S3_ENDPOINT
+# after each rerun.
+tunnel:
+	@echo "Tunnel will expose http://localhost:$${MINIO_API_PORT:-9000} publicly."
+	@echo "Set CLANK_SYNC_S3_ENDPOINT in docker/.env to the URL below, then run 'make docker-up'."
+	cloudflared tunnel --url http://localhost:$${MINIO_API_PORT:-9000} --no-autoupdate
