@@ -49,6 +49,29 @@ services:
       mc anonymous set download local/${CLANK_BUCKET:-clank} || true
       "
 
+  # ── dev auth stub (RFC 8628 device flow, auto-approves) ─────────
+  # Stand-in for a real auth provider so `clank login` works against
+  # the local stack. Issues HS256-signed JWTs; not for production.
+  clank-auth-stub:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: clank:latest
+    command: ["clank-auth-stub"]
+    environment:
+      CLANK_AUTH_STUB_LISTEN: ":7879"
+      CLANK_AUTH_STUB_PUBLIC_URL: "${CLANK_AUTH_STUB_PUBLIC_URL:-http://localhost:7879}"
+      CLANK_AUTH_STUB_SECRET: "${CLANK_AUTH_STUB_SECRET:-dev-secret-change-me}"
+      CLANK_AUTH_STUB_USER_ID: "${CLANK_AUTH_STUB_USER_ID:-dev-user}"
+      CLANK_AUTH_STUB_EMAIL: "${CLANK_AUTH_STUB_EMAIL:-dev@clank.local}"
+    ports:
+      - "${CLANK_AUTH_STUB_PORT:-7879}:7879"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7879/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   # ── gateway with embedded sync + local provisioner ──────────────
   clankd:
     build:

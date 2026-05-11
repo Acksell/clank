@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.6
 #
-# Multi-stage build that produces /usr/local/bin/{clankd,clank-host}
-# in a small runtime image. clankd embeds the sync server in TCP mode
-# when CLANK_SYNC_S3_* env vars are present.
+# Multi-stage build that produces /usr/local/bin/{clankd,clank-host,
+# clank-auth-stub} in a small runtime image. clankd embeds the sync
+# server in TCP mode when CLANK_SYNC_S3_* env vars are present.
 
 ARG GO_VERSION=1.25.8
 
@@ -25,8 +25,9 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags "-s -w" -o /out/clankd       ./cmd/clankd     && \
-    go build -trimpath -ldflags "-s -w" -o /out/clank-host   ./cmd/clank-host
+    go build -trimpath -ldflags "-s -w" -o /out/clankd          ./cmd/clankd     && \
+    go build -trimpath -ldflags "-s -w" -o /out/clank-host      ./cmd/clank-host && \
+    go build -trimpath -ldflags "-s -w" -o /out/clank-auth-stub ./cmd/clank-auth-stub
 
 FROM debian:bookworm-slim AS runtime
 
@@ -59,8 +60,9 @@ RUN npm install -g opencode-ai && opencode --version
 RUN mkdir -p /var/lib/clank /root/.clank
 ENV HOME=/root
 
-COPY --from=builder /out/clankd       /usr/local/bin/clankd
-COPY --from=builder /out/clank-host   /usr/local/bin/clank-host
+COPY --from=builder /out/clankd          /usr/local/bin/clankd
+COPY --from=builder /out/clank-host      /usr/local/bin/clank-host
+COPY --from=builder /out/clank-auth-stub /usr/local/bin/clank-auth-stub
 
 # clankd's local provisioner does exec.LookPath("clank-host"); having
 # it on PATH satisfies that without an explicit BinPath option.

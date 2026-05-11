@@ -6,6 +6,9 @@ Brings up a complete clank backend on your laptop (primarily for development & t
 - **clankd** — gateway with the embedded sync server (presigned URLs +
   sqlite metadata) and the local provisioner (spawns clank-host as a
   subprocess inside the container so migrations land somewhere)
+- **clank-auth-stub** — dev OAuth 2.0 device-flow server that
+  auto-approves every login and mints an HS256-signed JWT, so
+  `clank login` works end-to-end against the local stack
 
 Everything is self-contained — no fly.io, daytona, or AWS account
 needed. Useful for smoke-testing the sync/migration flow end-to-end.
@@ -79,27 +82,30 @@ docker compose -f docker/docker-compose.yml logs -f clankd
 
 ## Smoke-testing the migration flow
 
-The dev stack uses a single static bearer token for both sides. The
+The dev stack uses a single static bearer token on both sides. The
 server reads it from the `CLANK_AUTH_TOKEN` env var (default
 `clank-dev-token-change-me` if you haven't created `docker/.env`); the
-laptop reads it from `cloud.access_token` in `~/.clank/preferences.json`.
-**Both must match.**
+laptop reads it from the active remote's `access_token` in
+`~/.clank/preferences.json`. **Both must match.**
 
 From the laptop, with the stack running:
 
 ```sh
 cd ~/some-real-repo
 
-# Point the laptop's `clank` CLI at the docker clankd. Add to
-# ~/.clank/preferences.json:
-#   {
-#     "cloud": {
-#       "gateway_url":  "http://localhost:7878",
-#       "access_token": "clank-dev-token-change-me"
-#     }
-#   }
-# The access_token value MUST match the docker stack's CLANK_AUTH_TOKEN
-# (see docker/.env or docker-compose.yml default).
+# Register the docker stack as a remote (one-time).
+# --auth-url points at the dev auth-stub so `clank login` works.
+clank remote add dev \
+  --gateway-url=http://localhost:7878 \
+  --auth-url=http://localhost:7879 \
+  --token=clank-dev-token-change-me
+
+# Sign in via device flow against the stub (auto-approves):
+clank login
+
+# Verify:
+clank remote list
+# * dev — http://localhost:7878  dev@clank.local
 
 # 1. Push a checkpoint AND hand off ownership to the remote.
 clank push --migrate
