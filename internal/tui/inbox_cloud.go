@@ -77,7 +77,7 @@ func (m *InboxModel) updateCloud(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prefs, _ := config.LoadPreferences()
 		currentURL := ""
 		if prefs.Cloud != nil {
-			currentURL = prefs.Cloud.CloudURL
+			currentURL = prefs.Cloud.AuthURL
 		}
 		m.cloudURLPicker = newCloudURLPicker(currentURL)
 		m.showCloudURLPicker = true
@@ -165,6 +165,6 @@ func persistCloudURL(url string) {
 		if p.Cloud == nil {
 			p.Cloud = &config.CloudPreference{}
 		}
-		p.Cloud.CloudURL = url
+		p.Cloud.AuthURL = url
 	})
 }

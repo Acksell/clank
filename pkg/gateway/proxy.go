@@ -11,7 +11,19 @@ import (
 // for the user's HostRef, and reverse-proxies through. HostRef.Transport
 // injects per-request upstream auth. ReverseProxy upgrades HTTP/1.1
 // natively, so WebSocket (/events) flows through this same path.
+//
+// Sync-path policy: when Sync is unconfigured (laptop mode), refuse to
+// proxy /sync/* requests to the local clank-host. The host registers
+// those routes for sandbox use; on a laptop they'd let any client with
+// socket access write code into ~/work/. Cloud gateways (Sync != nil)
+// keep proxying so sprite-side /sync/apply still works.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
+	if g.cfg.Sync == nil && strings.HasPrefix(r.URL.Path, "/sync/") {
+		g.log.Printf("gateway: denied %s %s (sync routes blocked on laptop gateway)", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+		return
+	}
+
 	if _, err := g.cfg.Auth.Verify(r); err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

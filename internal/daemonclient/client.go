@@ -157,6 +157,25 @@ func NewLocalClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
+// NewCloudClient returns a TCP client targeting prefs.Cloud.GatewayURL
+// with Cloud.AccessToken as the bearer. Use for sync/migration calls
+// that must hit the cloud gateway regardless of ActiveHub (the laptop
+// daemon's gateway has Sync=nil and doesn't orchestrate migration).
+//
+// Returns an error when Cloud is unset — surfaces a clear "configure
+// cloud.gateway_url" message rather than silently falling back to a
+// transport that would fail later.
+func NewCloudClient() (*Client, error) {
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		return nil, fmt.Errorf("load preferences: %w", err)
+	}
+	if prefs.Cloud == nil || strings.TrimSpace(prefs.Cloud.GatewayURL) == "" {
+		return nil, fmt.Errorf("cloud.gateway_url is not configured; set preferences.cloud.gateway_url before --migrate")
+	}
+	return NewTCPClient(prefs.Cloud.GatewayURL, prefs.Cloud.AccessToken), nil
+}
+
 // IsRemoteActive reports whether NewDefaultClient would target a
 // remote hub. Logs and degrades to false on prefs load failure.
 func IsRemoteActive() bool {

@@ -2,6 +2,9 @@ package tui
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"image/color"
 	"os"
@@ -21,6 +24,7 @@ import (
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/git"
 	"github.com/acksell/clank/internal/host"
+	"github.com/acksell/clank/pkg/syncclient"
 )
 
 // inboxScreen tracks which screen is active within the inbox app.
@@ -73,12 +77,16 @@ type InboxModel struct {
 	sidebarWidthRatio int          // sidebar width as % of screen width; adjusted with +/-
 
 	// Inbox list state (right pane).
-	groups       []inboxGroup
-	flatRows     []inboxRow
-	cursor       int
-	scrollOffset int
-	showMenu     bool
-	menu         actionMenuModel
+	groups           []inboxGroup
+	flatRows         []inboxRow
+	cursor           int
+	scrollOffset     int
+	showMenu         bool
+	menu             actionMenuModel
+	menuWorktreePath string // set when menu is a worktree action menu
+
+	// notice is a transient success message cleared on the next action.
+	notice string
 
 	// Archive accordion state — tracks which date groups have their archive expanded.
 	archiveExpanded map[string]bool // keyed by date group label
@@ -560,6 +568,24 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case newWorktreeSessionRequestMsg:
 		return m, m.openNewWorktreeSession(msg.worktreeDir)
+
+	case worktreeOptionsRequestedMsg:
+		m.menuWorktreePath = msg.localPath
+		m.notice = "" // clear any prior notice when opening a new action menu
+		m.menu = newActionMenu("Worktree: "+filepath.Base(msg.localPath), []actionMenuItem{
+			{label: "Push checkpoint", key: "p", action: "push:" + msg.localPath},
+			{label: "Pull  (coming soon)", action: "pull:" + msg.localPath},
+		})
+		m.showMenu = true
+		return m, nil
+
+	case worktreePushResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.notice = fmt.Sprintf("pushed checkpoint %s (HEAD %s)", msg.checkpointID, msg.headSHA)
+		}
+		return m, nil
 
 	case inboxDataMsg:
 		if msg.err != nil {
@@ -1279,6 +1305,11 @@ func (m *InboxModel) handleMenuAction(action string) tea.Cmd {
 		return m.openSession(id)
 	case "delete":
 		return m.deleteSession(id)
+	case "push":
+		return m.worktreePushCmd(id)
+	case "pull":
+		m.notice = "Pull is coming soon"
+		return nil
 	}
 	return nil
 }
@@ -1619,6 +1650,12 @@ func (m *InboxModel) renderSessionPane() string {
 	// Error.
 	if m.err != nil {
 		sb.WriteString(renderError(m.err, m.width))
+		sb.WriteString("\n\n")
+	}
+
+	// Notice (transient success message).
+	if m.notice != "" {
+		sb.WriteString(lipgloss.NewStyle().Foreground(successColor).Render("✓ " + m.notice))
 		sb.WriteString("\n\n")
 	}
 
@@ -2423,4 +2460,103 @@ func (m *InboxModel) overlayHelp(base string) string {
 		Render(sb.String())
 
 	return overlayCenter(base, popup, m.width, m.height)
+}
+
+// worktreePushResultMsg is returned by worktreePushCmd.
+type worktreePushResultMsg struct {
+	checkpointID string
+	headSHA      string
+	err          error
+}
+
+// worktreePushCmd pushes a checkpoint of localPath to the configured gateway.
+func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
+	return func() tea.Msg {
+		prefs, err := config.LoadPreferences()
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("load preferences: %w", err)}
+		}
+		if prefs.Cloud == nil || prefs.Cloud.GatewayURL == "" {
+			return worktreePushResultMsg{err: fmt.Errorf("cloud.gateway_url is not configured")}
+		}
+
+		devID, err := loadOrCreateDeviceID()
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("device id: %w", err)}
+		}
+
+		cli, err := syncclient.New(syncclient.Config{
+			BaseURL:   prefs.Cloud.GatewayURL,
+			AuthToken: prefs.Cloud.AccessToken,
+			DeviceID:  devID,
+		})
+		if err != nil {
+			return worktreePushResultMsg{err: err}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		worktreeID, err := agent.ReadLocalWorktreeID(localPath)
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("load cached worktree id: %w", err)}
+		}
+		if worktreeID == "" {
+			worktreeID, err = cli.RegisterWorktree(ctx, filepath.Base(localPath))
+			if err != nil {
+				return worktreePushResultMsg{err: fmt.Errorf("register worktree: %w", err)}
+			}
+			if err := agent.WriteLocalWorktreeID(localPath, worktreeID); err != nil {
+				return worktreePushResultMsg{err: fmt.Errorf("cache worktree id: %w", err)}
+			}
+		}
+
+		res, err := cli.PushCheckpoint(ctx, worktreeID, localPath)
+		if err != nil {
+			return worktreePushResultMsg{err: fmt.Errorf("push checkpoint: %w", err)}
+		}
+		return worktreePushResultMsg{
+			checkpointID: res.CheckpointID,
+			headSHA:      shortSHA(res.Manifest.HeadCommit),
+		}
+	}
+}
+
+// shortSHA returns the first 8 characters of a SHA, or the full string if shorter.
+func shortSHA(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
+// loadOrCreateDeviceID returns this device's stable ID from
+// ~/.config/clank/device-id, generating one on first call.
+func loadOrCreateDeviceID() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(configDir, "clank")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "device-id")
+	if data, err := os.ReadFile(path); err == nil {
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("read device id %s: %w", path, err)
+	}
+	buf := make([]byte, 16)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", err
+	}
+	id := "dev-" + hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
 }

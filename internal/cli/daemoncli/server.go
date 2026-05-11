@@ -16,9 +16,10 @@ import (
 
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
+	"github.com/acksell/clank/internal/socketutil"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
-	"github.com/acksell/clank/internal/socketutil"
+	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
 // openHubListener creates the listener for the configured mode and a
@@ -102,12 +103,16 @@ func tcpAuthToken() (string, error) {
 	return prefs.RemoteHub.AuthToken, nil
 }
 
-// runGatewayServer mounts the gateway on opts.Listen.
+// runGatewayServer mounts the daemon gateway on opts.Listen.
 //
 // Modes:
-//   - Unix socket (default): file mode is the gate.
-//   - TCP (opts.Listen non-empty): wraps with bearer-token middleware,
-//     enforced before reaching the gateway's own auth.
+//   - Unix socket (default): laptop mode. File mode is the gate. Sync
+//     stays nil — laptop has no S3 access and exposes no sync routes.
+//     Push/pull goes through the cloud gateway (prefs.Cloud.GatewayURL).
+//   - TCP (opts.Listen non-empty): self-hosted/cloud mode. Wraps with
+//     bearer-token middleware enforced before reaching the gateway's
+//     own auth. If CLANK_SYNC_S3_BUCKET is set, an embedded sync.Server
+//     is built from CLANK_SYNC_S3_* env and mounted under /v1/.
 //
 // Both modes write the PID file at daemonclient.PIDPath().
 func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
@@ -116,13 +121,43 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		return fmt.Errorf("pid path: %w", err)
 	}
 
+	var syncSrv *clanksync.Server
+	if opts.Listen != "" {
+		// TCP mode: build the embedded sync server when CLANK_SYNC_S3_*
+		// env vars are present. Returns nil when unset (TCP without sync
+		// still works — useful for proxy-only hubs).
+		syncSrv, err = loadSyncFromEnv(context.Background(), log.Default())
+		if err != nil {
+			return fmt.Errorf("build sync server: %w", err)
+		}
+		if syncSrv != nil {
+			log.Printf("gateway: embedded sync server enabled (S3 bucket=%s)", os.Getenv("CLANK_SYNC_S3_BUCKET"))
+		}
+	}
+
+	// Pass the sprite-reachable URL of this clankd to the gateway so
+	// migrate-back can tell the sprite where to upload its checkpoint.
+	// PublicBaseURL is the same value already validated by the cloud
+	// provisioners; reuse it instead of asking the operator to set a
+	// second one. SyncAuthToken comes from RemoteHub.AuthToken (same
+	// bearer pattern as everything else in the self-hosted dev stack).
+	syncPublicURL := opts.PublicBaseURL
+	syncAuthToken := ""
+	if syncSrv != nil {
+		if prefs, err := config.LoadPreferences(); err == nil && prefs.RemoteHub != nil {
+			syncAuthToken = prefs.RemoteHub.AuthToken
+		}
+	}
+
 	gw, err := gateway.NewGateway(gateway.Config{
 		Provisioner: prov,
 		Auth:        gateway.PermissiveAuth{},
 		ResolveUserID: func(*http.Request) string {
 			return "local" // single-user laptop today
 		},
-		SyncBaseURL: opts.SyncBaseURL,
+		Sync:          syncSrv,
+		SyncPublicURL: syncPublicURL,
+		SyncAuthToken: syncAuthToken,
 	}, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)

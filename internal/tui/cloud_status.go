@@ -41,7 +41,7 @@ const (
 // reachability is layered on top by cloudView.Status().
 func loadCloudAuthStatus() cloudAuthStatus {
 	prefs, err := config.LoadPreferences()
-	if err != nil || prefs.Cloud == nil || prefs.Cloud.CloudURL == "" {
+	if err != nil || prefs.Cloud == nil || prefs.Cloud.AuthURL == "" {
 		return cloudStatusNotConfigured
 	}
 	if prefs.Cloud.AccessToken == "" || cloudTokenExpired(prefs.Cloud) {

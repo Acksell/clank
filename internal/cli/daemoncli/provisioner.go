@@ -70,13 +70,11 @@ func buildDaytonaProvisioner(opts ServerOptions, st *store.Store, prefs config.P
 		return nil, nil, fmt.Errorf("daytona provisioner: --public-base-url required so sandboxes can reach the hub")
 	}
 	prov, err := daytonaprov.New(daytonaprov.Options{
-		APIKey:       prefs.Daytona.APIKey,
-		Snapshot:     prefs.Daytona.Snapshot,
-		Image:        prefs.Daytona.Image,
-		APIUrl:       prefs.Daytona.BaseURL,
-		ExtraEnv:     prefs.Daytona.ExtraEnv,
-		MirrorBaseURL:   opts.PublicBaseURL,
-		MirrorAuthToken: prefs.RemoteHub.AuthToken,
+		APIKey:   prefs.Daytona.APIKey,
+		Snapshot: prefs.Daytona.Snapshot,
+		Image:    prefs.Daytona.Image,
+		APIUrl:   prefs.Daytona.BaseURL,
+		ExtraEnv: prefs.Daytona.ExtraEnv,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build daytona provisioner: %w", err)
@@ -102,8 +100,6 @@ func buildFlyIOProvisioner(opts ServerOptions, st *store.Store, prefs config.Pre
 		RamMB:            prefs.FlyIO.RamMB,
 		CPUs:             prefs.FlyIO.CPUs,
 		StorageGB:        prefs.FlyIO.StorageGB,
-		MirrorBaseURL:    opts.PublicBaseURL,
-		MirrorAuthToken:  prefs.RemoteHub.AuthToken,
 	}, st, log.Default())
 	if err != nil {
 		return nil, nil, fmt.Errorf("build flyio provisioner: %w", err)

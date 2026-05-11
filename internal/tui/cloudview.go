@@ -150,7 +150,7 @@ func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
 	m.cloudURL = ""
 	if prefs.Cloud != nil {
-		m.cloudURL = prefs.Cloud.CloudURL
+		m.cloudURL = prefs.Cloud.AuthURL
 	}
 	if m.cloudURL == "" {
 		m.phase = cloudPhaseNotConfigured

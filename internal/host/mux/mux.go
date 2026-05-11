@@ -108,9 +108,14 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// Provider authentication. See internal/host/mux/auth.go.
 	m.registerAuth(mx)
 
-	// Cloud-sync ingress. clank-sync POSTs git bundles here during
-	// flush; the handler unbundles into ~/work/<repo>. See sync.go.
+	// Cloud-sync ingress. The gateway POSTs here during migration:
+	//   - /sync/apply              — multipart (legacy byte-push, kept for tests/rollback)
+	//   - /sync/apply-from-urls    — JSON with presigned GETs; sandbox pulls from S3
+	//   - /sync/checkpoint         — capture sandbox state to a new checkpoint
+	// See sync.go.
 	mx.HandleFunc("POST /sync/apply", m.handleSyncApply)
+	mx.HandleFunc("POST /sync/apply-from-urls", m.handleSyncApplyFromURLs)
+	mx.HandleFunc("POST /sync/checkpoint", m.handleSyncCheckpoint)
 }
 
 // --- helpers ---

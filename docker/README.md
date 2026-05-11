@@ -3,9 +3,9 @@
 Brings up a complete clank backend on your laptop (primarily for development & testing purposes, and as an example setup):
 
 - **minio** — S3-compatible object storage for checkpoint bundles
-- **clank-sync** — checkpoint substrate (presigned URLs + sqlite metadata)
-- **clankd** — gateway with the local provisioner (spawns clank-host
-  as a subprocess inside the container so migrations land somewhere)
+- **clankd** — gateway with the embedded sync server (presigned URLs +
+  sqlite metadata) and the local provisioner (spawns clank-host as a
+  subprocess inside the container so migrations land somewhere)
 
 Everything is self-contained — no fly.io, daytona, or AWS account
 needed. Useful for smoke-testing the sync/migration flow end-to-end.
@@ -18,20 +18,20 @@ make docker-setup    # adds `127.0.0.1 clank-minio` to /etc/hosts (sudo prompt)
 
 ### Why
 
-clank-sync mints SigV4-signed presigned S3 URLs. SigV4 signs the
-**Host** header into the canonical request, so the URL bears one
-hostname and that hostname must resolve to a reachable address from
-*every* consumer:
+clankd's embedded sync mints SigV4-signed presigned S3 URLs. SigV4
+signs the **Host** header into the canonical request, so the URL bears
+one hostname and that hostname must resolve to a reachable address
+from *every* consumer:
 
-- Containers (clankd fetching bundles) resolve `clank-minio` via
-  Docker DNS → minio container.
+- Containers (clankd fetching bundles, sprites pulling them) resolve
+  `clank-minio` via Docker DNS → minio container.
 - The laptop (uploading bundles) needs the same hostname pointed at
   minio's published port — hence the `/etc/hosts` entry.
 
 Rewriting the URL host on the consumer side would invalidate the
 signature; running minio under a different name on each side would
-too. Until clank-sync grows a separate signing-vs-public-endpoint
-config, the shared hostname is the only mechanism that works.
+too. Until clankd grows a separate signing-vs-public-endpoint config,
+the shared hostname is the only mechanism that works.
 
 Without this entry, `clank push` from the laptop fails with
 `dial tcp: lookup clank-minio: no such host` on the bundle PUT.
@@ -47,15 +47,15 @@ make docker-down    # stop + remove containers
 Health-checks:
 
 ```sh
-curl -fsS http://localhost:8081/v1/health      # clank-sync
 curl -fsS http://localhost:7878/ping           # clankd (open without auth)
+curl -fsS http://localhost:7878/v1/health      # clankd's embedded sync server
 open http://localhost:9001                     # minio console (clankadmin / clankadmin)
 ```
 
 Logs:
 
 ```sh
-docker compose -f docker/docker-compose.yml logs -f clank-sync clankd
+docker compose -f docker/docker-compose.yml logs -f clankd
 ```
 
 ## Smoke-testing the migration flow
@@ -64,13 +64,11 @@ From the laptop, with the stack running:
 
 ```sh
 cd ~/some-real-repo
-export CLANK_SYNC_URL=http://localhost:8081
 
-# Set up your laptop to talk to the docker gateway by default. Add to
+# Point the laptop's `clank` CLI at the docker clankd. Add to
 # ~/.clank/preferences.json:
-#   { "active_hub": "remote",
-#     "remote_hub": { "url": "http://localhost:7878",
-#                     "auth_token": "clank-dev-token-change-me" } }
+#   { "cloud": { "gateway_url": "http://localhost:7878",
+#                "access_token": "clank-dev-token-change-me" } }
 
 # 1. Push a checkpoint AND hand off ownership to the remote.
 clank push --migrate
@@ -92,8 +90,6 @@ docker compose -f docker/docker-compose.yml exec clankd ls /root/work/
 clank code "summarize this codebase"
 
 # 3. When you want to keep working on the laptop, reclaim ownership.
-# Today this discards any sandbox-side filesystem changes (the
-# "Pull from sandbox" variant lands in P4).
 clank pull --migrate
 ```
 
@@ -119,14 +115,12 @@ Edit `docker/preferences.json`:
 }
 ```
 
-For P3 (gateway pushes bundles to sprites) the default
-`CLANK_PUBLIC_BASE_URL` placeholder is fine — sprites don't reach
-back. If/when you start exercising sprite-side push (P4+), set
+When you start exercising sprite-side push (P6), set
 `CLANK_PUBLIC_BASE_URL` in `docker/.env` to a publicly-reachable URL
-of clank-sync — easiest is a cloudflared tunnel:
+of clankd — easiest is a cloudflared tunnel:
 
 ```sh
-cloudflared tunnel --url http://localhost:8081
+cloudflared tunnel --url http://localhost:7878
 # then: CLANK_PUBLIC_BASE_URL=https://your-tunnel.trycloudflare.com
 ```
 

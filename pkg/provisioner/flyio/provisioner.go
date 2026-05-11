@@ -76,15 +76,6 @@ type Options struct {
 	CPUs      int // 0 = sprite default
 	StorageGB int // 0 = sprite default
 
-	// MirrorBaseURL is the externally-reachable URL the sprite clones
-	// user code from on wake. Historically named "HubBaseURL" — the
-	// "hub" layer is gone but the env-var name (CLANK_HUB_URL) is kept
-	// to avoid breaking sandbox images mid-migration.
-	MirrorBaseURL string
-
-	// MirrorAuthToken is the bearer token paired with MirrorBaseURL.
-	MirrorAuthToken string
-
 	// ProvisionTimeout caps how long EnsureHost waits for the sprite
 	// to become reachable. Default: 5 minutes.
 	ProvisionTimeout time.Duration
@@ -123,12 +114,6 @@ type cachedHost struct {
 func New(opts Options, st hoststore.HostStore, lg *log.Logger) (*Provisioner, error) {
 	if st == nil {
 		return nil, fmt.Errorf("flyio provisioner: store is required")
-	}
-	if opts.MirrorBaseURL == "" {
-		return nil, fmt.Errorf("flyio provisioner: MirrorBaseURL is required")
-	}
-	if opts.MirrorAuthToken == "" {
-		return nil, fmt.Errorf("flyio provisioner: MirrorAuthToken is required")
 	}
 	if opts.SpriteNamePrefix == "" {
 		opts.SpriteNamePrefix = defaultSpriteNamePrefix

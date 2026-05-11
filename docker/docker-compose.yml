@@ -1,15 +1,15 @@
-# Self-hosted clank example stack: minio (object storage) + clank-sync
-# (checkpoint substrate) + clankd (gateway with local provisioner).
+# Self-hosted clank example stack: minio (object storage) + clankd
+# (gateway with embedded sync server + local provisioner).
 #
 # Run:  docker compose -f docker/docker-compose.yml up -d --build
 # Stop: docker compose -f docker/docker-compose.yml down
 #
 # One-time prereq: `make docker-setup` adds `127.0.0.1 clank-minio` to
-# your /etc/hosts. Reason: clank-sync mints SigV4-signed presigned S3
-# URLs whose Host header is part of the signature — laptop and
-# containers must dial the *same* hostname for the signature to verify.
-# Containers resolve `clank-minio` via Docker DNS; the laptop needs the
-# /etc/hosts entry to do the same. See docker/README.md for details.
+# your /etc/hosts. Reason: clankd's embedded sync mints SigV4-signed
+# presigned S3 URLs whose Host header is part of the signature — laptop
+# and containers must dial the *same* hostname for the signature to
+# verify. Containers resolve `clank-minio` via Docker DNS; the laptop
+# needs the /etc/hosts entry to do the same. See docker/README.md.
 
 name: clank
 
@@ -49,8 +49,8 @@ services:
       mc anonymous set download local/${CLANK_BUCKET:-clank} || true
       "
 
-  # ── checkpoint substrate ────────────────────────────────────────
-  clank-sync:
+  # ── gateway with embedded sync + local provisioner ──────────────
+  clankd:
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -58,56 +58,39 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
-    command: ["clank-sync"]
-    environment:
-      CLANK_SYNC_LISTEN_ADDR: ":8081"
-      CLANK_SYNC_DB_PATH: "/var/lib/clank/clank-sync.db"
-      CLANK_SYNC_S3_BUCKET: "${CLANK_BUCKET:-clank}"
-      CLANK_SYNC_S3_REGION: "us-east-1"
-      # The hostname here is what gets baked into presigned URLs.
-      # See docker/README.md: laptop uses /etc/hosts to map this to
-      # 127.0.0.1 so the same URL is reachable from both worlds.
-      CLANK_SYNC_S3_ENDPOINT: "http://clank-minio:9000"
-      CLANK_SYNC_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
-      CLANK_SYNC_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"
-      CLANK_SYNC_S3_PATH_STYLE: "true"
-      CLANK_SYNC_PRESIGN_TTL: "${CLANK_SYNC_PRESIGN_TTL:-5m}"
-    ports:
-      - "${CLANK_SYNC_PORT:-8081}:8081"
-    volumes:
-      - clank-sync-data:/var/lib/clank
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/v1/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-
-  # ── gateway (with local provisioner) ────────────────────────────
-  clankd:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: clank:latest
-    depends_on:
-      clank-sync:
-        condition: service_healthy
     command:
       - "clankd"
       - "start"
       - "--foreground"
       - "--listen=tcp://0.0.0.0:7878"
-      - "--sync-base-url=http://clank-sync:8081"
       # PublicBaseURL is the URL sprites can reach back at when they
-      # eventually push checkpoints (P4+). Required by daytona/flyio
-      # provisioner validation; unused by the local provisioner. For
-      # real cloud sprites override CLANK_PUBLIC_BASE_URL with a
-      # publicly reachable URL (e.g. a cloudflared tunnel — see
-      # `make cloud-hub`).
-      - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://clank-sync:8081}"
+      # push checkpoints (P6). Required by daytona/flyio provisioner
+      # validation; unused by the local provisioner. For real cloud
+      # sprites override CLANK_PUBLIC_BASE_URL with a publicly reachable
+      # URL (e.g. a cloudflared tunnel — see `make cloud-hub`).
+      - "--public-base-url=${CLANK_PUBLIC_BASE_URL:-http://localhost:7878}"
+    environment:
+      # Embedded sync substrate. clankd's runGatewayServer reads these
+      # in TCP mode via loadSyncFromEnv and mounts a sync server when
+      # CLANK_SYNC_S3_BUCKET is set. Unix-socket mode (laptop) ignores
+      # these — laptops have no S3 access and expose no sync routes.
+      CLANK_SYNC_S3_BUCKET: "${CLANK_BUCKET:-clank}"
+      CLANK_SYNC_S3_REGION: "us-east-1"
+      # The hostname here is what gets baked into presigned URLs.
+      # See docker/README.md: laptop uses /etc/hosts to map this to
+      # 127.0.0.1 so the same URL resolves from gateway, laptop, AND
+      # sprites that pull from S3 directly.
+      CLANK_SYNC_S3_ENDPOINT: "http://clank-minio:9000"
+      CLANK_SYNC_S3_ACCESS_KEY: "${MINIO_ROOT_USER:-clankadmin}"
+      CLANK_SYNC_S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-clankadmin}"
+      CLANK_SYNC_S3_PATH_STYLE: "true"
+      CLANK_SYNC_PRESIGN_TTL: "${CLANK_SYNC_PRESIGN_TTL:-5m}"
+      CLANK_SYNC_DB_PATH: "/var/lib/clank/clank-sync.db"
     ports:
       - "${CLANKD_PORT:-7878}:7878"
     volumes:
       - clankd-data:/root/.clank
+      - clank-sync-data:/var/lib/clank
       # Provide the prefs file with the bearer token + provisioner choice.
       - ./preferences.json:/root/.clank/preferences.json:ro
     healthcheck:

@@ -94,6 +94,12 @@ type SettingsRequestedMsg struct{}
 // "↓ Import Sessions" footer entry in the sidebar.
 type ImportSessionsRequestedMsg struct{}
 
+// worktreeOptionsRequestedMsg is emitted when the user presses ':' on a
+// worktree entry. The inbox opens a Push/Pull action menu for that path.
+type worktreeOptionsRequestedMsg struct {
+	localPath string
+}
+
 // SidebarModel displays worktrees + a settings footer
 type SidebarModel struct {
 	client *daemonclient.Client
@@ -412,6 +418,14 @@ func (m *SidebarModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			// the cursor's entry stays inside the smaller window.
 			m.ensureVisible()
 			return m.input.Focus()
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys(":"))):
+		// Open the worktree action menu (Push / Pull) for the selected entry.
+		if sec, idx := m.cursorSection(); sec == sectionWorktrees && idx > 0 {
+			localPath := m.entries[idx-1].LocalPath
+			return func() tea.Msg {
+				return worktreeOptionsRequestedMsg{localPath: localPath}
+			}
 		}
 	}
 

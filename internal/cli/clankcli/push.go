@@ -1,8 +1,8 @@
 package clankcli
 
 import (
-	cryptorand "crypto/rand"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/acksell/clank/internal/agent"
+	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/pkg/syncclient"
 )
@@ -31,12 +32,12 @@ func envOrDefault(key, def string) string {
 // resolves to the synced state on the remote (no clone, no SSH).
 func pushCmd() *cobra.Command {
 	var (
-		baseURL   string
-		token     string
-		display   string
-		deviceID  string
-		repoPath  string
-		alsoMig   bool
+		baseURL  string
+		token    string
+		display  string
+		deviceID string
+		repoPath string
+		alsoMig  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push [repo-path]",
@@ -72,7 +73,16 @@ is no longer the owner — to resume work locally, run
 			}
 
 			if baseURL == "" {
-				return fmt.Errorf("--base-url is required (or set CLANK_SYNC_URL)")
+				prefs, err := config.LoadPreferences()
+				if err != nil {
+					return fmt.Errorf("load preferences: %w", err)
+				}
+				if prefs.Cloud != nil {
+					baseURL = prefs.Cloud.GatewayURL
+				}
+			}
+			if baseURL == "" {
+				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure cloud.gateway_url in preferences)")
 			}
 			if deviceID == "" {
 				deviceID, err = ensureDeviceID()
@@ -118,9 +128,14 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
-				dc, err := daemonclient.NewDefaultClient()
+				// Migration goes directly to the cloud gateway, not the
+				// local daemon: the laptop daemon has Sync=nil by design
+				// and would return 503. NewCloudClient reads
+				// prefs.Cloud.{GatewayURL,AccessToken} — the same place
+				// the checkpoint upload above already targets.
+				dc, err := daemonclient.NewCloudClient()
 				if err != nil {
-					return fmt.Errorf("daemon client: %w", err)
+					return fmt.Errorf("cloud client: %w", err)
 				}
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
@@ -134,7 +149,7 @@ is no longer the owner — to resume work locally, run
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_SYNC_URL", ""), "clank-sync base URL")
+	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL")
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for clank-sync")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().StringVar(&deviceID, "device-id", envOrDefault("CLANK_DEVICE_ID", ""), "device id (default: ~/.config/clank/device-id, auto-generated on first run)")

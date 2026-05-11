@@ -139,6 +139,44 @@ func TestProxy_ForwardsToUpstream(t *testing.T) {
 	}
 }
 
+// TestProxy_BlocksSyncPathsWhenSyncNil locks in the laptop-gateway
+// security boundary: when Sync is unconfigured (laptop mode), the
+// gateway must refuse to forward /sync/* requests to its local
+// clank-host subprocess. Otherwise any process with socket access
+// could push a checkpoint into ~/work/ on the laptop.
+func TestProxy_BlocksSyncPathsWhenSyncNil(t *testing.T) {
+	t.Parallel()
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	prov := &stubProvisioner{
+		ref: provisioner.HostRef{
+			URL:       upstream.URL,
+			Transport: http.DefaultTransport,
+			Hostname:  "test-host",
+		},
+	}
+	g, _ := NewGateway(Config{Provisioner: prov /* Sync intentionally nil */}, nil)
+	srv := httptest.NewServer(g.Handler())
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/sync/apply?repo=foo", "application/octet-stream", nil)
+	if err != nil {
+		t.Fatalf("POST /sync/apply: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", resp.StatusCode)
+	}
+	if upstreamCalled {
+		t.Errorf("upstream was contacted; the gateway should have denied the request before proxying")
+	}
+}
+
 func TestProxy_UsesHostRefTransport(t *testing.T) {
 	t.Parallel()
 	// Upstream that records the inbound Authorization header.

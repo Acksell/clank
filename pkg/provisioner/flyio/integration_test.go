@@ -110,8 +110,6 @@ func newIntegrationProvisioner(t *testing.T) *flyio.Provisioner {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -240,8 +238,6 @@ func TestIntegration_FlyIO_RealSpriteEventsRoute(t *testing.T) {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {
@@ -349,8 +345,6 @@ func TestIntegration_FlyIO_GatewayProxyToRealSpriteEvents(t *testing.T) {
 
 	prov, err := flyio.New(flyio.Options{
 		APIToken:         token,
-		MirrorBaseURL:       "https://test.example.invalid",
-		MirrorAuthToken:     "test-bearer-token",
 		OrganizationSlug: org,
 	}, st, nil)
 	if err != nil {

@@ -198,19 +198,26 @@ type Preferences struct {
 // CloudPreference configures the TUI's Cloud panel.
 //
 // Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
-// the cloud, and the cloud (hosted or self-hosted)
-// owns the user-auth mechanism — Supabase, GitHub OIDC, magic links,
-// whatever. clank only needs the cloud's base URL.
+// the cloud, and the cloud (hosted or self-hosted) owns the user-auth
+// mechanism — Supabase, GitHub OIDC, magic links, whatever. clank
+// only needs two URLs: one for auth and one for the gateway.
+//
+// AuthURL and GatewayURL are intentionally separate so they can live
+// on different hosts today (auth plane vs. gateway/sync plane) and be
+// unified later without a config-schema change.
 //
 // Session fields are populated after a successful device-flow grant
-// and used for subsequent /me lookups. AccessToken expires; the user
-// is prompted to sign in again on 401. Refresh-token rotation is a
-// follow-up.
+// and used for subsequent /me and sync calls. AccessToken expires; the
+// user is prompted to sign in again on 401.
 type CloudPreference struct {
-	// CloudURL is the base URL of the cloud deployment, e.g.
-	// "https://your-cloud.example.com" or a self-hosted equivalent. Required
-	// for the Cloud panel to work.
-	CloudURL string `json:"cloud_url,omitempty"`
+	// AuthURL is the base URL of the cloud auth plane, e.g.
+	// "https://auth.example.com". Required for sign-in (/me, device flow).
+	AuthURL string `json:"auth_url,omitempty"`
+
+	// GatewayURL is the base URL of the cloud gateway (sessions + sync),
+	// e.g. "https://gateway.example.com". Required for push/pull and
+	// session proxying. May be the same host as AuthURL once consolidated.
+	GatewayURL string `json:"gateway_url,omitempty"`
 
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
