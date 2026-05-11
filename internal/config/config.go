@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -169,29 +170,49 @@ type Preferences struct {
 	// hub when a launcher is looked up.
 	DefaultLaunchHostProvider string `json:"default_launch_host_provider,omitempty"`
 
-	// Cloud configures the TUI's "Cloud" panel — Supabase auth +
-	// the upstream cloud control plane. The endpoint URLs identify which
-	// cloud deployment to talk to; the session fields
-	// hold the access/refresh tokens after a successful sign-in. See
-	// internal/cloud and internal/tui/cloudview.
-	Cloud *CloudPreference `json:"cloud,omitempty"`
+	// Cloud configures the user's cloud deployments. One or more named
+	// profiles, each with its own gateway/auth endpoint and session, plus
+	// an Active selector pointing at the live one. clank push/pull, the
+	// TUI cloud panel, and `clank cloud` all read the active profile via
+	// Preferences.ActiveCloud().
+	Cloud *CloudConfig `json:"cloud,omitempty"`
 }
 
-// CloudPreference configures the TUI's Cloud panel.
+// CloudConfig holds one or more named cloud profiles plus the Active
+// selector. Lets the user switch between e.g. a dev docker stack, a
+// managed cloud, and an enterprise self-hosted instance without
+// rewriting preferences.
+//
+// JSON marshalling auto-detects the legacy flat shape (single profile
+// inline under "cloud") and normalizes to the multi-profile shape on
+// load — saves rewrite to the new shape on the next SavePreferences.
+type CloudConfig struct {
+	// Active is the key in Profiles whose endpoints/session are used by
+	// push/pull/TUI right now. Empty falls back to "default".
+	Active string `json:"active,omitempty"`
+
+	// Profiles maps a user-chosen name to its configuration. At least
+	// one named profile is expected when Cloud is set at all; a missing
+	// Active points at a missing profile renders ActiveCloud() nil.
+	Profiles map[string]*CloudProfile `json:"profiles,omitempty"`
+}
+
+// CloudProfile holds one cloud deployment's endpoints + device-flow
+// session.
 //
 // Provider-agnostic on purpose: clank speaks RFC 8628 device flow to
 // the cloud, and the cloud (hosted or self-hosted) owns the user-auth
-// mechanism — Supabase, GitHub OIDC, magic links, whatever. clank
-// only needs two URLs: one for auth and one for the gateway.
+// mechanism — Supabase, GitHub OIDC, magic links, whatever. clank only
+// needs two URLs: one for auth and one for the gateway.
 //
 // AuthURL and GatewayURL are intentionally separate so they can live
 // on different hosts today (auth plane vs. gateway/sync plane) and be
 // unified later without a config-schema change.
 //
 // Session fields are populated after a successful device-flow grant
-// and used for subsequent /me and sync calls. AccessToken expires; the
-// user is prompted to sign in again on 401.
-type CloudPreference struct {
+// and used for subsequent /me and sync calls. AccessToken expires;
+// the user is prompted to sign in again on 401.
+type CloudProfile struct {
 	// AuthURL is the base URL of the cloud auth plane, e.g.
 	// "https://auth.example.com". Required for sign-in (/me, device flow).
 	AuthURL string `json:"auth_url,omitempty"`
@@ -207,6 +228,82 @@ type CloudPreference struct {
 	UserID       string `json:"user_id,omitempty"`
 	// ExpiresAt is unix-seconds. Zero when no session.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
+}
+
+// UnmarshalJSON accepts both the multi-profile shape and the legacy
+// single-profile flat shape. Legacy gets normalized to a single
+// "default" profile selected as Active.
+func (c *CloudConfig) UnmarshalJSON(data []byte) error {
+	// Multi-profile shape first.
+	type alias struct {
+		Active   string                   `json:"active"`
+		Profiles map[string]*CloudProfile `json:"profiles"`
+	}
+	var newShape alias
+	if err := json.Unmarshal(data, &newShape); err == nil && len(newShape.Profiles) > 0 {
+		c.Active = newShape.Active
+		c.Profiles = newShape.Profiles
+		if c.Active == "" {
+			// Pick a deterministic default so callers don't randomly
+			// resolve to different profiles between runs.
+			c.Active = firstProfileName(c.Profiles)
+		}
+		return nil
+	}
+	// Legacy flat shape. Tolerate Profiles being absent and trust the
+	// inline fields. Empty object {} also lands here and yields no
+	// active profile.
+	var legacy CloudProfile
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if isZeroProfile(legacy) {
+		c.Active = ""
+		c.Profiles = nil
+		return nil
+	}
+	c.Active = "default"
+	c.Profiles = map[string]*CloudProfile{"default": &legacy}
+	return nil
+}
+
+// ActiveProfile returns the active CloudProfile or nil if none.
+func (c *CloudConfig) ActiveProfile() *CloudProfile {
+	if c == nil || len(c.Profiles) == 0 {
+		return nil
+	}
+	if p, ok := c.Profiles[c.Active]; ok {
+		return p
+	}
+	return c.Profiles[firstProfileName(c.Profiles)]
+}
+
+// ActiveCloud is a Preferences-level convenience for the very common
+// "what's the live cloud profile" check. Returns nil if Cloud or its
+// Active profile is unset.
+func (p *Preferences) ActiveCloud() *CloudProfile {
+	if p == nil || p.Cloud == nil {
+		return nil
+	}
+	return p.Cloud.ActiveProfile()
+}
+
+func firstProfileName(m map[string]*CloudProfile) string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	// Sort for determinism. Single-profile case is the common one;
+	// O(n log n) on a tiny map is fine.
+	sort.Strings(names)
+	return names[0]
+}
+
+func isZeroProfile(p CloudProfile) bool {
+	return p == CloudProfile{}
 }
 
 // preferencesPath returns the path to the preferences file.

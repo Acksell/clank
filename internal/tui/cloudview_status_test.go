@@ -24,7 +24,10 @@ func TestCloudView_Status_DiskBaseline(t *testing.T) {
 	}
 
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
-		p.Cloud = &config.CloudPreference{AuthURL: "https://example.test"}
+		p.Cloud = &config.CloudConfig{
+			Active:   "default",
+			Profiles: map[string]*config.CloudProfile{"default": {AuthURL: "https://example.test"}},
+		}
 	}); err != nil {
 		t.Fatalf("UpdatePreferences: %v", err)
 	}
@@ -49,10 +52,13 @@ func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
-		p.Cloud = &config.CloudPreference{
-			AuthURL:     "https://example.test",
-			AccessToken: "tok-abc",
-			// ExpiresAt: 0 means "no expiry tracked" → cloudTokenExpired returns false.
+		p.Cloud = &config.CloudConfig{
+			Active: "default",
+			Profiles: map[string]*config.CloudProfile{"default": {
+				AuthURL:     "https://example.test",
+				AccessToken: "tok-abc",
+				// ExpiresAt: 0 means "no expiry tracked" → cloudTokenExpired returns false.
+			}},
 		}
 	}); err != nil {
 		t.Fatalf("UpdatePreferences: %v", err)

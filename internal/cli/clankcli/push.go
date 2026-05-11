@@ -77,17 +77,17 @@ is no longer the owner — to resume work locally, run
 				if err != nil {
 					return fmt.Errorf("load preferences: %w", err)
 				}
-				if prefs.Cloud != nil {
+				if p := prefs.ActiveCloud(); p != nil {
 					if baseURL == "" {
-						baseURL = prefs.Cloud.GatewayURL
+						baseURL = p.GatewayURL
 					}
 					if token == "" {
-						token = prefs.Cloud.AccessToken
+						token = p.AccessToken
 					}
 				}
 			}
 			if baseURL == "" {
-				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure cloud.gateway_url in preferences)")
+				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active cloud profile via `clank cloud add`)")
 			}
 			if deviceID == "" {
 				deviceID, err = ensureDeviceID()

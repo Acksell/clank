@@ -145,12 +145,14 @@ func newCloudView() cloudView {
 }
 
 // Init loads prefs, decides the entry phase, and (if there's a saved
-// session) kicks off a /me to verify it.
+// session) kicks off a /me to verify it. Operates on the active cloud
+// profile only — switching profiles is a separate user action.
 func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
+	p := prefs.ActiveCloud()
 	m.cloudURL = ""
-	if prefs.Cloud != nil {
-		m.cloudURL = prefs.Cloud.AuthURL
+	if p != nil {
+		m.cloudURL = p.AuthURL
 	}
 	if m.cloudURL == "" {
 		m.phase = cloudPhaseNotConfigured
@@ -158,13 +160,13 @@ func (m *cloudView) Init() tea.Cmd {
 	}
 	m.client = cloud.New(m.cloudURL, nil)
 
-	if prefs.Cloud != nil && prefs.Cloud.AccessToken != "" && !cloudTokenExpired(prefs.Cloud) {
+	if p != nil && p.AccessToken != "" && !cloudTokenExpired(p) {
 		m.session = &cloud.Session{
-			AccessToken:  prefs.Cloud.AccessToken,
-			RefreshToken: prefs.Cloud.RefreshToken,
-			UserID:       prefs.Cloud.UserID,
-			UserEmail:    prefs.Cloud.UserEmail,
-			ExpiresAt:    prefs.Cloud.ExpiresAt,
+			AccessToken:  p.AccessToken,
+			RefreshToken: p.RefreshToken,
+			UserID:       p.UserID,
+			UserEmail:    p.UserEmail,
+			ExpiresAt:    p.ExpiresAt,
 		}
 		m.phase = cloudPhaseFetchingMe
 		return tea.Batch(m.spinner.Tick, m.fetchMeCmd())
@@ -557,35 +559,53 @@ func maxInt(a, b int) int {
 
 // --- pref helpers ---------------------------------------------------
 
-func cloudTokenExpired(c *config.CloudPreference) bool {
-	if c == nil || c.ExpiresAt == 0 {
+func cloudTokenExpired(p *config.CloudProfile) bool {
+	if p == nil || p.ExpiresAt == 0 {
 		return false
 	}
-	return time.Now().Unix() > c.ExpiresAt-30
+	return time.Now().Unix() > p.ExpiresAt-30
 }
 
 func persistSession(s *cloud.Session) error {
 	return config.UpdatePreferences(func(p *config.Preferences) {
-		if p.Cloud == nil {
-			p.Cloud = &config.CloudPreference{}
-		}
-		p.Cloud.AccessToken = s.AccessToken
-		p.Cloud.RefreshToken = s.RefreshToken
-		p.Cloud.UserEmail = s.UserEmail
-		p.Cloud.UserID = s.UserID
-		p.Cloud.ExpiresAt = s.ExpiresAt
+		profile := ensureActiveProfile(p)
+		profile.AccessToken = s.AccessToken
+		profile.RefreshToken = s.RefreshToken
+		profile.UserEmail = s.UserEmail
+		profile.UserID = s.UserID
+		profile.ExpiresAt = s.ExpiresAt
 	})
 }
 
 func clearSession() error {
 	return config.UpdatePreferences(func(p *config.Preferences) {
-		if p.Cloud == nil {
+		profile := p.ActiveCloud()
+		if profile == nil {
 			return
 		}
-		p.Cloud.AccessToken = ""
-		p.Cloud.RefreshToken = ""
-		p.Cloud.UserEmail = ""
-		p.Cloud.UserID = ""
-		p.Cloud.ExpiresAt = 0
+		profile.AccessToken = ""
+		profile.RefreshToken = ""
+		profile.UserEmail = ""
+		profile.UserID = ""
+		profile.ExpiresAt = 0
 	})
+}
+
+// ensureActiveProfile resolves (or creates) the active cloud profile
+// so the device-flow grant has somewhere to write. Used by
+// persistSession — clear is a no-op when nothing is active.
+func ensureActiveProfile(p *config.Preferences) *config.CloudProfile {
+	if p.Cloud == nil {
+		p.Cloud = &config.CloudConfig{Active: "default", Profiles: map[string]*config.CloudProfile{}}
+	}
+	if p.Cloud.Profiles == nil {
+		p.Cloud.Profiles = map[string]*config.CloudProfile{}
+	}
+	if p.Cloud.Active == "" {
+		p.Cloud.Active = "default"
+	}
+	if _, ok := p.Cloud.Profiles[p.Cloud.Active]; !ok {
+		p.Cloud.Profiles[p.Cloud.Active] = &config.CloudProfile{}
+	}
+	return p.Cloud.Profiles[p.Cloud.Active]
 }

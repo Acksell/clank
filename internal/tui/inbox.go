@@ -2476,8 +2476,9 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 		if err != nil {
 			return worktreePushResultMsg{err: fmt.Errorf("load preferences: %w", err)}
 		}
-		if prefs.Cloud == nil || prefs.Cloud.GatewayURL == "" {
-			return worktreePushResultMsg{err: fmt.Errorf("cloud.gateway_url is not configured")}
+		profile := prefs.ActiveCloud()
+		if profile == nil || profile.GatewayURL == "" {
+			return worktreePushResultMsg{err: fmt.Errorf("no active cloud profile with gateway_url configured")}
 		}
 
 		devID, err := loadOrCreateDeviceID()
@@ -2486,8 +2487,8 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 		}
 
 		cli, err := syncclient.New(syncclient.Config{
-			BaseURL:   prefs.Cloud.GatewayURL,
-			AuthToken: prefs.Cloud.AccessToken,
+			BaseURL:   profile.GatewayURL,
+			AuthToken: profile.AccessToken,
 			DeviceID:  devID,
 		})
 		if err != nil {

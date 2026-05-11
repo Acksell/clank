@@ -36,6 +36,7 @@ func Command() *cobra.Command {
 		inboxCmd(),
 		pushCmd(),
 		pullCmd(),
+		cloudCmd(),
 	)
 
 	return root

@@ -98,7 +98,8 @@ func NewTCPClient(baseURL, authToken string) *Client {
 }
 
 // NewDefaultClient creates a client using, in priority order:
-//  1. preferences.ActiveHub == "remote" with cloud.gateway_url set.
+//  1. preferences.ActiveHub == "remote" with the active cloud profile's
+//     gateway_url set.
 //  2. The local Unix socket.
 //
 // Use NewLocalClient for daemon-control commands instead.
@@ -108,8 +109,10 @@ func NewDefaultClient() (*Client, error) {
 		// A corrupt prefs file must surface, not silently fall back to local.
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
-	if prefs.ActiveHub == "remote" && prefs.Cloud != nil && strings.TrimSpace(prefs.Cloud.GatewayURL) != "" {
-		return NewTCPClient(prefs.Cloud.GatewayURL, prefs.Cloud.AccessToken), nil
+	if prefs.ActiveHub == "remote" {
+		if p := prefs.ActiveCloud(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+			return NewTCPClient(p.GatewayURL, p.AccessToken), nil
+		}
 	}
 	sockPath, err := SocketPath()
 	if err != nil {
@@ -128,23 +131,25 @@ func NewLocalClient() (*Client, error) {
 	return NewClient(sockPath), nil
 }
 
-// NewCloudClient returns a TCP client targeting prefs.Cloud.GatewayURL
-// with Cloud.AccessToken as the bearer. Use for sync/migration calls
-// that must hit the cloud gateway regardless of ActiveHub (the laptop
-// daemon's gateway has Sync=nil and doesn't orchestrate migration).
+// NewCloudClient returns a TCP client targeting the active cloud
+// profile's gateway_url with its access_token as the bearer. Use for
+// sync/migration calls that must hit the cloud gateway regardless of
+// ActiveHub (the laptop daemon's gateway has Sync=nil and doesn't
+// orchestrate migration).
 //
-// Returns an error when Cloud is unset — surfaces a clear "configure
-// cloud.gateway_url" message rather than silently falling back to a
-// transport that would fail later.
+// Returns an error when no active cloud profile is configured —
+// surfaces a clear setup message rather than silently falling back to
+// a transport that would fail later.
 func NewCloudClient() (*Client, error) {
 	prefs, err := config.LoadPreferences()
 	if err != nil {
 		return nil, fmt.Errorf("load preferences: %w", err)
 	}
-	if prefs.Cloud == nil || strings.TrimSpace(prefs.Cloud.GatewayURL) == "" {
-		return nil, fmt.Errorf("cloud.gateway_url is not configured; set preferences.cloud.gateway_url before --migrate")
+	p := prefs.ActiveCloud()
+	if p == nil || strings.TrimSpace(p.GatewayURL) == "" {
+		return nil, fmt.Errorf("no active cloud profile configured; set up one via `clank cloud add` (or edit preferences.cloud)")
 	}
-	return NewTCPClient(prefs.Cloud.GatewayURL, prefs.Cloud.AccessToken), nil
+	return NewTCPClient(p.GatewayURL, p.AccessToken), nil
 }
 
 // IsRemoteActive reports whether NewDefaultClient would target a
@@ -155,7 +160,11 @@ func IsRemoteActive() bool {
 		log.Printf("daemonclient.IsRemoteActive: prefs load failed (%v) — assuming local; fix the file to switch", err)
 		return false
 	}
-	return prefs.ActiveHub == "remote" && prefs.Cloud != nil && strings.TrimSpace(prefs.Cloud.GatewayURL) != ""
+	if prefs.ActiveHub != "remote" {
+		return false
+	}
+	p := prefs.ActiveCloud()
+	return p != nil && strings.TrimSpace(p.GatewayURL) != ""
 }
 
 // ActiveHubLabel returns a short human-readable description of the
@@ -167,8 +176,10 @@ func ActiveHubLabel() string {
 		log.Printf("daemonclient.ActiveHubLabel: prefs load failed: %v", err)
 		return "unknown (prefs unreadable)"
 	}
-	if prefs.ActiveHub == "remote" && prefs.Cloud != nil && strings.TrimSpace(prefs.Cloud.GatewayURL) != "" {
-		return "remote (" + prefs.Cloud.GatewayURL + ")"
+	if prefs.ActiveHub == "remote" {
+		if p := prefs.ActiveCloud(); p != nil && strings.TrimSpace(p.GatewayURL) != "" {
+			return "remote (" + p.GatewayURL + ")"
+		}
 	}
 	return "local"
 }
