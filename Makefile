@@ -117,6 +117,13 @@ cloud-hub: install
 # docker/README.md for the full smoke recipe (register worktree, push
 # checkpoint, trigger migration).
 
+.PHONY: dev
+# One-command local dev: spawn a Cloudflare quick tunnel pointing at
+# minio, write the URL into docker/.env, bring the stack up. Foreground;
+# ctrl-c tears down both. See scripts/dev.sh for details.
+dev:
+	@bash scripts/dev.sh
+
 .PHONY: docker-setup docker-up docker-down docker-build docker-logs tunnel
 docker-setup:
 	@if ! grep -q '^[^#]*[[:space:]]clank-minio\b' /etc/hosts; then \

@@ -34,21 +34,18 @@ network with no host-file injection. Expose minio publicly via a
 Cloudflare quick tunnel and point clankd at the public URL.
 
 ```sh
-# Terminal 1: keep this running
-make tunnel
-# Prints: https://<random-words>.trycloudflare.com — copy it.
-
-# In docker/.env (or your shell env):
-CLANK_SYNC_S3_ENDPOINT=https://<random-words>.trycloudflare.com
-
-# Terminal 2:
-make docker-up
+make dev
 ```
 
-Presigned URLs are now signed with the public hostname; laptop and
-sprite both reach it via public DNS, signatures match. Quick tunnels
-rotate per restart, so re-run `make tunnel` and update the env on
-each session.
+That spawns cloudflared, captures the trycloudflare URL, writes it to
+`docker/.env` as `CLANK_SYNC_S3_ENDPOINT`, and brings the stack up.
+Foreground; ctrl-c tears down the tunnel + the docker stack together.
+Quick tunnels rotate per restart so re-run `make dev` if you stop and
+start again.
+
+If you want to manage the tunnel yourself (e.g. a stable Cloudflare
+named tunnel), `make tunnel` runs just cloudflared and prints the URL
+for you to paste into `docker/.env` manually.
 
 ### Why presigned URLs need one hostname
 

@@ -66,7 +66,21 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
-	clientOpts := []func(*s3.Options){}
+	// aws-sdk-go-v2/service/s3 v1.x defaults to "WhenSupported" for both
+	// request-checksum-calc and response-checksum-validation, which means
+	// the SDK adds x-amz-checksum-* / x-amz-checksum-mode headers on PUT
+	// and HEAD. MinIO recent releases accept PUT with these but reject
+	// HEAD with 403 SignatureDoesNotMatch when the checksum-mode header
+	// gets included in the signed canonical request. R2 / Tigris have
+	// similar quirks. Forcing WhenRequired keeps the SDK out of the
+	// checksum-extension business unless an operation strictly needs it
+	// (which our manifest+bundle puts don't).
+	clientOpts := []func(*s3.Options){
+		func(o *s3.Options) {
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		},
+	}
 	if cfg.Endpoint != "" {
 		clientOpts = append(clientOpts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)

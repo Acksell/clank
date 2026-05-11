@@ -81,11 +81,16 @@ func runRemoteList(cmd *cobra.Command, verbose bool) error {
 		if gw == "" {
 			gw = "(no gateway_url)"
 		}
-		identity := ""
-		if r.UserEmail != "" {
-			identity = "  " + r.UserEmail
+		identity := "(not signed in)"
+		switch {
+		case r.UserEmail != "":
+			identity = r.UserEmail
+		case r.AccessToken != "" && r.AuthURL == "":
+			// Static-bearer profile (dev / self-hosted with no auth server).
+			// No identity to show; signal it's a token-based remote.
+			identity = "(static bearer)"
 		}
-		fmt.Fprintf(out, "%s%s\t%s%s\n", marker, name, gw, identity)
+		fmt.Fprintf(out, "%s%s\t%s\t%s\n", marker, name, gw, identity)
 	}
 	return nil
 }
