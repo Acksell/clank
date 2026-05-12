@@ -33,6 +33,12 @@ var ErrForbidden = errors.New("sync: forbidden")
 // after re-uploading.
 var ErrBlobNotUploaded = errors.New("sync: blob not yet uploaded")
 
+// ErrInvalidRequest is returned by service-layer methods when the
+// supplied request fails validation (missing required fields, etc.).
+// HTTP handlers map this to 400 Bad Request rather than letting plain
+// validation errors flatten to 500.
+var ErrInvalidRequest = errors.New("sync: invalid request")
+
 // OwnerKind enumerates which actor type owns a worktree's write
 // authority. New values require schema-level coordination — never use
 // raw string literals at call sites.

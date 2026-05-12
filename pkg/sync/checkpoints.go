@@ -53,10 +53,10 @@ type CommitCheckpointResult struct {
 func (s *Server) CreateCheckpoint(ctx context.Context, userID string, req CreateCheckpointRequest) (CreateCheckpointResult, error) {
 	if req.WorktreeID == "" || req.HeadCommit == "" || req.IndexTree == "" ||
 		req.WorktreeTree == "" || req.IncrementalCommit == "" {
-		return CreateCheckpointResult{}, fmt.Errorf("sync: worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required")
+		return CreateCheckpointResult{}, fmt.Errorf("%w: worktree_id, head_commit, index_tree, worktree_tree, incremental_commit are required", ErrInvalidRequest)
 	}
 	if req.CreatedBy == "" {
-		return CreateCheckpointResult{}, fmt.Errorf("sync: created_by is required")
+		return CreateCheckpointResult{}, fmt.Errorf("%w: created_by is required", ErrInvalidRequest)
 	}
 
 	wt, err := s.cfg.Store.GetWorktreeByID(ctx, req.WorktreeID)

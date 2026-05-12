@@ -282,7 +282,18 @@ func (s *Server) handleCreateCheckpoint(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		s.log.Printf("sync: create checkpoint: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, ErrInvalidRequest):
+			// Validation message is public-facing — tells the client
+			// which required fields are missing.
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, ErrForbidden):
+			// Defense-in-depth: handler already gated tenancy above, but
+			// the service re-checks. Map to 403 if it ever fires.
+			http.Error(w, "forbidden", http.StatusForbidden)
+		default:
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -327,11 +338,16 @@ func (s *Server) handleCommitCheckpoint(w http.ResponseWriter, r *http.Request) 
 	result, err := s.CommitCheckpoint(r.Context(), caller.UserID, checkpointID)
 	if err != nil {
 		s.log.Printf("sync: commit checkpoint: %v", err)
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrBlobNotUploaded) {
-			status = http.StatusConflict
+		switch {
+		case errors.Is(err, ErrBlobNotUploaded):
+			// Blob list is public-facing — tells the client which blob
+			// they still need to upload before retrying.
+			http.Error(w, err.Error(), http.StatusConflict)
+		case errors.Is(err, ErrForbidden):
+			http.Error(w, "forbidden", http.StatusForbidden)
+		default:
+			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		http.Error(w, err.Error(), status)
 		return
 	}
 

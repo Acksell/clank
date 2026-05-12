@@ -260,6 +260,29 @@ func TestCommitCheckpoint_RejectsIfBlobMissing(t *testing.T) {
 	}
 }
 
+// TestCreateCheckpoint_MissingFieldsReturns400 pins the validation
+// status: an empty required field must surface as 400 with a body that
+// names the missing fields, not as a 500 with a wrapped service error.
+func TestCreateCheckpoint_MissingFieldsReturns400(t *testing.T) {
+	t.Parallel()
+	httpSrv, _, _ := newTestServer(t)
+	wt := postJSON[map[string]any](t, httpSrv.URL+"/v1/worktrees", map[string]string{
+		"display_name": "r",
+	})
+	worktreeID := wt["id"].(string)
+
+	// head_commit omitted.
+	resp := mustPostExpectStatus(t, httpSrv.URL+"/v1/checkpoints", map[string]string{
+		"worktree_id":        worktreeID,
+		"index_tree":         "x",
+		"worktree_tree":      "x",
+		"incremental_commit": "x",
+	}, http.StatusBadRequest)
+	if !strings.Contains(string(resp), "head_commit") {
+		t.Fatalf("400 body should name the missing field, got %q", resp)
+	}
+}
+
 // TestMultipleLaptopsSameUserShare regression-tests the removal of
 // per-device ownership: any laptop of the same user can push to the
 // same worktree without a 403 (last-write-wins is the new model).
