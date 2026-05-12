@@ -74,8 +74,10 @@ make docker-down    # stop + remove containers
 Health-checks:
 
 ```sh
-curl -fsS http://localhost:7878/ping           # clankd (open without auth)
-curl -fsS http://localhost:7878/v1/health      # clankd's embedded sync server
+# /ping and /v1/health are behind the gateway's auth middleware in
+# TCP mode, so a bearer is required. After `clank login` (below),
+# the simplest check is:
+clank                                          # exits 0 if the active remote is reachable + authed
 open http://localhost:9001                     # minio console (clankadmin / clankadmin)
 ```
 
@@ -87,11 +89,16 @@ docker compose -f docker/docker-compose.yml logs -f clankd
 
 ## Smoke-testing the migration flow
 
-The dev stack uses a single static bearer token on both sides. The
-server reads it from the `CLANK_AUTH_TOKEN` env var (default
-`clank-dev-token-change-me` if you haven't created `docker/.env`); the
-laptop reads it from the active remote's `access_token` in
-`~/.clank/preferences.json`. **Both must match.**
+The dev stack runs the gateway in HS256 JWT mode
+(`CLANK_AUTH_JWT_SECRET` in `docker-compose.yml`, wired to the
+auth-stub's `CLANK_AUTH_STUB_SECRET`). `clank login` against the
+auth-stub mints an HS256-signed JWT that the gateway verifies with
+the same secret — no shared static token to keep in sync; the
+laptop's `access_token` is the issued JWT.
+
+Other modes (OIDC, opt-in static bearer) are mutually exclusive —
+see [internal/cli/daemoncli/auth.go](../internal/cli/daemoncli/auth.go)
+for the env-var selection algorithm.
 
 From the laptop, with the stack running:
 
@@ -102,10 +109,10 @@ cd ~/some-real-repo
 # --auth-url points at the dev auth-stub so `clank login` works.
 clank remote add dev \
   --gateway-url=http://localhost:7878 \
-  --auth-url=http://localhost:7879 \
-  --token=clank-dev-token-change-me
+  --auth-url=http://localhost:7879
 
-# Sign in via device flow against the stub (auto-approves):
+# Sign in via device flow against the stub (auto-approves and mints
+# an HS256 JWT the gateway will verify):
 clank login
 
 # Verify:
@@ -151,9 +158,11 @@ Edit `docker/preferences.json`:
 
 ```json
 {
-  "remote_hub":   { "auth_token": "<your-bearer>" },
   "default_launch_host_provider": "flyio",
-  "flyio":        { "api_token": "<fly-api-token>", "organization_slug": "<slug>" }
+  "flyio": {
+    "api_token": "<fly-api-token>",
+    "organization_slug": "<slug>"
+  }
 }
 ```
 
