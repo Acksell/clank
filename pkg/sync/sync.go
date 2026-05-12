@@ -113,6 +113,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 // Handler returns the public HTTP handler. Routes:
 //
 //	GET  /v1/health                       — liveness (no auth)
+//	GET  /v1/worktrees                    — list the caller's worktrees with owner info
 //	POST /v1/worktrees                    — register a worktree, returns ID
 //	GET  /v1/worktrees/{id}               — read worktree state (gateway uses on migration)
 //	POST /v1/worktrees/{id}/owner         — atomic ownership transfer
@@ -122,6 +123,7 @@ func NewServer(cfg Config, lg *log.Logger) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /v1/health", s.handleHealth)
+	mx.HandleFunc("GET /v1/worktrees", s.handleListWorktrees)
 	mx.HandleFunc("POST /v1/worktrees", s.handleRegisterWorktree)
 	mx.HandleFunc("GET /v1/worktrees/{id}", s.handleGetWorktree)
 	mx.HandleFunc("POST /v1/worktrees/{id}/owner", s.handleTransferOwnership)

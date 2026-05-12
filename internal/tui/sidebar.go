@@ -60,6 +60,16 @@ type worktreeEntry struct {
 	Done            int
 	Archived        int
 	LatestUpdatedAt time.Time
+
+	// WorktreeID is the sync-server-side identifier for this LocalPath,
+	// captured from any session that has it set. Empty when none of
+	// the sessions have ever been registered with a remote.
+	WorktreeID string
+
+	// OwnerKind is "local", "remote", or "" (unknown / not synced).
+	// Populated by SetWorktreeOwners once the inbox fetches the remote's
+	// view of this user's worktrees.
+	OwnerKind string
 }
 
 // IsDone returns true when every session is done or archived.
@@ -146,6 +156,22 @@ func (m *SidebarModel) SetCloudStatus(s cloudAuthStatus) { m.cloudStatus = s }
 // cloudStatusChecking; outside that state it's ignored.
 func (m *SidebarModel) SetCloudSpinnerFrame(frame string) { m.cloudSpinnerFrame = frame }
 
+// SetWorktreeOwners stamps the latest known owner_kind onto each entry
+// keyed by its WorktreeID. Entries whose WorktreeID isn't in the map
+// (worktree never pushed, or the remote is offline) keep OwnerKind="".
+// Callers (the inbox) refresh this whenever they re-fetch sessions.
+func (m *SidebarModel) SetWorktreeOwners(byWorktreeID map[string]string) {
+	for i := range m.entries {
+		id := m.entries[i].WorktreeID
+		if id == "" {
+			continue
+		}
+		if kind, ok := byWorktreeID[id]; ok {
+			m.entries[i].OwnerKind = kind
+		}
+	}
+}
+
 // NewSidebarModel creates a sidebar for the given repo identity.
 // projectDir is retained for display purposes only; branch/worktree ops
 // are addressed by (hostname, gitRef).
@@ -194,6 +220,12 @@ func (m *SidebarModel) SetSessions(sessions []agent.SessionInfo) {
 				Label:     filepath.Base(path),
 			}}
 			byPath[path] = acc
+		}
+		// Capture the worktree id off the first session that has one;
+		// `clank push` writes the same id back into every session on
+		// this LocalPath, so later sessions just confirm.
+		if acc.WorktreeID == "" && s.GitRef.WorktreeID != "" {
+			acc.WorktreeID = s.GitRef.WorktreeID
 		}
 		acc.Total++
 		switch s.Visibility {
@@ -627,8 +659,17 @@ func (m *SidebarModel) renderWorktreeEntry(e worktreeEntry, idx, maxWidth int) s
 		prefix = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("> ")
 	}
 
+	// Owner glyph: rendered after the label when the worktree currently
+	// lives on a remote sandbox. Local-owned (or unknown) gets nothing
+	// so the common case stays visually quiet.
+	ownerGlyph := ""
+	if e.OwnerKind == "remote" {
+		ownerGlyph = " " + lipgloss.NewStyle().Foreground(primaryColor).Render("☁")
+	}
+
 	line := prefix + nameStyle.Render(label)
 	line += lipgloss.NewStyle().Foreground(badgeColor).Render(countBadge)
+	line += ownerGlyph
 	return line
 }
 

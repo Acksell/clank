@@ -116,6 +116,13 @@ func (s *Server) GetWorktree(ctx context.Context, userID, worktreeID string) (Wo
 	return wt, nil
 }
 
+// ListWorktrees returns all worktrees belonging to userID. Used by the
+// TUI to render ownership glyphs in the sidebar. Tenancy is enforced
+// at the store level (ListWorktreesByUser).
+func (s *Server) ListWorktrees(ctx context.Context, userID string) ([]Worktree, error) {
+	return s.cfg.Store.ListWorktreesByUser(ctx, userID)
+}
+
 // TransferOwnership atomically transfers a worktree's owner. userID
 // is the tenancy gate; toKind/toID/expectedOwnerID are forwarded to
 // the store's optimistic-concurrency guard. Returns ErrOwnerMismatch

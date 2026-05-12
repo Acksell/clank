@@ -29,6 +29,26 @@ type worktreeResponse struct {
 	UpdatedAt              time.Time `json:"updated_at"`
 }
 
+// handleListWorktrees returns all worktrees belonging to the caller.
+// Used by the TUI sidebar to render ownership state per worktree.
+func (s *Server) handleListWorktrees(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.callerOrUnauthorized(w, r)
+	if !ok {
+		return
+	}
+	wts, err := s.ListWorktrees(r.Context(), caller.UserID)
+	if err != nil {
+		s.log.Printf("sync: list worktrees: %v", err)
+		http.Error(w, "list worktrees", http.StatusInternalServerError)
+		return
+	}
+	out := make([]worktreeResponse, 0, len(wts))
+	for _, wt := range wts {
+		out = append(out, worktreeToResponse(wt))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"worktrees": out})
+}
+
 // handleGetWorktree returns the worktree row to its owning user.
 // Used by the gateway during MigrateWorktree to read
 // latest_synced_checkpoint and validate ownership.

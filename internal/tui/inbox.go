@@ -346,7 +346,11 @@ func (m *InboxModel) discoverForProvidersCmd(providers []importProvider) tea.Cmd
 	}
 }
 
-// loadDataCmd fetches sessions from the daemon.
+// loadDataCmd fetches sessions from the daemon, plus the active
+// remote's worktree-ownership map so the sidebar can render the ☁
+// glyph for sprite-owned entries. Failures on the worktree fetch are
+// swallowed — they aren't essential for showing sessions, and a
+// local-only daemon legitimately has no remote to query.
 func (m *InboxModel) loadDataCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -356,14 +360,38 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
-		return inboxDataMsg{sessions: sessions}
+		owners := loadWorktreeOwners(ctx)
+		return inboxDataMsg{sessions: sessions, worktreeOwners: owners}
 	}
+}
+
+// loadWorktreeOwners queries the active remote (if any) for the
+// caller's worktrees and returns id→owner_kind. Returns an empty map
+// when no remote is configured, when the remote is unreachable, or
+// when the local daemon (Sync=nil) is the only thing addressable.
+// The sidebar glyphs are a hint, not a critical signal — silent
+// failure is the right behavior.
+func loadWorktreeOwners(ctx context.Context) map[string]string {
+	cli, err := daemonclient.NewRemoteClient()
+	if err != nil {
+		return nil
+	}
+	wts, err := cli.ListWorktrees(ctx)
+	if err != nil || len(wts) == 0 {
+		return nil
+	}
+	owners := make(map[string]string, len(wts))
+	for _, wt := range wts {
+		owners[wt.ID] = wt.OwnerKind
+	}
+	return owners
 }
 
 // inboxDataMsg carries fetched session data.
 type inboxDataMsg struct {
-	sessions []agent.SessionInfo
-	err      error
+	sessions       []agent.SessionInfo
+	worktreeOwners map[string]string // worktree_id → "local"|"remote"; nil when remote unavailable
+	err            error
 }
 
 // inboxSearchResultMsg carries search results from the daemon.
@@ -594,6 +622,9 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
+			if msg.worktreeOwners != nil {
+				m.sidebar.SetWorktreeOwners(msg.worktreeOwners)
+			}
 			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil
