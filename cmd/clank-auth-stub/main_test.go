@@ -5,63 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestJWT_RoundTrip(t *testing.T) {
-	t.Parallel()
-	secret := []byte("test-secret")
-	tok, err := signJWT(secret, map[string]any{
-		"sub":   "user-1",
-		"email": "u@example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, err := verifyJWT(secret, tok)
-	if err != nil {
-		t.Fatalf("verify: %v", err)
-	}
-	if claims["sub"] != "user-1" {
-		t.Errorf("sub: got %v, want user-1", claims["sub"])
-	}
-}
-
-func TestJWT_RejectsTamperedSignature(t *testing.T) {
-	t.Parallel()
-	tok, err := signJWT([]byte("test-secret"), map[string]any{"sub": "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Flip one character in the signature segment.
-	parts := strings.Split(tok, ".")
-	parts[2] = strings.Repeat("a", len(parts[2]))
-	tampered := strings.Join(parts, ".")
-	if _, err := verifyJWT([]byte("test-secret"), tampered); err == nil {
-		t.Fatal("verifyJWT should reject tampered signature")
-	}
-}
-
-func TestJWT_RejectsExpired(t *testing.T) {
-	t.Parallel()
-	tok, err := signJWT([]byte("test-secret"), map[string]any{
-		"sub": "x",
-		"exp": time.Now().Add(-time.Minute).Unix(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := verifyJWT([]byte("test-secret"), tok); err == nil {
-		t.Fatal("expired token should not verify")
-	}
-}
-
 // TestDeviceFlow_AutoApproves walks the stub through the device-flow
 // shape the laptop's internal/cloud client expects: start → poll →
-// /me with the returned bearer.
+// /me with the returned bearer. JWT signing/verifying primitives are
+// tested in internal/jwths256.
 func TestDeviceFlow_AutoApproves(t *testing.T) {
 	t.Parallel()
 	cfg := config{

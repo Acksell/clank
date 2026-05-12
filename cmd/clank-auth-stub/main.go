@@ -23,10 +23,7 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -39,6 +36,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/acksell/clank/internal/jwths256"
 )
 
 const defaultListen = ":7879"
@@ -164,7 +163,7 @@ func (s *server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	exp := time.Now().Add(s.cfg.tokenTTL).Unix()
-	tok, err := signJWT(s.cfg.secret, map[string]any{
+	tok, err := jwths256.Sign(s.cfg.secret, map[string]any{
 		"sub":   s.cfg.userID,
 		"email": s.cfg.email,
 		"iat":   time.Now().Unix(),
@@ -228,54 +227,7 @@ func (s *server) verifyBearer(r *http.Request) (map[string]any, error) {
 	if !strings.HasPrefix(auth, prefix) {
 		return nil, errors.New("missing bearer")
 	}
-	return verifyJWT(s.cfg.secret, auth[len(prefix):])
-}
-
-// --- JWT (HS256, no deps) -------------------------------------------
-
-func signJWT(secret []byte, claims map[string]any) (string, error) {
-	header := map[string]string{"alg": "HS256", "typ": "JWT"}
-	hb, err := json.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	cb, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	signingInput := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(cb)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(signingInput))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return signingInput + "." + sig, nil
-}
-
-func verifyJWT(secret []byte, token string) (map[string]any, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, errors.New("malformed jwt")
-	}
-	signingInput := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(signingInput))
-	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(want), []byte(parts[2])) {
-		return nil, errors.New("bad signature")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	var claims map[string]any
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, err
-	}
-	if expFloat, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(expFloat) {
-			return nil, errors.New("expired")
-		}
-	}
-	return claims, nil
+	return jwths256.Verify(s.cfg.secret, auth[len(prefix):])
 }
 
 // --- misc helpers ----------------------------------------------------
