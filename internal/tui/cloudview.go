@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -99,6 +100,15 @@ type cloudView struct {
 	cloudURL string
 	client   *cloud.Client
 
+	// remoteNames is the sorted list of configured remotes — rendered
+	// as a "remotes: dev* managed enterprise" line at the top of the
+	// panel so the user sees what they can tab to.
+	remoteNames []string
+	// activeRemoteName is the currently-active entry in remoteNames.
+	// Re-read on every Init so prefs edits made out of band (e.g. via
+	// `clank remote switch`) take effect on the next panel open.
+	activeRemoteName string
+
 	// Reachability tracking — fed into Status() so the sidebar
 	// indicator can distinguish "identity ok, server unreachable"
 	// from "identity ok, all good". Updated by message handlers
@@ -145,15 +155,26 @@ func newCloudView() cloudView {
 }
 
 // Init loads prefs, decides the entry phase, and (if there's a saved
-// session) kicks off a /me to verify it. Operates on the active cloud
-// profile only — switching profiles is a separate user action.
+// session) kicks off a /me to verify it. Operates on the active
+// remote; tab in the panel switches active and re-runs Init for the
+// newly-selected remote.
 func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
+	m.remoteNames = remoteNamesSorted(prefs)
+	m.activeRemoteName = ""
+	if prefs.Remote != nil {
+		m.activeRemoteName = prefs.Remote.Active
+	}
 	p := prefs.ActiveRemote()
 	m.cloudURL = ""
 	if p != nil {
 		m.cloudURL = p.AuthURL
 	}
+	// Clear any session carried over from a previous remote so the
+	// signed-in card doesn't render with stale data while the new
+	// remote's session is still loading.
+	m.session = nil
+	m.me = nil
 	if m.cloudURL == "" {
 		m.phase = cloudPhaseNotConfigured
 		return nil
@@ -274,6 +295,19 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 }
 
 func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
+	// Tab cycles through configured remotes regardless of phase, so a
+	// signed-out / signed-in / not-configured state on one remote
+	// doesn't trap the user out of switching. Persists active, then
+	// re-Inits so the panel reflects the new selection.
+	if len(m.remoteNames) > 1 && key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) {
+		next := nextRemoteName(m.remoteNames, m.activeRemoteName)
+		if next != m.activeRemoteName {
+			_ = switchToRemote(next)
+			cmd := m.Init()
+			return m, cmd
+		}
+	}
+
 	switch m.phase {
 	case cloudPhaseNotConfigured:
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
@@ -412,6 +446,25 @@ func openBrowser(uriComplete, uri string) {
 func (m cloudView) View() string {
 	header := lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("☁  Cloud")
 
+	// Remote selector — rendered between header and phase body so the
+	// user sees what they can tab to. Hidden when only one (or zero)
+	// remote is configured; there's nothing to switch to.
+	var selector string
+	if len(m.remoteNames) > 1 {
+		muted := lipgloss.NewStyle().Foreground(mutedColor)
+		active := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
+		parts := []string{muted.Render("remote:")}
+		for _, n := range m.remoteNames {
+			if n == m.activeRemoteName {
+				parts = append(parts, active.Render("["+n+"]"))
+			} else {
+				parts = append(parts, muted.Render(n))
+			}
+		}
+		parts = append(parts, muted.Render("(tab to switch)"))
+		selector = strings.Join(parts, " ") + "\n\n"
+	}
+
 	var body string
 	switch m.phase {
 	case cloudPhaseLoading:
@@ -433,7 +486,7 @@ func (m cloudView) View() string {
 			lipgloss.NewStyle().Foreground(mutedColor).Render("press any key to try again")
 	}
 
-	return header + "\n\n" + body
+	return header + "\n\n" + selector + body
 }
 
 func (m cloudView) viewNotConfigured() string {
@@ -589,6 +642,48 @@ func clearSession() error {
 		profile.UserID = ""
 		profile.ExpiresAt = 0
 	})
+}
+
+// remoteNamesSorted returns the configured remote names in
+// deterministic alphabetical order. Empty when no remotes exist.
+func remoteNamesSorted(prefs config.Preferences) []string {
+	if prefs.Remote == nil || len(prefs.Remote.Profiles) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(prefs.Remote.Profiles))
+	for k := range prefs.Remote.Profiles {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// switchToRemote sets the named remote as active in preferences. Used
+// by the cloud panel's tab handler.
+func switchToRemote(name string) error {
+	return config.UpdatePreferences(func(p *config.Preferences) {
+		if p.Remote == nil || p.Remote.Profiles == nil {
+			return
+		}
+		if _, ok := p.Remote.Profiles[name]; !ok {
+			return
+		}
+		p.Remote.Active = name
+	})
+}
+
+// nextRemoteName returns the next remote in the sorted list after
+// current, wrapping around. Empty string out when names is empty.
+func nextRemoteName(names []string, current string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	for i, n := range names {
+		if n == current {
+			return names[(i+1)%len(names)]
+		}
+	}
+	return names[0]
 }
 
 // ensureActiveProfile resolves (or creates) the active cloud profile
