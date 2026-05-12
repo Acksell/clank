@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -66,7 +67,17 @@ func loadConfig() (config, error) {
 		}
 		c.tokenTTL = d
 	}
-	c.publicURL = envOrDefault("CLANK_AUTH_STUB_PUBLIC_URL", "http://localhost"+c.listen)
+	if v := os.Getenv("CLANK_AUTH_STUB_PUBLIC_URL"); v != "" {
+		c.publicURL = v
+	} else {
+		// Build "http://localhost:<port>" from listen — net.SplitHostPort
+		// so values like "0.0.0.0:7879" don't produce "http://localhost0.0.0.0:7879".
+		_, port, err := net.SplitHostPort(c.listen)
+		if err != nil {
+			port = strings.TrimPrefix(c.listen, ":")
+		}
+		c.publicURL = "http://localhost:" + port
+	}
 	return c, nil
 }
 

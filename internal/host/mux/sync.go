@@ -83,6 +83,10 @@ type applyFromURLsRequest struct {
 // Returns 204 on success. Errors are JSON {code, error}; code is one
 // of url_expired / s3_unreachable / apply_failed / bad_manifest /
 // bad_request so the gateway can decide whether to retry.
+//
+// TODO(coderabbit): bound manifest via io.LimitReader before ReadAll;
+// stream head/incremental bundles into checkpoint.Apply rather than
+// buffering. https://github.com/Acksell/clank/pull/17#discussion_r3227672622
 func (m *Mux) handleSyncApplyFromURLs(w http.ResponseWriter, r *http.Request) {
 	var req applyFromURLsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

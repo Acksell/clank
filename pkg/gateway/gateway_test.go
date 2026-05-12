@@ -169,16 +169,23 @@ func TestProxy_BlocksSyncPathsWhenSyncNil(t *testing.T) {
 	srv := httptest.NewServer(localAuth(g.Handler(), "test"))
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Post(srv.URL+"/sync/apply?repo=foo", "application/octet-stream", nil)
-	if err != nil {
-		t.Fatalf("POST /sync/apply: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status: got %d, want 404", resp.StatusCode)
-	}
-	if upstreamCalled {
-		t.Errorf("upstream was contacted; the gateway should have denied the request before proxying")
+	// Both the direct path and the host-prefixed path must be blocked;
+	// the gateway strips /hosts/<name>/ during proxying, so guarding only
+	// the raw incoming path would let /hosts/local/sync/* bypass the
+	// boundary and reach the host mux's unconditional /sync/* handlers.
+	for _, path := range []string{"/sync/apply?repo=foo", "/hosts/local/sync/apply-from-urls"} {
+		upstreamCalled = false
+		resp, err := http.Post(srv.URL+path, "application/octet-stream", nil)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("POST %s status: got %d, want 404", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+		if upstreamCalled {
+			t.Errorf("POST %s reached upstream; the gateway should have denied before proxying", path)
+		}
 	}
 }
 

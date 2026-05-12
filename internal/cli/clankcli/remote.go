@@ -77,6 +77,12 @@ func runRemoteList(cmd *cobra.Command, verbose bool) error {
 			continue
 		}
 		r := prefs.Remote.Profiles[name]
+		if r == nil {
+			// nil entry only reachable via hand-edited preferences.json;
+			// keep listing usable instead of panicking on the deref below.
+			fmt.Fprintf(out, "%s%s\t(invalid profile)\t(not signed in)\n", marker, name)
+			continue
+		}
 		gw := r.GatewayURL
 		if gw == "" {
 			gw = "(no gateway_url)"
@@ -193,21 +199,35 @@ func remoteRemoveCmd() *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
+			var removed bool
 			err := config.UpdatePreferences(func(p *config.Preferences) {
 				if p.Remote == nil || p.Remote.Profiles == nil {
 					return
 				}
+				if _, ok := p.Remote.Profiles[name]; !ok {
+					return
+				}
+				removed = true
 				delete(p.Remote.Profiles, name)
 				if p.Remote.Active == name {
 					p.Remote.Active = ""
+					// Deterministic fallback: pick the lowest-name remote so
+					// `remote remove` is reproducible across runs.
+					keys := make([]string, 0, len(p.Remote.Profiles))
 					for k := range p.Remote.Profiles {
-						p.Remote.Active = k
-						break
+						keys = append(keys, k)
+					}
+					sort.Strings(keys)
+					if len(keys) > 0 {
+						p.Remote.Active = keys[0]
 					}
 				}
 			})
 			if err != nil {
 				return err
+			}
+			if !removed {
+				return fmt.Errorf("no remote named %q", name)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "removed remote %q\n", name)
 			return nil

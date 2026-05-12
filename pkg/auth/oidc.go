@@ -39,8 +39,9 @@ type OIDCConfig struct {
 	// defaults to ["RS256", "ES256"]. "none" is never accepted.
 	Algorithms []string
 
-	// HTTPTimeout caps the discovery HTTP request and the underlying
-	// JWKS fetches. Optional; defaults to 10s.
+	// HTTPTimeout caps the OIDC discovery HTTP request. Optional;
+	// defaults to 10s. JWKS fetches and refreshes use the keyfunc
+	// library's defaults — configure those separately if needed.
 	HTTPTimeout time.Duration
 }
 

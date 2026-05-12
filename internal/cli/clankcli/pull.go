@@ -86,25 +86,31 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			if err != nil {
 				return fmt.Errorf("remote client: %w", err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer cancel()
 
-			// Phase 1: materialize
+			// Phase 1: materialize. Independent budget — sandbox cold-start
+			// + checkpoint can run minutes on its own; if we shared a single
+			// 10-min ctx with phases 2/3 a slow materialize would drain the
+			// budget before download/apply/commit even start.
+			materializeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
 			fmt.Fprintf(cmd.OutOrStdout(), "asking sandbox to checkpoint...\n")
-			mres, err := dc.MaterializeMigration(ctx, worktreeID)
+			mres, err := dc.MaterializeMigration(materializeCtx, worktreeID)
 			if err != nil {
 				return fmt.Errorf("materialize: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "checkpoint %s (HEAD %s); downloading...\n", mres.CheckpointID, shortSHA(mres.HeadCommit))
 
+			applyCtx, applyCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer applyCancel()
+
 			// Phase 2: download + apply locally
-			if err := applyRemoteCheckpoint(ctx, absRepo, mres); err != nil {
+			if err := applyRemoteCheckpoint(applyCtx, absRepo, mres); err != nil {
 				return fmt.Errorf("apply checkpoint locally: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "applied to %s; committing ownership transfer...\n", absRepo)
 
 			// Phase 3: commit ownership transfer
-			res, err := dc.CommitMigration(ctx, worktreeID, mres.CheckpointID, mres.MigrationToken)
+			res, err := dc.CommitMigration(applyCtx, worktreeID, mres.CheckpointID, mres.MigrationToken)
 			if err != nil {
 				return fmt.Errorf("commit migration (apply succeeded; rerun pull to retry the ownership flip): %w", err)
 			}
@@ -124,6 +130,8 @@ Without --migrate: bare data-only pull is post-MVP.`,
 func applyRemoteCheckpoint(ctx context.Context, repoPath string, mres *daemonclient.MaterializeResponse) error {
 	cli := &http.Client{Timeout: 5 * time.Minute}
 
+	// TODO(coderabbit): stream bundle bytes directly into checkpoint.Apply
+	// instead of buffering in RAM. https://github.com/Acksell/clank/pull/17#discussion_r3227672576
 	manifestBytes, err := fetchURL(ctx, cli, mres.ManifestURL)
 	if err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
