@@ -51,11 +51,10 @@ func (c *Client) RegisterWorktree(ctx context.Context, displayName string) (stri
 
 // PushCheckpoint runs the full checkpoint upload flow: build local
 // bundles, request presigned URLs, upload each blob, commit. Cleans up
-// the temp bundle files on return. Either DeviceID (laptop callers) or
-// HostID (sprite callers) must be set on the client.
+// the temp bundle files on return.
 func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string) (*CheckpointResult, error) {
-	if c.cfg.DeviceID == "" && c.cfg.HostID == "" {
-		return nil, errors.New("syncclient: DeviceID or HostID is required for the checkpoint flow")
+	if c.cfg.DeviceID == "" {
+		return nil, errors.New("syncclient: DeviceID is required for the checkpoint flow")
 	}
 	if worktreeID == "" {
 		return nil, errors.New("syncclient: worktreeID is required")
@@ -65,11 +64,7 @@ func (c *Client) PushCheckpoint(ctx context.Context, worktreeID, repoPath string
 	// the server assigns the canonical ID on /v1/checkpoints. We use
 	// the server's ID as the manifest's CheckpointID at the end.
 	tempID := "pending-" + randString(12)
-	createdBy := "laptop:" + c.cfg.DeviceID
-	if c.cfg.HostID != "" {
-		createdBy = "sprite:" + c.cfg.HostID
-	}
-	builder := checkpoint.NewBuilder(repoPath, createdBy)
+	builder := checkpoint.NewBuilder(repoPath, "laptop:"+c.cfg.DeviceID)
 	res, err := builder.Build(ctx, tempID)
 	if err != nil {
 		return nil, fmt.Errorf("build checkpoint: %w", err)
@@ -139,14 +134,10 @@ func (c *Client) postJSON(ctx context.Context, path string, body any, into any) 
 	if c.cfg.AuthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.AuthToken)
 	}
-	// Exactly one of these is set per the Config invariant; the sync
-	// server's HeaderCallerVerifier rejects both being present. Pinned
-	// in pkg/sync.HeaderDeviceID / HeaderHostID.
 	if c.cfg.DeviceID != "" {
+		// X-Clank-Device-Id identifies this laptop in worktree ownership
+		// records. Pinned in pkg/sync.HeaderDeviceID.
 		req.Header.Set("X-Clank-Device-Id", c.cfg.DeviceID)
-	}
-	if c.cfg.HostID != "" {
-		req.Header.Set("X-Clank-Host-Id", c.cfg.HostID)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {

@@ -116,8 +116,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// Cloud-sync ingress. The gateway orchestrates pushes and pulls
 	// through these endpoints; the sandbox is a pure responder.
 	//
-	//   - POST /sync/apply              — apply a checkpoint from multipart bytes
-	//                                     (legacy; kept for tests / rollback escape).
 	//   - POST /sync/apply-from-urls    — apply a checkpoint by pulling presigned
 	//                                     GET URLs the gateway minted. Push path.
 	//   - POST /sync/build?repo=<id>    — pull-back step 1: build bundles to local
@@ -126,7 +124,6 @@ func (m *Mux) register(mx *http.ServeMux) {
 	//                                     presigned URLs in the request body.
 	//   - DELETE /sync/builds/{id}      — pull-back step 3 (idempotent cleanup).
 	// See sync.go.
-	mx.HandleFunc("POST /sync/apply", m.handleSyncApply)
 	mx.HandleFunc("POST /sync/apply-from-urls", m.handleSyncApplyFromURLs)
 	mx.HandleFunc("POST /sync/build", m.handleSyncBuild)
 	mx.HandleFunc("POST /sync/builds/{id}/upload", m.handleSyncBuildsUpload)

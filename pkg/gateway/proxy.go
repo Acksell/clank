@@ -16,7 +16,8 @@ import (
 // proxy /sync/* requests to the local clank-host. The host registers
 // those routes for sandbox use; on a laptop they'd let any client with
 // socket access write code into ~/work/. Cloud gateways (Sync != nil)
-// keep proxying so sprite-side /sync/apply still works.
+// keep proxying so sprite-side /sync/apply-from-urls / build / upload
+// still work.
 func (g *Gateway) proxyToHost(w http.ResponseWriter, r *http.Request) {
 	if g.cfg.Sync == nil && strings.HasPrefix(r.URL.Path, "/sync/") {
 		g.log.Printf("gateway: denied %s %s (sync routes blocked on laptop gateway)", r.Method, r.URL.Path)

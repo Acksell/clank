@@ -36,15 +36,8 @@ type Config struct {
 	AuthToken string
 
 	// DeviceID identifies this laptop in worktree ownership records.
-	// Sent as X-Clank-Device-Id on every request. Mutually exclusive
-	// with HostID.
+	// Sent as X-Clank-Device-Id on every request. Required.
 	DeviceID string
-
-	// HostID identifies a sprite/sandbox host in worktree ownership
-	// records. Sent as X-Clank-Host-Id on every request. Set by the
-	// sprite-side /sync/checkpoint handler when the sandbox uploads its
-	// own state. Mutually exclusive with DeviceID.
-	HostID string
 
 	// HTTPClient overrides the default http.Client. Optional.
 	HTTPClient *http.Client
@@ -60,9 +53,6 @@ type Client struct {
 func New(cfg Config) (*Client, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("syncclient: BaseURL is required")
-	}
-	if cfg.DeviceID != "" && cfg.HostID != "" {
-		return nil, fmt.Errorf("syncclient: DeviceID and HostID are mutually exclusive")
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultHTTPClient()

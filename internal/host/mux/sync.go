@@ -44,67 +44,6 @@ const syncURLBundleFetchTimeout = 4 * time.Minute
 // matching /sync/builds/{id}/upload call.
 const buildExpiry = 30 * time.Minute
 
-// handleSyncApply applies a checkpoint into a per-user working tree
-// under ~/work/<repo>/. Multipart variant — kept for tests and as a
-// rollback escape hatch; the gateway uses /sync/apply-from-urls.
-func (m *Mux) handleSyncApply(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
-	if !validRepoSlug(repo) {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_repo", Error: "repo must be a single non-empty path segment without '..' or '/'"})
-		return
-	}
-
-	workDir, err := workRoot()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errResp{Code: "work_root", Error: err.Error()})
-		return
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errResp{Code: "mkdir_work", Error: err.Error()})
-		return
-	}
-	target := filepath.Join(workDir, repo)
-
-	if err := r.ParseMultipartForm(256 << 20); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "bad_multipart", Error: err.Error()})
-		return
-	}
-	manifestPart, _, err := r.FormFile("manifest")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_manifest", Error: err.Error()})
-		return
-	}
-	defer manifestPart.Close()
-	manifestBytes, err := io.ReadAll(io.LimitReader(manifestPart, 1<<20))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "read_manifest", Error: err.Error()})
-		return
-	}
-	var manifest checkpoint.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "parse_manifest", Error: err.Error()})
-		return
-	}
-	headPart, _, err := r.FormFile("head_commit")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_head_commit", Error: err.Error()})
-		return
-	}
-	defer headPart.Close()
-	incrPart, _, err := r.FormFile("incremental")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp{Code: "missing_incremental", Error: err.Error()})
-		return
-	}
-	defer incrPart.Close()
-
-	if err := checkpoint.Apply(r.Context(), target, &manifest, headPart, incrPart); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errResp{Code: "apply_checkpoint", Error: err.Error()})
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func validRepoSlug(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
