@@ -20,6 +20,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
 	"github.com/acksell/clank/pkg/provisioner/hoststore"
@@ -75,7 +76,6 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       fixedUserAuth{userID: userID},
 		Store:      st,
 		Storage:    mem,
 		PresignTTL: 2 * time.Minute,
@@ -154,14 +154,13 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 
 	// 4. Gateway with embedded sync server.
 	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
+		Provisioner: prov,
+		Sync:        syncSrv,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gwHTTP := httptest.NewServer(gw.Handler())
+	gwHTTP := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: userID}))
 	defer gwHTTP.Close()
 
 	// 5. Real git repo.
@@ -176,8 +175,7 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 
 	// 6. Push checkpoint via syncclient — directly to gateway (sync routes mounted there).
 	cli, err := syncclient.New(syncclient.Config{
-		BaseURL:  gwHTTP.URL,
-		DeviceID: deviceID,
+		BaseURL: gwHTTP.URL,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +198,6 @@ func TestMigrate_ToSprite_EndToEnd(t *testing.T) {
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID,
 		bytes.NewReader(migrateBody))
 	migrateReq.Header.Set("Content-Type", "application/json")
-	migrateReq.Header.Set("X-Clank-Device-Id", deviceID)
 
 	resp, err := http.DefaultClient.Do(migrateReq)
 	if err != nil {
@@ -304,7 +301,6 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       fixedUserAuth{userID: userID},
 		Store:      st,
 		Storage:    mem,
 		HostStore:  st, // *store.Store implements both SyncStore and HostStore
@@ -480,18 +476,17 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 
 	prov := &captureProvisioner{ref: provisioner.HostRef{HostID: hostID, URL: spriteHTTP.URL}}
 	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
+		Provisioner: prov,
+		Sync:        syncSrv,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gwHTTP := httptest.NewServer(gw.Handler())
+	gwHTTP := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: userID}))
 	defer gwHTTP.Close()
 
 	// 1. Laptop pushes a checkpoint.
-	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL, DeviceID: deviceID})
+	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +506,6 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 	migrateBody, _ := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
 	migReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(migrateBody))
-	migReq.Header.Set("X-Clank-Device-Id", deviceID)
 	migResp, err := http.DefaultClient.Do(migReq)
 	if err != nil {
 		t.Fatal(err)
@@ -539,7 +533,6 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 	matReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID+"/materialize",
 		bytes.NewReader([]byte(`{"confirm":true}`)))
-	matReq.Header.Set("X-Clank-Device-Id", deviceID)
 	matResp, err := http.DefaultClient.Do(matReq)
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +580,6 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 	})
 	commitReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID+"/commit", bytes.NewReader(commitBody))
-	commitReq.Header.Set("X-Clank-Device-Id", deviceID)
 	commitResp, err := http.DefaultClient.Do(commitReq)
 	if err != nil {
 		t.Fatal(err)
@@ -602,14 +594,14 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wt.OwnerKind != "local" || wt.OwnerID != deviceID {
-		t.Fatalf("after commit: want local/%s, got %s/%s", deviceID, wt.OwnerKind, wt.OwnerID)
+	// Per-user local ownership: OwnerKind == local, OwnerID empty.
+	if wt.OwnerKind != "local" || wt.OwnerID != "" {
+		t.Fatalf("after commit: want local/(empty), got %s/%s", wt.OwnerKind, wt.OwnerID)
 	}
 
 	// 7. Commit with the same token is rejected (must not double-flip).
 	commitReq2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID+"/commit", bytes.NewReader(commitBody))
-	commitReq2.Header.Set("X-Clank-Device-Id", deviceID)
 	commitResp2, err := http.DefaultClient.Do(commitReq2)
 	if err != nil {
 		t.Fatal(err)
@@ -667,7 +659,6 @@ func TestMigrate_RetriesOnURLExpired(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       fixedUserAuth{userID: userID},
 		Store:      st,
 		Storage:    mem,
 		PresignTTL: 2 * time.Minute,
@@ -703,17 +694,16 @@ func TestMigrate_RetriesOnURLExpired(t *testing.T) {
 		ref: provisioner.HostRef{HostID: hostID, URL: spriteHTTP.URL},
 	}
 	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
+		Provisioner: prov,
+		Sync:        syncSrv,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gwHTTP := httptest.NewServer(gw.Handler())
+	gwHTTP := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: userID}))
 	defer gwHTTP.Close()
 
-	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL, DeviceID: deviceID})
+	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +722,6 @@ func TestMigrate_RetriesOnURLExpired(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(body))
-	req.Header.Set("X-Clank-Device-Id", deviceID)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -747,87 +736,6 @@ func TestMigrate_RetriesOnURLExpired(t *testing.T) {
 	spriteMu.Unlock()
 	if calls != 2 {
 		t.Fatalf("sprite calls = %d, want 2 (one url_expired + one success)", calls)
-	}
-}
-
-// TestMigrate_RejectsWhenLaptopNotOwner ensures a request from a
-// device that doesn't own the worktree fails fast (403) without
-// touching the sprite.
-func TestMigrate_RejectsWhenLaptopNotOwner(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	const userID = "user-A"
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	st, err := store.Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	mem := storage.NewMemory()
-	defer mem.Close()
-
-	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       fixedUserAuth{userID: userID},
-		Store:      st,
-		Storage:    mem,
-		PresignTTL: time.Minute,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	prov := &captureProvisioner{ref: provisioner.HostRef{HostID: "h", URL: "http://unused.invalid"}}
-	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gwHTTP := httptest.NewServer(gw.Handler())
-	defer gwHTTP.Close()
-
-	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL, DeviceID: "owner-dev"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo := setupRepo(t, ctx)
-	writeFile(t, repo, "x.txt", "x")
-	gitMustRun(t, ctx, repo, "add", ".")
-	gitMustRun(t, ctx, repo, "commit", "-m", "x")
-	worktreeID, err := cli.RegisterWorktree(ctx, "r")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cli.PushCheckpoint(ctx, worktreeID, repo); err != nil {
-		t.Fatal(err)
-	}
-
-	body, err := json.Marshal(map[string]any{"direction": "to_remote", "confirm": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		gwHTTP.URL+"/v1/migrate/worktrees/"+worktreeID, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("X-Clank-Device-Id", "imposter-dev")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		respBody, _ := io.ReadAll(resp.Body)
-		t.Fatalf("want 403, got %d: %s", resp.StatusCode, respBody)
-	}
-	if prov.calls != 0 {
-		t.Fatalf("EnsureHost should not have been called on imposter; got %d calls", prov.calls)
 	}
 }
 
@@ -853,7 +761,6 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 	defer mem.Close()
 
 	syncSrv, err := clanksync.NewServer(clanksync.Config{
-		Auth:       fixedUserAuth{userID: userID},
 		Store:      st,
 		Storage:    mem,
 		PresignTTL: time.Minute,
@@ -864,17 +771,16 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 
 	prov := &captureProvisioner{ref: provisioner.HostRef{HostID: "h", URL: "http://unused.invalid"}}
 	gw, err := gateway.NewGateway(gateway.Config{
-		Provisioner:   prov,
-		ResolveUserID: func(*http.Request) string { return userID },
-		Sync:          syncSrv,
+		Provisioner: prov,
+		Sync:        syncSrv,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gwHTTP := httptest.NewServer(gw.Handler())
+	gwHTTP := httptest.NewServer(auth.Middleware(gw.Handler(), &auth.AllowAll{UserID: userID}))
 	defer gwHTTP.Close()
 
-	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL, DeviceID: deviceID})
+	cli, err := syncclient.New(syncclient.Config{BaseURL: gwHTTP.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +798,6 @@ func TestMigrate_RejectsWhenNoCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("X-Clank-Device-Id", deviceID)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -17,25 +17,22 @@ import (
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
 
-// Config wires the gateway's dependencies. All fields except
-// Provisioner have sensible defaults.
+// Config wires the gateway's dependencies. Provisioner is required;
+// Sync is optional (when nil, the migration route returns 503 and
+// the /v1/ prefix isn't mounted).
+//
+// Authentication is the responsibility of an outer middleware (see
+// pkg/auth.Middleware) — by the time a request reaches the gateway,
+// the verified Principal is already in r.Context().
 type Config struct {
 	// Provisioner resolves a userID into the user's HostRef. EnsureHost
 	// is called per-request; the provisioner caches in-process.
 	Provisioner provisioner.Provisioner
 
-	// Auth verifies the bearer on incoming requests. Defaults to
-	// PermissiveAuth (any bearer accepted).
-	Auth Authenticator
-
-	// ResolveUserID maps a verified request to a userID. Defaults to
-	// returning "local".
-	ResolveUserID func(*http.Request) string
-
 	// Sync is the embedded sync server. When non-nil, the gateway mounts
-	// the sync API routes under /v1/ (behind Auth) and the migration
-	// route calls sync methods directly rather than via HTTP.
-	// When nil, the migration route returns 503.
+	// the sync API routes under /v1/ and the migration route calls sync
+	// methods directly rather than via HTTP. When nil, the migration
+	// route returns 503.
 	Sync *clanksync.Server
 }
 
@@ -55,12 +52,6 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if cfg.Provisioner == nil {
 		return nil, fmt.Errorf("gateway: Provisioner is required")
 	}
-	if cfg.Auth == nil {
-		cfg.Auth = PermissiveAuth{}
-	}
-	if cfg.ResolveUserID == nil {
-		cfg.ResolveUserID = func(*http.Request) string { return "local" }
-	}
 	if lg == nil {
 		lg = log.Default()
 	}
@@ -77,7 +68,9 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 // /v1/migrate/worktrees/{id} runs the gateway-orchestrated migration
 // flow when Sync is configured; /v1/ (other paths) forwards to the
 // embedded sync server when Sync is configured; every other path
-// proxies to the user's host.
+// proxies to the user's host. Authentication is handled by an outer
+// middleware (pkg/auth.Middleware); handlers read the Principal from
+// r.Context() via auth.MustPrincipal.
 func (g *Gateway) Handler() http.Handler {
 	mx := http.NewServeMux()
 	mx.HandleFunc("GET /ping", g.handlePing)
@@ -86,27 +79,12 @@ func (g *Gateway) Handler() http.Handler {
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/materialize", g.handleMigrateMaterialize)
 	mx.HandleFunc("POST /v1/migrate/worktrees/{id}/commit", g.handleMigrateCommit)
 	if g.cfg.Sync != nil {
-		// Mount sync API routes under /v1/ behind gateway auth.
 		// POST /v1/migrate/worktrees/{id} is more specific and wins
 		// over the /v1/ prefix registered here.
-		syncH := g.authWrap(g.cfg.Sync.Handler())
-		mx.Handle("/v1/", syncH)
+		mx.Handle("/v1/", g.cfg.Sync.Handler())
 	}
 	mx.HandleFunc("/", g.proxyToHost)
 	return mx
-}
-
-// authWrap returns an http.Handler that runs g.cfg.Auth.Verify before
-// delegating to next. A failed verify returns 401 without calling next.
-func (g *Gateway) authWrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := g.cfg.Auth.Verify(r); err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func (g *Gateway) handlePing(w http.ResponseWriter, _ *http.Request) {

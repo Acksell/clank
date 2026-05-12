@@ -2,7 +2,6 @@ package daemoncli
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"log"
 	"net"
@@ -15,8 +14,8 @@ import (
 	"time"
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
-	"github.com/acksell/clank/internal/jwths256"
 	"github.com/acksell/clank/internal/socketutil"
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/gateway"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
@@ -89,27 +88,16 @@ func parseTCPListen(s string) (string, error) {
 	return s, nil
 }
 
-// tcpAuthToken returns the static bearer that gates incoming requests
-// to the TCP listener. Read from CLANK_AUTH_TOKEN env. An
-// unauthenticated TCP listener would expose every session to the
-// network, so we refuse startup when the env is unset.
-func tcpAuthToken() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("CLANK_AUTH_TOKEN")); v != "" {
-		return v, nil
-	}
-	return "", fmt.Errorf("--listen tcp:// requires CLANK_AUTH_TOKEN env to be set")
-}
-
 // runGatewayServer mounts the daemon gateway on opts.Listen.
 //
 // Modes:
 //   - Unix socket (default): laptop mode. File mode is the gate. Sync
 //     stays nil — laptop has no S3 access and exposes no sync routes.
 //     Push/pull goes through the cloud gateway (prefs.Remote.GatewayURL).
-//   - TCP (opts.Listen non-empty): self-hosted/cloud mode. Wraps with
-//     bearer-token middleware enforced before reaching the gateway's
-//     own auth. If CLANK_SYNC_S3_BUCKET is set, an embedded sync.Server
-//     is built from CLANK_SYNC_S3_* env and mounted under /v1/.
+//   - TCP (opts.Listen non-empty): self-hosted/cloud mode. Auth selected
+//     by opts.Auth when set, else by env (resolveDefaultAuth). If
+//     CLANK_SYNC_S3_BUCKET is set, an embedded sync.Server is built from
+//     CLANK_SYNC_S3_* env and mounted under /v1/.
 //
 // Both modes write the PID file at daemonclient.PIDPath().
 func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
@@ -134,28 +122,23 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 
 	gw, err := gateway.NewGateway(gateway.Config{
 		Provisioner: prov,
-		Auth:        gateway.PermissiveAuth{},
-		ResolveUserID: func(*http.Request) string {
-			return "local" // single-user laptop today
-		},
-		Sync: syncSrv,
+		Sync:        syncSrv,
 	}, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)
 	}
 
-	handler := gw.Handler()
-	if opts.Listen != "" {
-		token, err := tcpAuthToken()
+	authenticator := opts.Auth
+	authDesc := "auth.Authenticator (embedder-supplied)"
+	if authenticator == nil {
+		ctx := context.Background()
+		authenticator, authDesc, err = resolveDefaultAuth(ctx, opts)
 		if err != nil {
 			return err
 		}
-		jwtSecret := os.Getenv("CLANK_AUTH_JWT_SECRET")
-		if jwtSecret != "" {
-			log.Printf("gateway: JWT bearer mode enabled (HS256, CLANK_AUTH_JWT_SECRET set)")
-		}
-		handler = bearerAuthMiddleware(handler, token, jwtSecret)
 	}
+	logAuthMode(authDesc)
+	handler := auth.Middleware(gw.Handler(), authenticator)
 
 	listener, cleanup, err := openHubListener(opts)
 	if err != nil {
@@ -201,49 +184,3 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 	return nil
 }
 
-// bearerAuthMiddleware gates the TCP listener. Accepts two kinds of
-// bearer in parallel so the same gateway works for dev profiles using
-// device-flow JWTs (signed by clank-auth-stub or a real auth server)
-// and for self-hosted single-user profiles using a static shared
-// secret:
-//
-//   1. If CLANK_AUTH_JWT_SECRET is set AND the bearer parses as a
-//      JWT, verify it HS256 against that secret. Accept on valid
-//      signature + non-expired claims.
-//   2. Otherwise (or as a fallback), constant-time-compare against
-//      the static token (from CLANK_AUTH_TOKEN, passed in).
-//
-// At least one of the two must be configured — otherwise the listener
-// is unauthenticated. tcpAuthToken already ensures the static token
-// is set; jwtSecret is optional.
-func bearerAuthMiddleware(next http.Handler, staticToken, jwtSecret string) http.Handler {
-	staticExpected := []byte(staticToken)
-	jwtSecretBytes := []byte(jwtSecret)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, prefix) {
-			http.Error(w, "missing bearer token", http.StatusUnauthorized)
-			return
-		}
-		provided := auth[len(prefix):]
-
-		// JWT-shaped bearer + secret configured → try JWT first. The
-		// LooksLikeJWT heuristic avoids decoding random hex strings
-		// (with stray dots) as JWTs.
-		if jwtSecret != "" && jwths256.LooksLikeJWT(provided) {
-			if _, err := jwths256.Verify(jwtSecretBytes, provided); err == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-			// Fall through to static compare — a malformed JWT might
-			// still match the static token in self-hosted setups
-			// where both are configured.
-		}
-		if staticToken != "" && subtle.ConstantTimeCompare([]byte(provided), staticExpected) == 1 {
-			next.ServeHTTP(w, r)
-			return
-		}
-		http.Error(w, "invalid bearer token", http.StatusUnauthorized)
-	})
-}

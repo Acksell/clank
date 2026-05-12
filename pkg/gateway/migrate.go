@@ -11,14 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
-
-// HeaderDeviceID matches pkg/sync.HeaderDeviceID. Forwarded from the
-// laptop's request to clank-sync so ownership checks fire correctly.
-// Pinned here to avoid a package cycle (gateway should not import sync).
-const HeaderDeviceID = "X-Clank-Device-Id"
 
 // migrateRequest is the body of POST /v1/migrate/worktrees/{id}. Only
 // to_remote uses this single-call shape — to_local goes through the
@@ -56,28 +52,13 @@ type migrateResponse struct {
 // only and cannot tamper because the sprite verifies the manifest
 // signature.
 func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) {
-	if _, err := g.cfg.Auth.Verify(r); err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	// Auth gates the deployment-state signal so an unauthenticated
 	// caller can't probe whether migration is wired up.
 	if g.cfg.Sync == nil {
 		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
 		return
 	}
-	userID := g.cfg.ResolveUserID(r)
-	if userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return
-	}
-	deviceID := r.Header.Get(HeaderDeviceID)
-	if deviceID == "" {
-		http.Error(w, "missing "+HeaderDeviceID, http.StatusBadRequest)
-		return
-	}
+	userID := auth.MustPrincipal(r.Context()).UserID
 	worktreeID := r.PathValue("id")
 	if worktreeID == "" {
 		http.Error(w, "worktree id missing", http.StatusBadRequest)
@@ -103,7 +84,7 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 		syncErrToHTTP(w, "read worktree", err)
 		return
 	}
-	g.migrateToRemote(w, r, wt, userID, deviceID)
+	g.migrateToRemote(w, r, wt, userID)
 }
 
 // migrateToRemote is the §D happy path: pre-checked → wake → push →
@@ -111,7 +92,7 @@ func (g *Gateway) handleMigrateWorktree(w http.ResponseWriter, r *http.Request) 
 // if the worktree is already owned by some sprite for this user, we
 // no-op rather than 403, which means a user who calls migrate twice
 // gets the same answer the second time.
-func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt clanksync.Worktree, userID, deviceID string) {
+func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt clanksync.Worktree, userID string) {
 	if wt.OwnerKind == clanksync.OwnerKindRemote {
 		// Already sprite-owned. Treat as no-op success.
 		writeJSON(w, http.StatusOK, migrateResponse{
@@ -122,8 +103,8 @@ func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt cla
 		})
 		return
 	}
-	if wt.OwnerKind != clanksync.OwnerKindLocal || wt.OwnerID != deviceID {
-		http.Error(w, "caller is not the current laptop owner of this worktree", http.StatusForbidden)
+	if wt.OwnerKind != clanksync.OwnerKindLocal {
+		http.Error(w, "worktree is not local-owned", http.StatusForbidden)
 		return
 	}
 	if wt.LatestSyncedCheckpoint == "" {
@@ -150,7 +131,10 @@ func (g *Gateway) migrateToRemote(w http.ResponseWriter, r *http.Request, wt cla
 		return
 	}
 
-	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindRemote, hostRef.HostID, deviceID)
+	// Empty expectedOwnerID — for local→remote we don't disambiguate
+	// laptops anymore; ownership is per-user. TransferOwnership still
+	// uses optimistic concurrency keyed on the (kind, id) tuple.
+	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindRemote, hostRef.HostID, "")
 	if err != nil {
 		syncErrToHTTP(w, "transfer ownership", err)
 		return

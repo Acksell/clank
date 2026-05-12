@@ -37,7 +37,6 @@ func pullCmd() *cobra.Command {
 	var (
 		repoPath   string
 		worktreeID string
-		deviceID   string
 		alsoMig    bool
 	)
 	cmd := &cobra.Command{
@@ -82,12 +81,6 @@ Without --migrate: bare data-only pull is post-MVP.`,
 					return fmt.Errorf("no worktree id cached at %s/.clank/worktree-id — pass --worktree-id explicitly", absRepo)
 				}
 			}
-			if deviceID == "" {
-				deviceID, err = ensureDeviceID()
-				if err != nil {
-					return fmt.Errorf("device id: %w", err)
-				}
-			}
 
 			dc, err := daemonclient.NewRemoteClient()
 			if err != nil {
@@ -98,7 +91,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 
 			// Phase 1: materialize
 			fmt.Fprintf(cmd.OutOrStdout(), "asking sandbox to checkpoint...\n")
-			mres, err := dc.MaterializeMigration(ctx, worktreeID, deviceID)
+			mres, err := dc.MaterializeMigration(ctx, worktreeID)
 			if err != nil {
 				return fmt.Errorf("materialize: %w", err)
 			}
@@ -111,7 +104,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			fmt.Fprintf(cmd.OutOrStdout(), "applied to %s; committing ownership transfer...\n", absRepo)
 
 			// Phase 3: commit ownership transfer
-			res, err := dc.CommitMigration(ctx, worktreeID, deviceID, mres.CheckpointID, mres.MigrationToken)
+			res, err := dc.CommitMigration(ctx, worktreeID, mres.CheckpointID, mres.MigrationToken)
 			if err != nil {
 				return fmt.Errorf("commit migration (apply succeeded; rerun pull to retry the ownership flip): %w", err)
 			}
@@ -121,7 +114,6 @@ Without --migrate: bare data-only pull is post-MVP.`,
 	}
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "download the sandbox's checkpoint and reclaim ownership")
 	cmd.Flags().StringVar(&worktreeID, "worktree-id", "", "Worktree ID (default: read from <repo>/.clank/worktree-id)")
-	cmd.Flags().StringVar(&deviceID, "device-id", envOrDefault("CLANK_DEVICE_ID", ""), "device id (default: ~/.config/clank/device-id)")
 	return cmd
 }
 

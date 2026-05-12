@@ -87,14 +87,14 @@ services:
       - "--foreground"
       - "--listen=tcp://0.0.0.0:7878"
     environment:
-      # Static bearer the TCP listener accepts on every inbound request.
-      # Required when --listen is set. Laptops with a static-token
-      # profile (cloud.access_token = same hex) hit this path.
-      CLANK_AUTH_TOKEN: "${CLANK_AUTH_TOKEN:-clank-dev-token-change-me}"
-      # HS256 secret. When set, the gateway also accepts JWTs signed
-      # with this secret as bearer tokens. Wired to the auth-stub's
-      # secret so `clank login` against the dev remote produces a
-      # token the gateway will verify.
+      # HS256 mode: TCP listener accepts JWTs signed with this secret.
+      # Wired to the auth-stub's secret so `clank login` against the
+      # dev remote produces a token the gateway will verify.
+      #
+      # Auth modes are mutually exclusive — pick exactly one of:
+      #   CLANK_AUTH_JWT_SECRET (HS256, dev/self-host)  ← used here
+      #   CLANK_AUTH_OIDC_ISSUER + _AUDIENCE (production / SSO)
+      #   CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATIC=true (opt-in static)
       CLANK_AUTH_JWT_SECRET: "${CLANK_AUTH_STUB_SECRET:-dev-secret-change-me}"
 
       # Embedded sync substrate. clankd's runGatewayServer reads these

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acksell/clank/pkg/auth"
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
@@ -56,25 +57,11 @@ type commitRequest struct {
 // No ownership change yet — the matching /commit call flips ownership
 // after the laptop has successfully downloaded + applied the bundles.
 func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Request) {
-	if _, err := g.cfg.Auth.Verify(r); err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	if g.cfg.Sync == nil {
 		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
 		return
 	}
-	userID := g.cfg.ResolveUserID(r)
-	if userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return
-	}
-	deviceID := r.Header.Get(HeaderDeviceID)
-	if deviceID == "" {
-		http.Error(w, "missing "+HeaderDeviceID, http.StatusBadRequest)
-		return
-	}
+	userID := auth.MustPrincipal(r.Context()).UserID
 	worktreeID := r.PathValue("id")
 	if worktreeID == "" {
 		http.Error(w, "worktree id missing", http.StatusBadRequest)
@@ -158,7 +145,7 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 	}
 
 	expiry := time.Now().Add(migrationTokenTTL).Unix()
-	token := g.signMigrationToken(wt.ID, ck.CheckpointID, deviceID, expiry)
+	token := g.signMigrationToken(wt.ID, ck.CheckpointID, userID, expiry)
 
 	writeJSON(w, http.StatusOK, materializeResponse{
 		CheckpointID:    ck.CheckpointID,
@@ -175,25 +162,11 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 // the sync server's latest_synced_checkpoint still points at the one
 // the laptop just applied, and atomically transfers ownership.
 func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
-	if _, err := g.cfg.Auth.Verify(r); err != nil {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="clank"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
 	if g.cfg.Sync == nil {
 		http.Error(w, "migration not configured (Sync unset)", http.StatusServiceUnavailable)
 		return
 	}
-	userID := g.cfg.ResolveUserID(r)
-	if userID == "" {
-		http.Error(w, "no user identity", http.StatusUnauthorized)
-		return
-	}
-	deviceID := r.Header.Get(HeaderDeviceID)
-	if deviceID == "" {
-		http.Error(w, "missing "+HeaderDeviceID, http.StatusBadRequest)
-		return
-	}
+	userID := auth.MustPrincipal(r.Context()).UserID
 	worktreeID := r.PathValue("id")
 	if worktreeID == "" {
 		http.Error(w, "worktree id missing", http.StatusBadRequest)
@@ -209,7 +182,7 @@ func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "checkpoint_id and migration_token are required", http.StatusBadRequest)
 		return
 	}
-	if !g.verifyMigrationToken(req.MigrationToken, worktreeID, req.CheckpointID, deviceID) {
+	if !g.verifyMigrationToken(req.MigrationToken, worktreeID, req.CheckpointID, userID) {
 		http.Error(w, "invalid or expired migration_token", http.StatusForbidden)
 		return
 	}
@@ -228,7 +201,9 @@ func (g *Gateway) handleMigrateCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindLocal, deviceID, wt.OwnerID)
+	// New local owner ID is empty — ownership is per-user, not
+	// per-device; OwnerID is only meaningful for remote (sprite) owners.
+	updated, err := g.cfg.Sync.TransferOwnership(r.Context(), userID, wt.ID, clanksync.OwnerKindLocal, "", wt.OwnerID)
 	if err != nil {
 		syncErrToHTTP(w, "transfer ownership", err)
 		return
@@ -357,11 +332,12 @@ func deleteSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef pro
 // --- migration token -----------------------------------------------
 
 // signMigrationToken issues an HMAC-SHA256 over
-// "<worktreeID>:<checkpointID>:<deviceID>:<expiryUnix>" using the
+// "<worktreeID>:<checkpointID>:<userID>:<expiryUnix>" using the
 // gateway's migrationKey. The expiry is encoded in the token itself
-// so verification doesn't need extra state.
-func (g *Gateway) signMigrationToken(worktreeID, checkpointID, deviceID string, expiry int64) string {
-	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, deviceID, expiry)
+// so verification doesn't need extra state. Binding to userID
+// prevents one user's token from being replayed by another.
+func (g *Gateway) signMigrationToken(worktreeID, checkpointID, userID string, expiry int64) string {
+	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, userID, expiry)
 	mac := hmac.New(sha256.New, g.migrationKey)
 	mac.Write([]byte(payload))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -370,7 +346,7 @@ func (g *Gateway) signMigrationToken(worktreeID, checkpointID, deviceID string, 
 
 // verifyMigrationToken returns true iff sig matches the recomputed HMAC
 // for the given fields and the embedded expiry is in the future.
-func (g *Gateway) verifyMigrationToken(token, worktreeID, checkpointID, deviceID string) bool {
+func (g *Gateway) verifyMigrationToken(token, worktreeID, checkpointID, userID string) bool {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
 		return false
@@ -382,7 +358,7 @@ func (g *Gateway) verifyMigrationToken(token, worktreeID, checkpointID, deviceID
 	if time.Now().Unix() > expiry {
 		return false
 	}
-	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, deviceID, expiry)
+	payload := fmt.Sprintf("%s:%s:%s:%d", worktreeID, checkpointID, userID, expiry)
 	mac := hmac.New(sha256.New, g.migrationKey)
 	mac.Write([]byte(payload))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))

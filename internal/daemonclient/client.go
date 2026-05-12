@@ -84,8 +84,8 @@ func NewClient(sockPath string) *Client {
 // NewTCPClient creates a client that talks to a remote clankd over
 // TCP. baseURL must be the externally-reachable gateway URL (no
 // trailing slash); authToken is sent as `Authorization: Bearer
-// <token>` on every request and must match the gateway's accepted
-// bearer (CLANK_AUTH_TOKEN env on the server).
+// <token>` on every request. The gateway's Authenticator (HS256
+// JWT, OIDC, or opt-in static bearer) verifies it.
 func NewTCPClient(baseURL, authToken string) *Client {
 	// Clone DefaultTransport to keep Proxy/Idle/TLS defaults.
 	tr := http.DefaultTransport.(*http.Transport).Clone()

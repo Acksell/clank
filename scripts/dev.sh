@@ -101,13 +101,12 @@ echo "   Gateway       http://localhost:${CLANKD_PORT}"
 echo "   Auth stub     http://localhost:${CLANK_AUTH_STUB_PORT:-7879}"
 echo "   MinIO         http://localhost:$MINIO_PORT  (console :${MINIO_CONSOLE_PORT:-9001})"
 echo
-echo " On the laptop, register the remote once:"
+echo " On the laptop, register the remote once and sign in:"
 echo
 echo "   clank remote add dev \\"
 echo "     --gateway-url=http://localhost:${CLANKD_PORT} \\"
-echo "     --auth-url=http://localhost:${CLANK_AUTH_STUB_PORT:-7879} \\"
-echo "     --token=${CLANK_AUTH_TOKEN:-clank-dev-token-change-me}"
-echo "   clank login"
+echo "     --auth-url=http://localhost:${CLANK_AUTH_STUB_PORT:-7879}"
+echo "   clank login   # auth-stub mints an HS256 JWT the gateway verifies"
 echo
 echo " ctrl-c to tear down tunnel + stack."
 echo "=========================================="

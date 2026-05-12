@@ -43,7 +43,7 @@ type MaterializeResponse struct {
 // asks the sprite to checkpoint its current state and returns presigned
 // GET URLs for the bundles plus a signed migration token. The laptop
 // downloads + applies before calling CommitMigration.
-func (c *Client) MaterializeMigration(ctx context.Context, worktreeID, deviceID string) (*MaterializeResponse, error) {
+func (c *Client) MaterializeMigration(ctx context.Context, worktreeID string) (*MaterializeResponse, error) {
 	if worktreeID == "" {
 		return nil, fmt.Errorf("MaterializeMigration: worktreeID is required")
 	}
@@ -59,9 +59,6 @@ func (c *Client) MaterializeMigration(ctx context.Context, worktreeID, deviceID 
 	req.Header.Set("Content-Type", "application/json")
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	if deviceID != "" {
-		req.Header.Set("X-Clank-Device-Id", deviceID)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -86,7 +83,7 @@ func (c *Client) MaterializeMigration(ctx context.Context, worktreeID, deviceID 
 // checkpoint locally; ownership atomically transfers back. Caller must
 // pass the migration_token and checkpoint_id from the matching
 // materialize response.
-func (c *Client) CommitMigration(ctx context.Context, worktreeID, deviceID, checkpointID, migrationToken string) (*MigrateResponse, error) {
+func (c *Client) CommitMigration(ctx context.Context, worktreeID, checkpointID, migrationToken string) (*MigrateResponse, error) {
 	if worktreeID == "" || checkpointID == "" || migrationToken == "" {
 		return nil, fmt.Errorf("CommitMigration: worktreeID, checkpointID, and migrationToken are required")
 	}
@@ -105,9 +102,6 @@ func (c *Client) CommitMigration(ctx context.Context, worktreeID, deviceID, chec
 	req.Header.Set("Content-Type", "application/json")
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	if deviceID != "" {
-		req.Header.Set("X-Clank-Device-Id", deviceID)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -129,11 +123,9 @@ func (c *Client) CommitMigration(ctx context.Context, worktreeID, deviceID, chec
 }
 
 // MigrateWorktree calls the gateway's MigrateWorktree endpoint.
-// deviceID identifies the laptop owning the worktree (forwarded as
-// X-Clank-Device-Id; ignored when the active hub is a Unix socket
-// since the laptop-local clankd's local provisioner doesn't gate on
-// device ownership).
-func (c *Client) MigrateWorktree(ctx context.Context, worktreeID, deviceID string, direction MigrateDirection) (*MigrateResponse, error) {
+// Caller identity is conveyed via the bearer token's Principal (set by
+// the gateway's outer auth middleware) — no per-device header needed.
+func (c *Client) MigrateWorktree(ctx context.Context, worktreeID string, direction MigrateDirection) (*MigrateResponse, error) {
 	if worktreeID == "" {
 		return nil, fmt.Errorf("MigrateWorktree: worktreeID is required")
 	}
@@ -156,9 +148,6 @@ func (c *Client) MigrateWorktree(ctx context.Context, worktreeID, deviceID strin
 	req.Header.Set("Content-Type", "application/json")
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	if deviceID != "" {
-		req.Header.Set("X-Clank-Device-Id", deviceID)
 	}
 
 	resp, err := c.httpClient.Do(req)

@@ -37,7 +37,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/acksell/clank/internal/jwths256"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const defaultListen = ":7879"
@@ -162,15 +162,17 @@ func (s *server) handleDevicePoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exp := time.Now().Add(s.cfg.tokenTTL).Unix()
-	tok, err := jwths256.Sign(s.cfg.secret, map[string]any{
+	now := time.Now()
+	exp := now.Add(s.cfg.tokenTTL)
+	jwtTok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":   s.cfg.userID,
 		"email": s.cfg.email,
-		"iat":   time.Now().Unix(),
-		"exp":   exp,
+		"iat":   now.Unix(),
+		"exp":   exp.Unix(),
 		"iss":   s.cfg.publicURL,
 		"aud":   "clank",
 	})
+	tok, err := jwtTok.SignedString(s.cfg.secret)
 	if err != nil {
 		log.Printf("sign JWT: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sign_failed"})
@@ -221,13 +223,20 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 </body></html>`, htmlEscape(userCode))
 }
 
-func (s *server) verifyBearer(r *http.Request) (map[string]any, error) {
+func (s *server) verifyBearer(r *http.Request) (jwt.MapClaims, error) {
 	auth := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if !strings.HasPrefix(auth, prefix) {
 		return nil, errors.New("missing bearer")
 	}
-	return jwths256.Verify(s.cfg.secret, auth[len(prefix):])
+	claims := jwt.MapClaims{}
+	_, err := jwt.ParseWithClaims(auth[len(prefix):], claims, func(*jwt.Token) (any, error) {
+		return s.cfg.secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 // --- misc helpers ----------------------------------------------------

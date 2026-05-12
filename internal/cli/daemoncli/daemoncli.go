@@ -18,6 +18,7 @@ import (
 	"github.com/acksell/clank/internal/config"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/internal/store"
+	"github.com/acksell/clank/pkg/auth"
 )
 
 // Command returns the root cobra command for the clankd binary with start/stop/status subcommands.
@@ -38,7 +39,7 @@ func Command() *cobra.Command {
 		},
 	}
 	startCmd.Flags().Bool("foreground", false, "Run in foreground (don't daemonize)")
-	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires CLANK_AUTH_TOKEN env to be set and authorizes inbound calls with that bearer token.")
+	startCmd.Flags().String("listen", "", "Listener address override, e.g. tcp://0.0.0.0:7878. Empty (default) = Unix socket. TCP mode requires exactly one of CLANK_AUTH_OIDC_ISSUER, CLANK_AUTH_JWT_SECRET, or CLANK_AUTH_TOKEN (with CLANK_AUTH_ALLOW_STATIC=true).")
 
 	stopCmd := &cobra.Command{
 		Use:   "stop",
@@ -70,6 +71,14 @@ func Command() *cobra.Command {
 // access and exposes no sync routes.
 type ServerOptions struct {
 	Listen string
+
+	// Auth, when non-nil, overrides env-driven auth selection.
+	// Embedders (supaclank, custom deployments) pass their own
+	// pkg/auth.Authenticator here — Supabase, Auth0, custom DB
+	// lookups, anything implementing the interface. When nil, TCP
+	// mode picks an Authenticator from env vars (OIDC, HS256, or
+	// opt-in static). Unix-socket mode always uses auth.AllowAll.
+	Auth auth.Authenticator
 }
 
 // RunStart starts the daemon, either in foreground or as a background process.

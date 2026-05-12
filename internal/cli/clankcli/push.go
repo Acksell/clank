@@ -2,13 +2,9 @@ package clankcli
 
 import (
 	"context"
-	cryptorand "crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,7 +31,6 @@ func pushCmd() *cobra.Command {
 		baseURL  string
 		token    string
 		display  string
-		deviceID string
 		repoPath string
 		alsoMig  bool
 	)
@@ -47,9 +42,10 @@ of the repo at <repo-path> and upload it to clank-sync. The bundle
 streams from the laptop directly to object storage via a presigned
 URL — no bytes pass through clank-sync's process memory.
 
-Worktree IDs are cached per-repo at <repo>/.clank/worktree-id; the
-device identity is cached at ~/.config/clank/device-id and shared
-across repos. First push registers the worktree and caches the ID.
+Worktree IDs are cached per-repo at <repo>/.clank/worktree-id.
+First push registers the worktree and caches the ID. Worktree
+ownership is per-user (any laptop signed in with the same identity
+can push); no per-device disambiguation.
 
 With --migrate, after the upload completes, hand off worktree
 ownership to the remote host. After this returns, the local laptop
@@ -89,17 +85,10 @@ is no longer the owner — to resume work locally, run
 			if baseURL == "" {
 				return fmt.Errorf("--base-url is required (or set CLANK_GATEWAY_URL, or configure an active remote via `clank remote add`)")
 			}
-			if deviceID == "" {
-				deviceID, err = ensureDeviceID()
-				if err != nil {
-					return fmt.Errorf("device id: %w", err)
-				}
-			}
 
 			cli, err := syncclient.New(syncclient.Config{
 				BaseURL:   baseURL,
 				AuthToken: token,
-				DeviceID:  deviceID,
 			})
 			if err != nil {
 				return err
@@ -144,7 +133,7 @@ is no longer the owner — to resume work locally, run
 				}
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				mres, err := dc.MigrateWorktree(mctx, worktreeID, deviceID, daemonclient.MigrateToRemote)
+				mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
 				if err != nil {
 					return fmt.Errorf("migrate to remote: %w", err)
 				}
@@ -157,43 +146,8 @@ is no longer the owner — to resume work locally, run
 	cmd.Flags().StringVar(&baseURL, "base-url", envOrDefault("CLANK_GATEWAY_URL", ""), "gateway base URL (default: active remote's gateway_url)")
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
-	cmd.Flags().StringVar(&deviceID, "device-id", envOrDefault("CLANK_DEVICE_ID", ""), "device id (default: ~/.config/clank/device-id, auto-generated on first run)")
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")
 	return cmd
-}
-
-// ensureDeviceID returns this laptop's stable device id, generating
-// one on first call. Stored at ~/.config/clank/device-id.
-func ensureDeviceID() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(configDir, "clank")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, "device-id")
-	if data, err := os.ReadFile(path); err == nil {
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id, nil
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		// A permission/IO error here would otherwise silently mint a
-		// fresh device id and break ownership against existing
-		// worktrees.
-		return "", fmt.Errorf("read device id %s: %w", path, err)
-	}
-	buf := make([]byte, 16)
-	if _, err := cryptorand.Read(buf); err != nil {
-		return "", err
-	}
-	id := "dev-" + hex.EncodeToString(buf)
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
 }
 
 func shortSHA(s string) string {

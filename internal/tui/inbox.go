@@ -2,9 +2,6 @@ package tui
 
 import (
 	"context"
-	cryptorand "crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"image/color"
 	"os"
@@ -2512,15 +2509,9 @@ func (m *InboxModel) worktreePushCmd(localPath string) tea.Cmd {
 			return worktreePushResultMsg{err: fmt.Errorf("no active cloud profile with gateway_url configured")}
 		}
 
-		devID, err := loadOrCreateDeviceID()
-		if err != nil {
-			return worktreePushResultMsg{err: fmt.Errorf("device id: %w", err)}
-		}
-
 		cli, err := syncclient.New(syncclient.Config{
 			BaseURL:   profile.GatewayURL,
 			AuthToken: profile.AccessToken,
-			DeviceID:  devID,
 		})
 		if err != nil {
 			return worktreePushResultMsg{err: err}
@@ -2560,35 +2551,4 @@ func shortSHA(s string) string {
 		return s[:8]
 	}
 	return s
-}
-
-// loadOrCreateDeviceID returns this device's stable ID from
-// ~/.config/clank/device-id, generating one on first call.
-func loadOrCreateDeviceID() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(configDir, "clank")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, "device-id")
-	if data, err := os.ReadFile(path); err == nil {
-		id := strings.TrimSpace(string(data))
-		if id != "" {
-			return id, nil
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("read device id %s: %w", path, err)
-	}
-	buf := make([]byte, 16)
-	if _, err := cryptorand.Read(buf); err != nil {
-		return "", err
-	}
-	id := "dev-" + hex.EncodeToString(buf)
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
 }

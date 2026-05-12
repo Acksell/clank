@@ -141,9 +141,10 @@ func remoteAddCmd() *cobra.Command {
 push/pull calls target it. Repeating with the same name overwrites the
 remote.
 
-Token is the bearer the gateway requires. For self-hosted dev this is
-whatever you set CLANK_AUTH_TOKEN to on the server. For deployments
-with device flow, leave --token empty and use ` + "`clank login`" + ` to populate it.`,
+Token is the bearer the gateway requires. Normal flow is to leave
+--token empty and run ` + "`clank login`" + ` to populate it via the device
+flow against --auth-url. Set --token directly only for self-hosted
+static-bearer deployments (server-side CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATIC=true).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])

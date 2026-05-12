@@ -12,7 +12,7 @@ import (
 // TestDeviceFlow_AutoApproves walks the stub through the device-flow
 // shape the laptop's internal/cloud client expects: start → poll →
 // /me with the returned bearer. JWT signing/verifying primitives are
-// tested in internal/jwths256.
+// tested in pkg/auth.
 func TestDeviceFlow_AutoApproves(t *testing.T) {
 	t.Parallel()
 	cfg := config{
