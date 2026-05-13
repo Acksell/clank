@@ -56,6 +56,25 @@ func (s *Store) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) {
 	return out, nil
 }
 
+// ListSessionsByWorktree returns every persisted session for the given
+// worktree ID, newest-updated first. Empty worktreeID returns an empty
+// slice (rather than every session in the DB) — callers operating
+// without a worktree context should use ListSessions instead.
+func (s *Store) ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]agent.SessionInfo, error) {
+	if worktreeID == "" {
+		return nil, nil
+	}
+	rows, err := s.q.ListSessionsByWorktree(ctx, worktreeID)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions by worktree %s: %w", worktreeID, err)
+	}
+	out := make([]agent.SessionInfo, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, sessionFromRow(r))
+	}
+	return out, nil
+}
+
 // SearchParams mirrors the hub-side SearchParams (kept on agent.).
 // Empty Q / Visibility means no filter for that field. Zero Since
 // or Until means unbounded. Limit ≤ 0 means a default cap.
