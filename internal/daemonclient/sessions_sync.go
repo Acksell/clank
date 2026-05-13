@@ -45,6 +45,32 @@ func (c *Client) BuildSessionCheckpoint(ctx context.Context, worktreeID, checkpo
 	return &out, nil
 }
 
+// ApplySessionCheckpoint asks the local clank-host to import every
+// session listed in the manifest at session_manifest_url, fetching
+// each session blob via the per-session GET URLs in session_blob_urls.
+// Mirrors the gateway → sprite session-apply call but addressed at the
+// laptop's own clank-host (where the imported sessions need to land
+// during pull --migrate).
+func (c *Client) ApplySessionCheckpoint(ctx context.Context, worktreeID, manifestGetURL string, sessionBlobGetURLs map[string]string) error {
+	if worktreeID == "" {
+		return fmt.Errorf("ApplySessionCheckpoint: worktreeID is required")
+	}
+	if manifestGetURL == "" {
+		// Empty manifest URL means the sprite had no sessions to push.
+		// Not an error — just nothing to apply.
+		return nil
+	}
+	body := map[string]any{
+		"worktree_id":          worktreeID,
+		"session_manifest_url": manifestGetURL,
+		"session_blob_urls":    sessionBlobGetURLs,
+	}
+	if err := c.post(ctx, "/sync/sessions/apply-from-urls", body, nil); err != nil {
+		return fmt.Errorf("apply session checkpoint: %w", err)
+	}
+	return nil
+}
+
 // UploadSessionCheckpoint asks clank-host to upload the per-session
 // blobs + the session-manifest.json to the supplied presigned PUT
 // URLs. On success clank-host removes the temp build files.

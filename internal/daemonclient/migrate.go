@@ -29,14 +29,21 @@ type MigrateResponse struct {
 
 // MaterializeResponse mirrors the gateway's reply to POST
 // /v1/migrate/worktrees/{id}/materialize.
+//
+// SessionManifestURL + SessionBlobURLs are populated when the sprite
+// had opencode sessions in the worktree at materialize time; empty
+// otherwise. The laptop forwards them to its local clank-host's
+// /sync/sessions/apply-from-urls after applying the code bundles.
 type MaterializeResponse struct {
-	CheckpointID    string `json:"checkpoint_id"`
-	HeadCommit      string `json:"head_commit"`
-	ManifestURL     string `json:"manifest_url"`
-	HeadCommitURL   string `json:"head_commit_url"`
-	IncrementalURL  string `json:"incremental_url"`
-	MigrationToken  string `json:"migration_token"`
-	MigrationExpiry int64  `json:"migration_expiry"`
+	CheckpointID       string            `json:"checkpoint_id"`
+	HeadCommit         string            `json:"head_commit"`
+	ManifestURL        string            `json:"manifest_url"`
+	HeadCommitURL      string            `json:"head_commit_url"`
+	IncrementalURL     string            `json:"incremental_url"`
+	SessionManifestURL string            `json:"session_manifest_url,omitempty"`
+	SessionBlobURLs    map[string]string `json:"session_blob_urls,omitempty"`
+	MigrationToken     string            `json:"migration_token"`
+	MigrationExpiry    int64             `json:"migration_expiry"`
 }
 
 // MaterializeMigration is phase 1 of the migrate-back flow: the gateway

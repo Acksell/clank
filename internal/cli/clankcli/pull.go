@@ -107,7 +107,28 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			if err := applyRemoteCheckpoint(applyCtx, absRepo, mres); err != nil {
 				return fmt.Errorf("apply checkpoint locally: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "applied to %s; committing ownership transfer...\n", absRepo)
+			fmt.Fprintf(cmd.OutOrStdout(), "applied to %s\n", absRepo)
+
+			// Phase 2b: import sessions via the local clank-host.
+			// Skipped when the sprite had no opencode sessions in the
+			// worktree (empty session_manifest_url in the response).
+			// Failures here abort before commit so a partial migration
+			// (code applied, sessions missing) never flips ownership.
+			if mres.SessionManifestURL != "" {
+				localCli, err := daemonclient.NewLocalClient()
+				if err != nil {
+					return fmt.Errorf("local daemon client (for session apply): %w", err)
+				}
+				sessCtx, sessCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				if err := localCli.ApplySessionCheckpoint(sessCtx, worktreeID, mres.SessionManifestURL, mres.SessionBlobURLs); err != nil {
+					sessCancel()
+					return fmt.Errorf("apply sessions locally: %w", err)
+				}
+				sessCancel()
+				fmt.Fprintf(cmd.OutOrStdout(), "imported %d session(s) locally\n", len(mres.SessionBlobURLs))
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "committing ownership transfer...\n")
 
 			// Phase 3: commit ownership transfer
 			res, err := dc.CommitMigration(applyCtx, worktreeID, mres.CheckpointID, mres.MigrationToken)

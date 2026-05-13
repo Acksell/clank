@@ -471,6 +471,25 @@ func TestMigrate_TwoPhaseRoundTrip(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	// Session-leg sprite endpoints. This test seeds no sessions, so
+	// /sync/sessions/build returns an empty manifest and the gateway
+	// short-circuits the rest of the session leg. The /upload and
+	// /delete handlers are present for shape but should not fire.
+	spriteHandler.HandleFunc("POST /sync/sessions/build", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"build_id": newTestULID(),
+			"entries":  []any{},
+			"skipped":  []any{},
+		})
+	})
+	spriteHandler.HandleFunc("POST /sync/sessions/builds/{id}/upload", func(w http.ResponseWriter, _ *http.Request) {
+		// Should not be reached in this test (no sessions to upload).
+		w.WriteHeader(http.StatusNoContent)
+	})
+	spriteHandler.HandleFunc("DELETE /sync/sessions/builds/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	spriteHTTP := httptest.NewServer(spriteHandler)
 	defer spriteHTTP.Close()
 
