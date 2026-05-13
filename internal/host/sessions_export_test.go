@@ -258,6 +258,91 @@ func TestExportSessions_OpenCodeHappyPath(t *testing.T) {
 	}
 }
 
+// TestExportSessions_IgnoresStaleLocalPath is the regression test
+// for the chdir-on-export bug observed during pull --migrate: a
+// session row whose host.db.project_dir is the SOURCE host's local
+// path (because the row was imported earlier from that source) must
+// still export cleanly on the DESTINATION. Without the fix, the
+// sprite's Service.ExportSessions would chdir into the laptop's
+// /Users/... path and fail before opencode could run.
+//
+// Mirrors TestRegisterImportedSession_IgnoresSourceProjectDir on
+// the import side. Both fixes together close the same chdir-on-
+// cross-machine-path footgun in both directions.
+func TestExportSessions_IgnoresStaleLocalPath(t *testing.T) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("opencode binary not on $PATH")
+	}
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local/share/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	// Seed an opencode session.
+	const externalID = "ses_staleLocalPathRegress0000"
+	blob := buildSyntheticOCBlob(externalID, "msg_staleseed00000000000000000", "build", "hello")
+	seedPath := filepath.Join(t.TempDir(), "seed.json")
+	if err := os.WriteFile(seedPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.OpenCodeImportSession(context.Background(), "", seedPath); err != nil {
+		t.Fatalf("seed import: %v", err)
+	}
+
+	// Stamp the host.db row with a SOURCE-style LocalPath that
+	// definitely doesn't exist on this destination.
+	const sessULID = "01HSTALELOCALPATHREGRESS0000"
+	const worktreeID = "wt-stale-localpath"
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Now()
+	if err := st.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:         sessULID,
+		ExternalID: externalID,
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusIdle,
+		GitRef: agent.GitRef{
+			WorktreeID: worktreeID,
+			LocalPath:  "/path/that/exists/only/on/another/machine",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert session: %v", err)
+	}
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	res, err := svc.ExportSessions(context.Background(), worktreeID, "ck-stale")
+	if err != nil {
+		t.Fatalf("ExportSessions with stale LocalPath: %v", err)
+	}
+	t.Cleanup(res.Cleanup)
+	if len(res.Entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(res.Entries))
+	}
+	if res.Entries[0].SessionID != sessULID {
+		t.Errorf("entry.SessionID = %q, want %q", res.Entries[0].SessionID, sessULID)
+	}
+}
+
 // buildSyntheticOCBlob returns a minimal valid opencode session
 // export JSON with one user message. Mirrors the schema seen on
 // real exports of opencode 1.3.15.

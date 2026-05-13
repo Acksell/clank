@@ -113,7 +113,17 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 			result.Cleanup()
 			return nil, fmt.Errorf("export sessions: create blob file %s: %w", blobPath, err)
 		}
-		if err := agent.OpenCodeExportSession(ctx, info.GitRef.LocalPath, info.ExternalID, f); err != nil {
+		// projectDir is intentionally empty for the same reason
+		// RegisterImportedSession doesn't pass it: `opencode export`
+		// reads its own storage HOME-relative and ignores cwd, and
+		// info.GitRef.LocalPath can hold a stale or destination-
+		// invalid path (e.g. the laptop's filesystem path baked
+		// into a previously-imported session). chdir into a
+		// non-existent path fails before opencode even runs —
+		// reproduced on pull --migrate when the sprite tries to
+		// export sessions it had imported from a laptop. Pinned by
+		// TestExportSessions_IgnoresStaleLocalPath.
+		if err := agent.OpenCodeExportSession(ctx, "", info.ExternalID, f); err != nil {
 			_ = f.Close()
 			result.Cleanup()
 			return nil, fmt.Errorf("export sessions: %s: %w", info.ID, err)
