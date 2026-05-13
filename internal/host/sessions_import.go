@@ -37,19 +37,30 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		return agent.SessionInfo{}, fmt.Errorf("register imported session: backend %q not supported in v1", entry.Backend)
 	}
 
-	// Rewrite info.directory in the blob from the SOURCE's local path
-	// (e.g. /Users/foo/repo on a laptop) to the DESTINATION's local
-	// path (workRoot/<worktreeID> on a sprite) before import. opencode
-	// keys its "project" grouping on info.directory; without this
-	// rewrite, imported sessions land under a synthetic "global"
-	// project on the destination because the source path doesn't
-	// resolve. This is a workaround for upstream behavior — once
-	// opencode's import supports a target-directory or path-rebase
-	// flag, this hack can be deleted in favor of passing the flag
-	// through. See:
-	//   - https://github.com/anomalyco/opencode/issues/15797
-	//   - https://github.com/anomalyco/opencode/pull/15826
-	rewrittenPath, err := s.rewriteImportBlobDir(blobPath, worktreeID)
+	// Repair the blob before handing it to `opencode import`. Two
+	// distinct workarounds for opencode's export/import asymmetry
+	// (export emits values the import validator won't accept):
+	//
+	//   - Rebase info.directory from the source's local path to the
+	//     destination's workRoot/<worktreeID>. Otherwise opencode
+	//     files the imported session under a synthetic "global"
+	//     project on the destination because the source path doesn't
+	//     resolve. Upstream:
+	//       https://github.com/anomalyco/opencode/issues/15797
+	//       https://github.com/anomalyco/opencode/pull/15826
+	//
+	//   - Ensure messages[*].info.summary.diffs[*].before/after are
+	//     strings. opencode export sometimes leaves them undefined,
+	//     and opencode import rejects undefined values with a Zod
+	//     "expected string, received undefined" error before any
+	//     session contents are written. Default to "" so the diff
+	//     entry is preserved but well-typed. No upstream issue
+	//     identified yet — surfaced via pull --migrate on a real
+	//     sprite session.
+	//
+	// Both workarounds delete cleanly once opencode tightens its
+	// export schema or relaxes its import validator.
+	rewrittenPath, err := s.rewriteImportBlob(blobPath, worktreeID)
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: rewrite blob: %w", entry.SessionID, err)
 	}
@@ -105,23 +116,16 @@ func nonZeroOr(t, fallback time.Time) time.Time {
 	return t
 }
 
-// rewriteImportBlobDir reads an opencode export blob, replaces
-// info.directory with the destination's local worktree path, clears
-// info.projectID so opencode rederives it on import, and writes the
-// result to a sibling temp file. Returns the new path. Caller owns
-// cleanup (os.Remove).
+// rewriteImportBlob reads an opencode export blob, applies the
+// workarounds documented at the call site in RegisterImportedSession
+// (directory rebasing + diff-summary string coercion), and writes
+// the result to a sibling temp file. Returns the new path. Caller
+// owns cleanup (os.Remove).
 //
-// Workaround for opencode not rebasing paths on import — see
-// https://github.com/anomalyco/opencode/issues/15797 and
-// https://github.com/anomalyco/opencode/pull/15826. Once that lands
-// upstream and we bump the opencode pin, this helper can be removed
-// and OpenCodeImportSession called on the original blobPath again.
-//
-// The function modifies only top-level info.{directory,projectID};
-// every other field (id, slug, title, messages, parts, ...) is
-// preserved verbatim. JSON parsing uses map[string]any so we don't
-// have to track opencode's full schema.
-func (s *Service) rewriteImportBlobDir(srcPath, worktreeID string) (string, error) {
+// Every field not explicitly touched is preserved verbatim. JSON
+// parsing uses map[string]any so we don't have to track opencode's
+// full schema.
+func (s *Service) rewriteImportBlob(srcPath, worktreeID string) (string, error) {
 	destDir, err := workRootDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve work root: %w", err)
@@ -148,6 +152,46 @@ func (s *Service) rewriteImportBlobDir(srcPath, worktreeID string) (string, erro
 	// TestRegisterImportedSession_RewritesDirectoryToDestination.
 	info["projectID"] = ""
 	doc["info"] = info
+
+	// Sanitize message diff summaries: opencode export occasionally
+	// emits {"path": "...", "before": undefined, "after": undefined}
+	// inside messages[*].info.summary.diffs[*], and the import
+	// validator rejects undefined where a string is expected. Coerce
+	// missing/non-string before/after to "" so the diff entry shape
+	// is preserved without losing the entry. Pinned by
+	// TestRegisterImportedSession_RepairsUndefinedDiffStrings.
+	if msgs, ok := doc["messages"].([]any); ok {
+		for _, raw := range msgs {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			msgInfo, ok := msg["info"].(map[string]any)
+			if !ok {
+				continue
+			}
+			summary, ok := msgInfo["summary"].(map[string]any)
+			if !ok {
+				continue
+			}
+			diffs, ok := summary["diffs"].([]any)
+			if !ok {
+				continue
+			}
+			for _, d := range diffs {
+				diff, ok := d.(map[string]any)
+				if !ok {
+					continue
+				}
+				if _, ok := diff["before"].(string); !ok {
+					diff["before"] = ""
+				}
+				if _, ok := diff["after"].(string); !ok {
+					diff["after"] = ""
+				}
+			}
+		}
+	}
 
 	out, err := json.Marshal(doc)
 	if err != nil {
