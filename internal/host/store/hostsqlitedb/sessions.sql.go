@@ -8,7 +8,6 @@ package hostsqlitedb
 import (
 	"context"
 	"database/sql"
-	"time"
 )
 
 const deleteSession = `-- name: DeleteSession :exec
@@ -271,7 +270,7 @@ type UpsertPrimaryAgentsParams struct {
 	ProjectDir        string
 	WorktreeID        string
 	PrimaryAgentsJson string
-	UpdatedAt         time.Time
+	UpdatedAt         int64
 }
 
 func (q *Queries) UpsertPrimaryAgents(ctx context.Context, arg UpsertPrimaryAgentsParams) error {
@@ -324,9 +323,9 @@ type UpsertSessionParams struct {
 	TicketID       string
 	Agent          string
 	Draft          string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastReadAt     sql.NullTime
+	CreatedAt      int64
+	UpdatedAt      int64
+	LastReadAt     sql.NullInt64
 }
 
 func (q *Queries) UpsertSession(ctx context.Context, arg UpsertSessionParams) error {
