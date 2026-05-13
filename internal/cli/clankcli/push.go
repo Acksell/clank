@@ -122,6 +122,16 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
+				// Session leg — ride the session blobs into the same
+				// checkpoint so code + sessions transfer atomically. If
+				// pushSessionLeg fails the migration aborts before
+				// ownership flips (TransferOwnership runs on the
+				// gateway side after the sprite-apply succeeds for
+				// BOTH legs).
+				if err := pushSessionLeg(cmd, worktreeID, res.CheckpointID, cli); err != nil {
+					return fmt.Errorf("push session leg: %w", err)
+				}
+
 				// Migration goes directly to the active remote's gateway,
 				// not the local daemon: the laptop daemon has Sync=nil
 				// by design and would return 503. NewRemoteClient reads
