@@ -135,6 +135,74 @@ func TestRegisterImportedSession_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestRegisterImportedSession_IgnoresSourceProjectDir is a regression
+// test for the chdir-into-nonexistent-source-path bug: on push --migrate,
+// the laptop stamps SessionEntry.ProjectDir with its own local path,
+// which is meaningless on the destination (sprite). The destination
+// MUST NOT pass that path as cmd.Dir to opencode, or exec.Command
+// fails with `chdir … no such file or directory` before opencode
+// even runs — observed in production on the dev stack.
+func TestRegisterImportedSession_IgnoresSourceProjectDir(t *testing.T) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("opencode binary not on $PATH")
+	}
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local/share/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	const externalID = "ses_chdirregression000000000000"
+	const sessULID = "01HCHDIRREGRESSION0000000000"
+	const worktreeID = "wt-chdir"
+
+	blob := buildSyntheticOCBlob(externalID, "msg_chdirseed00000000000000000", "build", "hello")
+	blobPath := filepath.Join(t.TempDir(), "blob.json")
+	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	// SessionEntry.ProjectDir is the SOURCE's local path — a path that
+	// does NOT exist on this host. RegisterImportedSession must succeed
+	// regardless.
+	entry := checkpoint.SessionEntry{
+		SessionID:  sessULID,
+		ExternalID: externalID,
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: "/path/that/does/not/exist/on/destination",
+		Status:     agent.StatusIdle,
+		Title:      "chdir regression",
+	}
+
+	got, err := svc.RegisterImportedSession(context.Background(), worktreeID, entry, blobPath)
+	if err != nil {
+		t.Fatalf("RegisterImportedSession with nonexistent ProjectDir: %v", err)
+	}
+	if got.ExternalID != externalID {
+		t.Errorf("ExternalID=%q want %q", got.ExternalID, externalID)
+	}
+}
+
 // TestRegisterImportedSession_RejectsClaudeBackend pins v1 scope.
 func TestRegisterImportedSession_RejectsClaudeBackend(t *testing.T) {
 	t.Parallel()

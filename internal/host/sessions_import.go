@@ -34,7 +34,12 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		return agent.SessionInfo{}, fmt.Errorf("register imported session: backend %q not supported in v1", entry.Backend)
 	}
 
-	importedExternalID, err := agent.OpenCodeImportSession(ctx, entry.ProjectDir, blobPath)
+	// projectDir is intentionally empty: `opencode import` reads/writes
+	// its own storage (HOME-relative) and ignores cwd, and entry.ProjectDir
+	// is the SOURCE host's local path — which doesn't exist on a
+	// destination host (chdir would fail before opencode even runs).
+	// Verified by TestOpenCodeImportSemantics.
+	importedExternalID, err := agent.OpenCodeImportSession(ctx, "", blobPath)
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: %w", entry.SessionID, err)
 	}
