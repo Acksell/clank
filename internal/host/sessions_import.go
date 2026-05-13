@@ -37,29 +37,24 @@ func (s *Service) RegisterImportedSession(ctx context.Context, worktreeID string
 		return agent.SessionInfo{}, fmt.Errorf("register imported session: backend %q not supported in v1", entry.Backend)
 	}
 
-	// Repair the blob before handing it to `opencode import`. Two
-	// distinct workarounds for opencode's export/import asymmetry
-	// (export emits values the import validator won't accept):
+	// Rebase info.directory from the source's local path (e.g.
+	// /Users/foo/repo on a laptop) to the destination's
+	// workRoot/<worktreeID>. This is solving a REAL cross-machine
+	// problem: the source's filesystem path doesn't exist on this
+	// host, so opencode files the imported session under a
+	// synthetic "global" project unless we rebase. Upstream wants
+	// to land a target-directory flag, after which this shim can
+	// be removed:
+	//   https://github.com/anomalyco/opencode/issues/15797
+	//   https://github.com/anomalyco/opencode/pull/15826
 	//
-	//   - Rebase info.directory from the source's local path to the
-	//     destination's workRoot/<worktreeID>. Otherwise opencode
-	//     files the imported session under a synthetic "global"
-	//     project on the destination because the source path doesn't
-	//     resolve. Upstream:
-	//       https://github.com/anomalyco/opencode/issues/15797
-	//       https://github.com/anomalyco/opencode/pull/15826
-	//
-	//   - Ensure messages[*].info.summary.diffs[*].before/after are
-	//     strings. opencode export sometimes leaves them undefined,
-	//     and opencode import rejects undefined values with a Zod
-	//     "expected string, received undefined" error before any
-	//     session contents are written. Default to "" so the diff
-	//     entry is preserved but well-typed. No upstream issue
-	//     identified yet — surfaced via pull --migrate on a real
-	//     sprite session.
-	//
-	// Both workarounds delete cleanly once opencode tightens its
-	// export schema or relaxes its import validator.
+	// We deliberately do NOT paper over opencode's import-validator
+	// bugs (e.g. requiring strings where the export emits
+	// undefined). Those are opencode-side issues — coercing values
+	// to satisfy the validator misrepresents data we don't own.
+	// If a session fails to import, the error surfaces verbatim;
+	// future work in handleSyncSessionsApplyFromURLs can choose to
+	// skip-and-warn rather than abort the whole migration.
 	rewrittenPath, err := s.rewriteImportBlob(blobPath, worktreeID)
 	if err != nil {
 		return agent.SessionInfo{}, fmt.Errorf("register imported session %s: rewrite blob: %w", entry.SessionID, err)
@@ -116,11 +111,18 @@ func nonZeroOr(t, fallback time.Time) time.Time {
 	return t
 }
 
-// rewriteImportBlob reads an opencode export blob, applies the
-// workarounds documented at the call site in RegisterImportedSession
-// (directory rebasing + diff-summary string coercion), and writes
-// the result to a sibling temp file. Returns the new path. Caller
-// owns cleanup (os.Remove).
+// rewriteImportBlob reads an opencode export blob, rebases
+// info.directory to the destination's local worktree path, and
+// writes the result to a sibling temp file. Returns the new path.
+// Caller owns cleanup (os.Remove).
+//
+// This is the ONLY blob mutation we perform. The rebase exists
+// because info.directory in the source's blob is a filesystem path
+// that doesn't resolve on the destination — opencode would file the
+// imported session under a synthetic "global" project without it.
+// We deliberately do not coerce or fabricate any other field; any
+// validation errors from `opencode import` are opencode-side bugs
+// that should be surfaced, not papered over.
 //
 // Every field not explicitly touched is preserved verbatim. JSON
 // parsing uses map[string]any so we don't have to track opencode's
@@ -152,46 +154,6 @@ func (s *Service) rewriteImportBlob(srcPath, worktreeID string) (string, error) 
 	// TestRegisterImportedSession_RewritesDirectoryToDestination.
 	info["projectID"] = ""
 	doc["info"] = info
-
-	// Sanitize message diff summaries: opencode export occasionally
-	// emits {"path": "...", "before": undefined, "after": undefined}
-	// inside messages[*].info.summary.diffs[*], and the import
-	// validator rejects undefined where a string is expected. Coerce
-	// missing/non-string before/after to "" so the diff entry shape
-	// is preserved without losing the entry. Pinned by
-	// TestRegisterImportedSession_RepairsUndefinedDiffStrings.
-	if msgs, ok := doc["messages"].([]any); ok {
-		for _, raw := range msgs {
-			msg, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			msgInfo, ok := msg["info"].(map[string]any)
-			if !ok {
-				continue
-			}
-			summary, ok := msgInfo["summary"].(map[string]any)
-			if !ok {
-				continue
-			}
-			diffs, ok := summary["diffs"].([]any)
-			if !ok {
-				continue
-			}
-			for _, d := range diffs {
-				diff, ok := d.(map[string]any)
-				if !ok {
-					continue
-				}
-				if _, ok := diff["before"].(string); !ok {
-					diff["before"] = ""
-				}
-				if _, ok := diff["after"].(string); !ok {
-					diff["after"] = ""
-				}
-			}
-		}
-	}
 
 	out, err := json.Marshal(doc)
 	if err != nil {
