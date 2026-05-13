@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 )
 
 // OpenCodeExportSession writes the opencode session export blob for
@@ -94,6 +96,32 @@ func parseImportedSessionID(out []byte) (string, bool) {
 		return "", false
 	}
 	return id, true
+}
+
+// OpenCodeVersion runs `opencode --version` and returns the
+// trimmed stdout. opencode 1.x prints just the bare version
+// (e.g. "1.14.48"). Caller decides what to do with mismatches —
+// see compat.OpencodeVersionsCompatible.
+//
+// The subprocess is called with no special env so it inherits
+// clank-host's environment (HOME etc.). Reading the version
+// doesn't touch session storage, so isolation isn't required.
+func OpenCodeVersion(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "opencode", "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		stderr := ""
+		if errors.As(err, &ee) {
+			stderr = string(ee.Stderr)
+		}
+		return "", fmt.Errorf("opencode --version: %w: %s", err, stderr)
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "", fmt.Errorf("opencode --version: empty output")
+	}
+	return v, nil
 }
 
 // stripANSI removes ECMA-48 CSI escape sequences (the most common

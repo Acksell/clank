@@ -87,6 +87,19 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				return fmt.Errorf("remote client: %w", err)
 			}
 
+			// Refuse the migration up-front on incompatible opencode
+			// versions across hosts — cheaper to fail here than after
+			// the sprite has done its export work. Local client is
+			// also needed downstream for the session-apply step, so
+			// we construct it here once.
+			localCli, err := daemonclient.NewLocalClient()
+			if err != nil {
+				return fmt.Errorf("local daemon client: %w", err)
+			}
+			if err := assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc); err != nil {
+				return err
+			}
+
 			// Phase 1: materialize. Independent budget — sandbox cold-start
 			// + checkpoint can run minutes on its own; if we shared a single
 			// 10-min ctx with phases 2/3 a slow materialize would drain the
@@ -115,10 +128,8 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			// Failures here abort before commit so a partial migration
 			// (code applied, sessions missing) never flips ownership.
 			if mres.SessionManifestURL != "" {
-				localCli, err := daemonclient.NewLocalClient()
-				if err != nil {
-					return fmt.Errorf("local daemon client (for session apply): %w", err)
-				}
+				// Reuse the localCli we constructed earlier for the
+				// version-skew check.
 				sessCtx, sessCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				if err := localCli.ApplySessionCheckpoint(sessCtx, worktreeID, mres.SessionManifestURL, mres.SessionBlobURLs); err != nil {
 					sessCancel()

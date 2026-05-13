@@ -77,6 +77,12 @@ func (m *Mux) register(mx *http.ServeMux) {
 	// /sessions/{id}/events stays for host-client back-compat.
 	mx.HandleFunc("GET /events", m.handleEvents)
 	mx.HandleFunc("GET /backends", m.handleListBackends)
+	// GET /opencode-version: returns this host's `opencode --version`
+	// output. Used by the laptop CLI to compare against the sprite's
+	// version before a migration; mismatched majors/minors get
+	// refused early to avoid the export/import schema-skew bug
+	// (see agent.AssertOpencodeVersionsCompatible).
+	mx.HandleFunc("GET /opencode-version", m.handleOpencodeVersion)
 	mx.HandleFunc("GET /agents", m.handleListAgents)
 	mx.HandleFunc("GET /models", m.handleListModels)
 	// /discover is the legacy host-client path; /sessions/discover

@@ -122,6 +122,24 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
+				// Construct the remote daemon client up-front: we use it
+				// for the version-skew check AND the migration call.
+				dc, err := daemonclient.NewRemoteClient()
+				if err != nil {
+					return fmt.Errorf("remote client: %w", err)
+				}
+				localCli, err := daemonclient.NewLocalClient()
+				if err != nil {
+					return fmt.Errorf("local daemon client: %w", err)
+				}
+				// Refuse the migration up-front if opencode versions
+				// can't safely round-trip session blobs across the two
+				// hosts. Cheaper to fail here than after we've uploaded
+				// a checkpoint and built session blobs.
+				if err := assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc); err != nil {
+					return err
+				}
+
 				// Session leg — ride the session blobs into the same
 				// checkpoint so code + sessions transfer atomically. If
 				// pushSessionLeg fails the migration aborts before
@@ -132,15 +150,6 @@ is no longer the owner — to resume work locally, run
 					return fmt.Errorf("push session leg: %w", err)
 				}
 
-				// Migration goes directly to the active remote's gateway,
-				// not the local daemon: the laptop daemon has Sync=nil
-				// by design and would return 503. NewRemoteClient reads
-				// the active remote's gateway_url + access_token — same
-				// fields the checkpoint upload above already targets.
-				dc, err := daemonclient.NewRemoteClient()
-				if err != nil {
-					return fmt.Errorf("remote client: %w", err)
-				}
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 				mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
