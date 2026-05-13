@@ -539,14 +539,6 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	// The script template needs the pinned version interpolated as
-	// a shell-safe literal. PinnedOpencodeVersion is constrained to
-	// digits-dots-hyphens by agent.parseOpencodeVersion; treat any
-	// deviation as a bug, not user input. We still validate it for
-	// belt-and-suspenders.
-	if err := validatePinForShell(agent.PinnedOpencodeVersion); err != nil {
-		return fmt.Errorf("ensure opencode: pinned version %q rejected by shell-safety check: %w", agent.PinnedOpencodeVersion, err)
-	}
 	script := strings.ReplaceAll(opencodeInstallScript, "__PINNED_VERSION__", agent.PinnedOpencodeVersion)
 
 	var out []byte
@@ -564,33 +556,6 @@ func (p *Provisioner) ensureOpenCodeInstalled(ctx context.Context, sprite *sprit
 		return fmt.Errorf("install opencode (sprite=%s): %w\n--- install output ---\n%s\n--- end output ---", sprite.Name(), err, trimmed)
 	}
 	p.log.Printf("flyio provisioner: installed opencode %s on sprite %s", agent.PinnedOpencodeVersion, sprite.Name())
-	return nil
-}
-
-// validatePinForShell rejects any pinned-version string that isn't
-// safe to plug directly into a shell script. Allowed: ASCII letters,
-// digits, dot, hyphen. Covers semver + pre-release tags like
-// "1.14.49-rc.1" or "1.14.49-beta.2". Anything else is treated as
-// a programming error in the caller — the constant comes from
-// clank's own source, not user input, so a mismatch is a bug to
-// surface, not data to escape.
-//
-// Letters are safe in shell string literals (they don't expand);
-// the threats are metacharacters like ;, &, |, $, `, (, ), and
-// whitespace, none of which appear in any plausible npm version.
-func validatePinForShell(v string) error {
-	if v == "" {
-		return fmt.Errorf("pinned version is empty")
-	}
-	for _, r := range v {
-		if (r >= '0' && r <= '9') ||
-			(r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z') ||
-			r == '.' || r == '-' {
-			continue
-		}
-		return fmt.Errorf("pinned version %q contains disallowed character %q", v, r)
-	}
 	return nil
 }
 
