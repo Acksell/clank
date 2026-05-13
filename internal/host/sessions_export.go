@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/acksell/clank/internal/agent"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
@@ -125,6 +126,25 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 		// TestExportSessions_IgnoresStaleLocalPath.
 		if err := agent.OpenCodeExportSession(ctx, "", info.ExternalID, f); err != nil {
 			_ = f.Close()
+			_ = os.Remove(blobPath)
+			// "Session not found" means the host.db row has gone
+			// stale relative to opencode's storage — typically
+			// because the user (or some upstream cleanup) ran
+			// `opencode session delete`. Skip the orphan with a
+			// loud log line; one bad row must not fail the whole
+			// migration. Future work could optionally self-heal
+			// by deleting the host.db row, but for now we leave
+			// it alone so the user can see what was lost. Pinned
+			// by TestExportSessions_SkipsMissingOpencodeSession.
+			if isSessionNotFound(err) {
+				s.log.Printf("export sessions: skipping %s (external_id=%q): opencode reports session not found — host.db row is orphaned", info.ID, info.ExternalID)
+				result.Skipped = append(result.Skipped, SkippedSession{
+					SessionID: info.ID,
+					Backend:   info.Backend,
+					Reason:    "opencode storage missing this session (host.db orphan; was it deleted via opencode CLI?)",
+				})
+				continue
+			}
 			result.Cleanup()
 			return nil, fmt.Errorf("export sessions: %s: %w", info.ID, err)
 		}
@@ -161,4 +181,21 @@ func (s *Service) ExportSessions(ctx context.Context, worktreeID, checkpointID s
 	}
 
 	return result, nil
+}
+
+// isSessionNotFound returns true when err looks like opencode's
+// "Session not found" response. We match on the substring rather
+// than a typed error because OpenCodeExportSession wraps stderr
+// from a subprocess; opencode's CLI doesn't expose error codes
+// the Go side can switch on.
+//
+// The literal string is from opencode 1.x — "Session not found:
+// ses_…". If a future opencode version changes the wording this
+// goes back to surfacing as a hard error, which is a survivable
+// regression (we'll see the new message and update this matcher).
+func isSessionNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Session not found")
 }

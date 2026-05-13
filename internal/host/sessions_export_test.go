@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,6 +256,115 @@ func TestExportSessions_OpenCodeHappyPath(t *testing.T) {
 	}
 	if parsed.Info.ID != externalID {
 		t.Errorf("blob info.id = %q, want %q", parsed.Info.ID, externalID)
+	}
+}
+
+// TestExportSessions_SkipsMissingOpencodeSession is the regression
+// test for the host.db-orphan case: a SessionInfo row exists in
+// host.db but `opencode export <external_id>` says "Session not
+// found" because someone deleted the session via opencode CLI
+// directly. ExportSessions used to abort the entire migration on
+// the first such row; now it must skip the orphan with a warning
+// and keep going.
+//
+// We seed two sessions in host.db: one whose external_id refers
+// to a real opencode session, one whose external_id is a made-up
+// ID opencode has never seen. Then we assert ExportSessions
+// returns one entry (the real one) and one Skipped entry (the
+// orphan), with no error.
+func TestExportSessions_SkipsMissingOpencodeSession(t *testing.T) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("opencode binary not on $PATH")
+	}
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local/share/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	// Seed ONE real opencode session by importing a synthetic blob.
+	const realExtID = "ses_orphanmix000000000000realll"
+	seedBlob := buildSyntheticOCBlob(realExtID, "msg_orphanmix0000000000000realA", "build", "hello")
+	seedPath := filepath.Join(t.TempDir(), "seed.json")
+	if err := os.WriteFile(seedPath, seedBlob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.OpenCodeImportSession(context.Background(), "", seedPath); err != nil {
+		t.Fatalf("seed import: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const worktreeID = "wt-orphan-mix"
+	now := time.Now()
+
+	// host.db row whose external_id maps to the real opencode session.
+	if err := st.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:         "01HORPHANMIXREAL00000000000",
+		ExternalID: realExtID,
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusIdle,
+		GitRef:     agent.GitRef{WorktreeID: worktreeID},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("upsert real: %v", err)
+	}
+
+	// host.db row whose external_id refers to a session opencode has
+	// never seen — the "orphan" case. This mimics what happens when
+	// someone runs `opencode session delete` outside clank's view.
+	if err := st.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:         "01HORPHANMIXSTALE0000000000",
+		ExternalID: "ses_orphanmix0000000000staleeee",
+		Backend:    agent.BackendOpenCode,
+		Status:     agent.StatusIdle,
+		GitRef:     agent.GitRef{WorktreeID: worktreeID},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("upsert orphan: %v", err)
+	}
+
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	res, err := svc.ExportSessions(context.Background(), worktreeID, "ck-orphan")
+	if err != nil {
+		t.Fatalf("ExportSessions must NOT return an error when one row is orphaned: %v", err)
+	}
+	t.Cleanup(res.Cleanup)
+
+	if len(res.Entries) != 1 {
+		t.Fatalf("want 1 entry (the real session), got %d", len(res.Entries))
+	}
+	if res.Entries[0].ExternalID != realExtID {
+		t.Errorf("entry.ExternalID = %q, want the real one (%q)", res.Entries[0].ExternalID, realExtID)
+	}
+	if len(res.Skipped) != 1 {
+		t.Fatalf("want 1 skipped (the orphan), got %d", len(res.Skipped))
+	}
+	if res.Skipped[0].SessionID != "01HORPHANMIXSTALE0000000000" {
+		t.Errorf("Skipped.SessionID = %q, want orphan", res.Skipped[0].SessionID)
+	}
+	if !strings.Contains(res.Skipped[0].Reason, "orphan") && !strings.Contains(res.Skipped[0].Reason, "missing") {
+		t.Errorf("Skipped.Reason should mention orphan/missing; got: %q", res.Skipped[0].Reason)
 	}
 }
 
