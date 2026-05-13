@@ -40,7 +40,16 @@ func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remo
 	if err != nil {
 		var typed *agent.OpencodeIncompatibleError
 		if errors.As(err, &typed) {
-			return fmt.Errorf("%s\n\nUpgrade either side to match the other:\n  laptop:  `opencode upgrade`\n  remote:  the sprite picks up a fresh opencode whenever it's reprovisioned; ask your admin or rebuild the sprite image", typed.Error())
+			// Surface the clank-pinned version explicitly so the
+			// user knows exactly which version to land on, not just
+			// "match the other side." If the laptop is the drifted
+			// side (the common case — sprites get the pin
+			// automatically on EnsureHost), suggesting the pin
+			// directly avoids a guessing game.
+			return fmt.Errorf(
+				"%s\n\nclank pins opencode at version %s. Upgrade your laptop to match:\n  opencode upgrade --version %s\n\n(The sprite re-installs the pinned opencode automatically on its next EnsureHost; if it's the side that's drifted, restart the sprite via your remote provisioner and retry.)",
+				typed.Error(), agent.PinnedOpencodeVersion, agent.PinnedOpencodeVersion,
+			)
 		}
 		return err
 	}

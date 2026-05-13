@@ -6,6 +6,26 @@ import (
 	"strings"
 )
 
+// PinnedOpencodeVersion is the opencode version clank ships against.
+// Bumping this constant is a deliberate, reviewable change — it
+// determines what every fly.io / daytona / local provisioner
+// installs onto a sprite, AND what the laptop-side error message
+// suggests when versions drift.
+//
+// Why pin: opencode's export/import schema is forward-incompatible
+// across minor versions (we lived through the 1.3 → 1.14 diff
+// schema rewrite the hard way). A pin makes "everyone runs the
+// same opencode" the default state instead of "everyone runs
+// whatever was latest when their sprite was provisioned."
+//
+// Bumping this:
+//   1. Update the constant.
+//   2. `make install` — laptops get the new clank that knows the new pin.
+//   3. Sprites probe-and-reinstall on next EnsureHost (~30-90s one-shot cost).
+//   4. Laptops `opencode upgrade` — runtime check refuses migrations
+//      until they do.
+const PinnedOpencodeVersion = "1.14.49"
+
 // OpencodeIncompatibleError is returned by AssertOpencodeVersionsCompatible
 // when local and remote opencode versions can't safely round-trip session
 // blobs. Callers (push.go / pull.go) format this for the user with the
