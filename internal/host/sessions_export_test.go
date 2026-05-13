@@ -262,12 +262,19 @@ func TestExportSessions_OpenCodeHappyPath(t *testing.T) {
 // export JSON with one user message. Mirrors the schema seen on
 // real exports of opencode 1.3.15.
 func buildSyntheticOCBlob(sessID, msgID, agentSlug, text string) []byte {
+	return buildOCBlobWithDir(sessID, msgID, agentSlug, text, "/tmp/clank-diag-test", "0000000000000000000000000000000000000000")
+}
+
+// buildOCBlobWithDir is the parameterized form of buildSyntheticOCBlob
+// used by tests that need to assert specific directory / projectID
+// values in the export (e.g. the directory-rewrite shim regression).
+func buildOCBlobWithDir(sessID, msgID, agentSlug, text, directory, projectID string) []byte {
 	body := map[string]any{
 		"info": map[string]any{
 			"id":        sessID,
 			"slug":      "diag-slug",
-			"projectID": "0000000000000000000000000000000000000000",
-			"directory": "/tmp/clank-diag-test",
+			"projectID": projectID,
+			"directory": directory,
 			"title":     "diag",
 			"version":   "1.3.15",
 			"summary":   map[string]any{"additions": 0, "deletions": 0, "files": 0},

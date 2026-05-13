@@ -2,6 +2,7 @@ package host_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,6 +133,103 @@ func TestRegisterImportedSession_RoundTrip(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("after idempotent re-run, expected 1 session in worktree, got %d", len(all))
+	}
+}
+
+// TestRegisterImportedSession_RewritesDirectoryToDestination is a
+// regression test for the opencode "global project" cosmetic issue:
+// imported sessions used to land under projectId:"global" because
+// info.directory in the blob held the SOURCE's local path. After
+// the rewrite shim, info.directory must reflect the DESTINATION's
+// worktree path, and projectID must NOT match the source's hash
+// (proxy for "opencode rederived from the new directory").
+//
+// Workaround pinned by https://github.com/anomalyco/opencode/issues/15797
+// and https://github.com/anomalyco/opencode/pull/15826. Once that
+// lands upstream, both the production rewrite and this test can be
+// removed.
+func TestRegisterImportedSession_RewritesDirectoryToDestination(t *testing.T) {
+	if _, err := exec.LookPath("opencode"); err != nil {
+		t.Skip("opencode binary not on $PATH")
+	}
+
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local/share/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config/opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	// Override the workRootDir so we can assert against a deterministic
+	// destination path without depending on $HOME/work existing.
+	workRoot := filepath.Join(t.TempDir(), "work")
+	prev := host.SetWorkRootForTest(workRoot)
+	t.Cleanup(func() { host.SetWorkRootForTest(prev) })
+
+	const externalID = "ses_dirrewrite00000000000000000"
+	const sessULID = "01HDIRREWRITE00000000000000000"
+	const worktreeID = "wt-dirrewrite"
+	const sourceDir = "/Users/somebody/elsewhere/repo"
+
+	// Build the seed blob with the SOURCE's directory baked in, plus a
+	// known projectID we can detect getting rewritten.
+	blob := buildOCBlobWithDir(externalID, "msg_dirrewriteseed0000000000000", "build", "hello", sourceDir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	blobPath := filepath.Join(t.TempDir(), "blob.json")
+	if err := os.WriteFile(blobPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "host.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := host.New(host.Options{
+		BackendManagers: map[agent.BackendType]agent.BackendManager{
+			agent.BackendOpenCode: &noopBackendManager{},
+		},
+		SessionsStore: st,
+	})
+	t.Cleanup(svc.Shutdown)
+
+	entry := checkpoint.SessionEntry{
+		SessionID:  sessULID,
+		ExternalID: externalID,
+		Backend:    agent.BackendOpenCode,
+		ProjectDir: sourceDir,
+		Status:     agent.StatusIdle,
+	}
+	if _, err := svc.RegisterImportedSession(context.Background(), worktreeID, entry, blobPath); err != nil {
+		t.Fatalf("RegisterImportedSession: %v", err)
+	}
+
+	// Re-export the imported session and inspect info.directory.
+	exportCmd := exec.Command("opencode", "export", externalID)
+	out, err := exportCmd.Output()
+	if err != nil {
+		t.Fatalf("opencode export: %v", err)
+	}
+	var got struct {
+		Info struct {
+			ID        string `json:"id"`
+			Directory string `json:"directory"`
+			ProjectID string `json:"projectID"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("parse re-export: %v", err)
+	}
+	wantDir := filepath.Join(workRoot, worktreeID)
+	if got.Info.Directory != wantDir {
+		t.Errorf("info.directory = %q, want %q (rewrite shim failed)", got.Info.Directory, wantDir)
+	}
+	if got.Info.ProjectID == "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("info.projectID preserved the source's hash; opencode did not rederive")
 	}
 }
 
