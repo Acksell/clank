@@ -60,6 +60,7 @@ func (g *Gateway) pushSessionsToSprite(ctx context.Context, cli *http.Client, ho
 	for i, e := range manifest.Sessions {
 		sessionIDs[i] = e.SessionID
 	}
+	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		dl2, err := g.cfg.Sync.DownloadSessionURLs(ctx, userID, wt.LatestSyncedCheckpoint, sessionIDs)
 		if err != nil {
@@ -71,13 +72,14 @@ func (g *Gateway) pushSessionsToSprite(ctx context.Context, cli *http.Client, ho
 		if err == nil {
 			return nil
 		}
+		lastErr = err
 		if code == "url_expired" && attempt == 0 {
 			g.log.Printf("gateway migrate: sprite reported session url_expired, retrying with fresh URLs")
 			continue
 		}
 		return err
 	}
-	return fmt.Errorf("apply sessions to sprite: exhausted retries")
+	return fmt.Errorf("apply sessions to sprite: exhausted retries: %w", lastErr)
 }
 
 // applySessionsFromURLsToSprite POSTs the session-apply request to
@@ -147,7 +149,11 @@ func fetchURL(ctx context.Context, cli *http.Client, blobURL string) ([]byte, in
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("GET %d", resp.StatusCode)
+		// Surface the response body — S3 SigV4 / object-not-found
+		// errors are XML and carry the actual reason. Without it
+		// the operator gets an opaque "GET 403".
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, resp.StatusCode, fmt.Errorf("GET %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap at 1 MiB
 	if err != nil {
