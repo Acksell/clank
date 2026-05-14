@@ -30,8 +30,10 @@ func envTrue(name string) bool {
 // duration so the bottleneck is at the top.
 //
 // Phases are recorded in completion order (not start order) — start a
-// phase, run the work, call the returned closure to record. Nested or
-// concurrent phases work fine: each call to Start is independent.
+// phase, run the work, call the returned closure to record. Callers
+// must invoke Start sequentially: the recorder appends to a shared
+// slice without synchronization, since every caller today
+// (push/pull/push_sessions) drives migration phases serially.
 type phaseTimer struct {
 	enabled bool
 	phases  []phaseEntry

@@ -36,6 +36,7 @@ import (
 //  5. CLI ops (import/export/session list/delete) operate purely on
 //     local storage. No auth/credentials/network needed.
 func TestOpenCodeImportSemantics(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode binary not on $PATH")
 	}
