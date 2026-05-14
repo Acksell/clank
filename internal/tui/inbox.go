@@ -357,38 +357,20 @@ func (m *InboxModel) loadDataCmd() tea.Cmd {
 		if err != nil {
 			return inboxDataMsg{err: err}
 		}
-		owners := loadWorktreeOwners(ctx)
-		return inboxDataMsg{sessions: sessions, worktreeOwners: owners}
+		// Per-worktree owner glyphs in the sidebar are now driven off
+		// each session's IsRemote flag (set by the local daemon's
+		// gateway from its OwnerCache). The old direct-to-remote
+		// loadWorktreeOwners helper was the only NewRemoteClient call
+		// from the laptop UI; with it gone, every TUI surface goes
+		// through the local daemon.
+		return inboxDataMsg{sessions: sessions}
 	}
-}
-
-// loadWorktreeOwners queries the active remote (if any) for the
-// caller's worktrees and returns id→owner_kind. Returns an empty map
-// when no remote is configured, when the remote is unreachable, or
-// when the local daemon (Sync=nil) is the only thing addressable.
-// The sidebar glyphs are a hint, not a critical signal — silent
-// failure is the right behavior.
-func loadWorktreeOwners(ctx context.Context) map[string]string {
-	cli, err := daemonclient.NewRemoteClient()
-	if err != nil {
-		return nil
-	}
-	wts, err := cli.ListWorktrees(ctx)
-	if err != nil || len(wts) == 0 {
-		return nil
-	}
-	owners := make(map[string]string, len(wts))
-	for _, wt := range wts {
-		owners[wt.ID] = wt.OwnerKind
-	}
-	return owners
 }
 
 // inboxDataMsg carries fetched session data.
 type inboxDataMsg struct {
-	sessions       []agent.SessionInfo
-	worktreeOwners map[string]string // worktree_id → "local"|"remote"; nil when remote unavailable
-	err            error
+	sessions []agent.SessionInfo
+	err      error
 }
 
 // inboxSearchResultMsg carries search results from the daemon.
@@ -619,9 +601,7 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
-			if msg.worktreeOwners != nil {
-				m.sidebar.SetWorktreeOwners(msg.worktreeOwners)
-			}
+			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 			m.buildGroups(m.filteredSessions())
 		}
 		return m, nil

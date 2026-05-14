@@ -120,10 +120,21 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 		}
 	}
 
-	gw, err := gateway.NewGateway(gateway.Config{
+	gwCfg := gateway.Config{
 		Provisioner: prov,
 		Sync:        syncSrv,
-	}, log.Default())
+	}
+	// Laptop mode (Sync == nil): wire the per-session router so
+	// /sessions/* routes between local clank-host and the active
+	// remote based on worktree ownership. Cloud mode (Sync != nil)
+	// stays pure-proxy — it IS the destination of the laptop's
+	// proxy, so it has no "active remote" upstream of itself.
+	if syncSrv == nil {
+		resolver := newPrefsRemoteResolver(log.Default())
+		gwCfg.RemoteResolver = resolver
+		gwCfg.OwnerCache = gateway.NewOwnerCache(resolver, nil)
+	}
+	gw, err := gateway.NewGateway(gwCfg, log.Default())
 	if err != nil {
 		return fmt.Errorf("build gateway: %w", err)
 	}

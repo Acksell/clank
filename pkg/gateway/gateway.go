@@ -34,6 +34,22 @@ type Config struct {
 	// methods directly rather than via HTTP. When nil, the migration
 	// route returns 503.
 	Sync *clanksync.Server
+
+	// OwnerCache holds the laptop daemon's cached view of which
+	// worktrees the active remote owns. When non-nil AND Sync == nil
+	// (laptop mode), the gateway mounts the /sessions* router that
+	// proxies per-session ops to the active remote for remote-owned
+	// worktrees. When nil, /sessions/* falls through to today's
+	// proxyToHost (the catch-all). The cloud gateway (Sync != nil)
+	// never has an OwnerCache — it is the destination of the proxy,
+	// not the source.
+	OwnerCache *OwnerCache
+
+	// RemoteResolver provides the active remote's URL+JWT for the
+	// /sessions* router's outbound calls. Required iff OwnerCache is
+	// set; same supplier as the OwnerCache itself, but threaded
+	// separately so the router can call out without sharing state.
+	RemoteResolver RemoteResolver
 }
 
 // Gateway is the public ingress.
@@ -45,12 +61,23 @@ type Gateway struct {
 	// so a daemon restart invalidates any pending materialize → commit
 	// in flight; the laptop re-runs `clank pull --migrate`.
 	migrationKey []byte
+
+	// ownerCache is a convenience handle on cfg.OwnerCache so the
+	// per-session routing helpers don't have to spell out cfg.OwnerCache
+	// at every call site.
+	ownerCache *OwnerCache
 }
 
 // NewGateway constructs a Gateway.
 func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if cfg.Provisioner == nil {
 		return nil, fmt.Errorf("gateway: Provisioner is required")
+	}
+	if cfg.OwnerCache != nil && cfg.RemoteResolver == nil {
+		return nil, fmt.Errorf("gateway: OwnerCache requires RemoteResolver")
+	}
+	if cfg.OwnerCache != nil && cfg.Sync != nil {
+		return nil, fmt.Errorf("gateway: OwnerCache is only valid in laptop mode (Sync must be nil)")
 	}
 	if lg == nil {
 		lg = log.Default()
@@ -59,7 +86,7 @@ func NewGateway(cfg Config, lg *log.Logger) (*Gateway, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("gateway: generate migration signing key: %w", err)
 	}
-	return &Gateway{cfg: cfg, log: lg, migrationKey: key}, nil
+	return &Gateway{cfg: cfg, log: lg, migrationKey: key, ownerCache: cfg.OwnerCache}, nil
 }
 
 // Handler returns the public-listener http.Handler.
@@ -82,6 +109,17 @@ func (g *Gateway) Handler() http.Handler {
 		// POST /v1/migrate/worktrees/{id} is more specific and wins
 		// over the /v1/ prefix registered here.
 		mx.Handle("/v1/", g.cfg.Sync.Handler())
+	}
+	if g.ownerCache != nil {
+		// Laptop mode: per-session routing decides local-vs-remote
+		// based on worktree ownership. /sessions/search is mounted
+		// explicitly so /sessions/{id} below doesn't match "search"
+		// as a session id.
+		mx.HandleFunc("GET /sessions", g.handleListSessions)
+		mx.HandleFunc("GET /sessions/search", g.handleSearchSessions)
+		mx.HandleFunc("POST /sessions", g.handleCreateSession)
+		mx.HandleFunc("/sessions/{id}", g.handlePerSession)
+		mx.HandleFunc("/sessions/{id}/", g.handlePerSession)
 	}
 	mx.HandleFunc("/", g.proxyToHost)
 	return mx

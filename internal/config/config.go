@@ -133,18 +133,6 @@ type Preferences struct {
 	// default" (defaultSidebarWidthRatio).
 	SidebarWidthRatio int `json:"sidebar_width_ratio,omitempty"`
 
-	// ActiveHub picks which clankd the local TUI/CLI talks to:
-	//
-	//   ""        — implicit "local"; the local Unix-socket daemon.
-	//   "local"   — explicit "local"; same behavior as "".
-	//   "remote"  — talk to cloud.gateway_url with cloud.access_token
-	//               over TCP. Requires the Cloud preference to be set.
-	//
-	// Used by daemonclient.NewDefaultClient to pick the transport. Only
-	// affects clients (TUI, clankcli); the local clankd daemon always
-	// listens on its own socket regardless of this value.
-	ActiveHub string `json:"active_hub,omitempty"`
-
 	// Daytona configures the cloud-hub-side Daytona launcher. Only
 	// effective on a TCP-listening hub. Empty = launcher disabled
 	// (sessions requesting launch_host.provider="daytona" will 4xx).
