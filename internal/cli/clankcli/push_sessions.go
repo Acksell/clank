@@ -25,7 +25,9 @@ import (
 //
 // On failure the migration aborts before ownership transfers, so the
 // caller retains a fully-local worktree they can retry against.
-func pushSessionLeg(cmd *cobra.Command, worktreeID, checkpointID string, gateway *syncclient.Client) error {
+//
+// timer is non-nil; pass a disabled timer when not measuring.
+func pushSessionLeg(cmd *cobra.Command, timer *phaseTimer, worktreeID, checkpointID string, gateway *syncclient.Client) error {
 	// 1. Build (quiesce + export) via the local daemon → clank-host proxy.
 	hostCli, err := daemonclient.NewLocalClient()
 	if err != nil {
@@ -35,7 +37,9 @@ func pushSessionLeg(cmd *cobra.Command, worktreeID, checkpointID string, gateway
 	// Generous deadline because exports of large sessions are slow.
 	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancelBuild()
+	done := timer.Start("build session export")
 	build, err := hostCli.BuildSessionCheckpoint(buildCtx, worktreeID, checkpointID)
+	done()
 	if err != nil {
 		return err
 	}
@@ -68,7 +72,9 @@ func pushSessionLeg(cmd *cobra.Command, worktreeID, checkpointID string, gateway
 	// 2. Mint presigned PUT URLs from the gateway's sync server.
 	presignCtx, cancelPresign := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancelPresign()
+	done = timer.Start("request session upload URLs")
 	urls, err := gateway.RequestSessionUploadURLs(presignCtx, checkpointID, sessionIDs)
+	done()
 	if err != nil {
 		return err
 	}
@@ -76,7 +82,10 @@ func pushSessionLeg(cmd *cobra.Command, worktreeID, checkpointID string, gateway
 	// 3. Tell clank-host to upload the blobs to those URLs.
 	uploadCtx, cancelUpload := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancelUpload()
-	if err := hostCli.UploadSessionCheckpoint(uploadCtx, build.BuildID, checkpointID, urls.SessionPutURLs, urls.SessionManifestPutURL); err != nil {
+	done = timer.Start("upload sessions")
+	err = hostCli.UploadSessionCheckpoint(uploadCtx, build.BuildID, checkpointID, urls.SessionPutURLs, urls.SessionManifestPutURL)
+	done()
+	if err != nil {
 		return err
 	}
 

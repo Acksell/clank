@@ -33,6 +33,7 @@ func pushCmd() *cobra.Command {
 		display  string
 		repoPath string
 		alsoMig  bool
+		timing   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "push [repo-path]",
@@ -95,6 +96,9 @@ is no longer the owner — to resume work locally, run
 			}
 			ctx := context.Background()
 
+			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
+			defer timer.Summary(cmd.ErrOrStderr())
+
 			worktreeID, err := agent.ReadLocalWorktreeID(absRepo)
 			if err != nil {
 				return fmt.Errorf("load cached worktree id: %w", err)
@@ -104,7 +108,9 @@ is no longer the owner — to resume work locally, run
 				if name == "" {
 					name = filepath.Base(absRepo)
 				}
+				done := timer.Start("register worktree")
 				worktreeID, err = cli.RegisterWorktree(ctx, name)
+				done()
 				if err != nil {
 					return fmt.Errorf("register worktree: %w", err)
 				}
@@ -114,7 +120,9 @@ is no longer the owner — to resume work locally, run
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
 			}
 
+			done := timer.Start("push checkpoint")
 			res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
+			done()
 			if err != nil {
 				return fmt.Errorf("push checkpoint: %w", err)
 			}
@@ -136,7 +144,10 @@ is no longer the owner — to resume work locally, run
 				// can't safely round-trip session blobs across the two
 				// hosts. Cheaper to fail here than after we've uploaded
 				// a checkpoint and built session blobs.
-				if err := assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc); err != nil {
+				done := timer.Start("version compatibility check")
+				err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
+				done()
+				if err != nil {
 					return err
 				}
 
@@ -146,13 +157,15 @@ is no longer the owner — to resume work locally, run
 				// ownership flips (TransferOwnership runs on the
 				// gateway side after the sprite-apply succeeds for
 				// BOTH legs).
-				if err := pushSessionLeg(cmd, worktreeID, res.CheckpointID, cli); err != nil {
+				if err := pushSessionLeg(cmd, timer, worktreeID, res.CheckpointID, cli); err != nil {
 					return fmt.Errorf("push session leg: %w", err)
 				}
 
 				mctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
+				done = timer.Start("migrate worktree (gateway)")
 				mres, err := dc.MigrateWorktree(mctx, worktreeID, daemonclient.MigrateToRemote)
+				done()
 				if err != nil {
 					return fmt.Errorf("migrate to remote: %w", err)
 				}
@@ -166,6 +179,7 @@ is no longer the owner — to resume work locally, run
 	cmd.Flags().StringVar(&token, "token", envOrDefault("CLANK_SYNC_TOKEN", ""), "bearer token for the gateway (default: active remote's access_token)")
 	cmd.Flags().StringVar(&display, "display-name", "", "display name for newly-registered worktrees (default: basename of repo-path)")
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "after pushing, also transfer worktree ownership to the remote host")
+	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
 }
 

@@ -38,6 +38,7 @@ func pullCmd() *cobra.Command {
 		repoPath   string
 		worktreeID string
 		alsoMig    bool
+		timing     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "pull [repo-path]",
@@ -87,6 +88,9 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				return fmt.Errorf("remote client: %w", err)
 			}
 
+			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
+			defer timer.Summary(cmd.ErrOrStderr())
+
 			// Refuse the migration up-front on incompatible opencode
 			// versions across hosts — cheaper to fail here than after
 			// the sprite has done its export work. Local client is
@@ -96,7 +100,10 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			if err != nil {
 				return fmt.Errorf("local daemon client: %w", err)
 			}
-			if err := assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc); err != nil {
+			done := timer.Start("version compatibility check")
+			err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
+			done()
+			if err != nil {
 				return err
 			}
 
@@ -107,7 +114,9 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			materializeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			fmt.Fprintf(cmd.OutOrStdout(), "asking sandbox to checkpoint...\n")
+			done = timer.Start("materialize (gateway)")
 			mres, err := dc.MaterializeMigration(materializeCtx, worktreeID)
+			done()
 			if err != nil {
 				return fmt.Errorf("materialize: %w", err)
 			}
@@ -117,7 +126,10 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			defer applyCancel()
 
 			// Phase 2: download + apply locally
-			if err := applyRemoteCheckpoint(applyCtx, absRepo, mres); err != nil {
+			done = timer.Start("apply code locally")
+			err = applyRemoteCheckpoint(applyCtx, absRepo, mres)
+			done()
+			if err != nil {
 				return fmt.Errorf("apply checkpoint locally: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "applied to %s\n", absRepo)
@@ -131,18 +143,22 @@ Without --migrate: bare data-only pull is post-MVP.`,
 				// Reuse the localCli we constructed earlier for the
 				// version-skew check.
 				sessCtx, sessCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				if err := localCli.ApplySessionCheckpoint(sessCtx, worktreeID, mres.SessionManifestURL, mres.SessionBlobURLs); err != nil {
-					sessCancel()
+				done = timer.Start("apply sessions locally")
+				err := localCli.ApplySessionCheckpoint(sessCtx, worktreeID, mres.SessionManifestURL, mres.SessionBlobURLs)
+				done()
+				sessCancel()
+				if err != nil {
 					return fmt.Errorf("apply sessions locally: %w", err)
 				}
-				sessCancel()
 				fmt.Fprintf(cmd.OutOrStdout(), "imported %d session(s) locally\n", len(mres.SessionBlobURLs))
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "committing ownership transfer...\n")
 
 			// Phase 3: commit ownership transfer
+			done = timer.Start("commit migration")
 			res, err := dc.CommitMigration(applyCtx, worktreeID, mres.CheckpointID, mres.MigrationToken)
+			done()
 			if err != nil {
 				return fmt.Errorf("commit migration (apply succeeded; rerun pull to retry the ownership flip): %w", err)
 			}
@@ -152,6 +168,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 	}
 	cmd.Flags().BoolVar(&alsoMig, "migrate", false, "download the sandbox's checkpoint and reclaim ownership")
 	cmd.Flags().StringVar(&worktreeID, "worktree-id", "", "Worktree ID (default: read from <repo>/.clank/worktree-id)")
+	cmd.Flags().BoolVar(&timing, "timing", false, "print a per-phase timing breakdown to stderr (also enabled by CLANK_TIMING=1)")
 	return cmd
 }
 
