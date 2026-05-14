@@ -137,22 +137,15 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Step 4: gateway commits the checkpoint (advances
-	// latest_synced_checkpoint after verifying all blobs in storage).
-	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID); err != nil {
-		syncErrToHTTP(w, "commit checkpoint", err)
-		return
-	}
-
-	// Step 5: session leg. Mirrors the code-leg three-step:
-	// sprite builds session blobs → gateway mints presigned PUT URLs
-	// → sprite uploads. Skipped silently when the sprite has no
+	// Step 4: session leg. Mirrors the code-leg three-step: sprite
+	// builds session blobs → gateway mints presigned PUT URLs →
+	// sprite uploads. Skipped silently when the sprite has no
 	// opencode sessions in this worktree (sessionBuild.Entries is
-	// empty). Failures here abort the materialize before the laptop
-	// sees any URLs, so a partial migration never reaches the
-	// commit step.
-	var sessionManifestGetURL string
-	var sessionBlobGetURLs map[string]string
+	// empty). Critically, this runs BEFORE CommitCheckpoint so a
+	// session-leg failure can't leave latest_synced_checkpoint
+	// pointing at a checkpoint whose session blobs are missing from
+	// storage.
+	var sessionIDs []string
 	sessionBuild, err := triggerSpriteSessionBuild(r.Context(), cli, hostRef, wt.ID, ck.CheckpointID)
 	if err != nil {
 		g.log.Printf("gateway materialize: sprite session build: %v", err)
@@ -163,7 +156,7 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		_ = deleteSpriteSessionBuild(context.Background(), cli, hostRef, sessionBuild.BuildID)
 	}()
 	if len(sessionBuild.Entries) > 0 {
-		sessionIDs := make([]string, len(sessionBuild.Entries))
+		sessionIDs = make([]string, len(sessionBuild.Entries))
 		for i, e := range sessionBuild.Entries {
 			sessionIDs[i] = e.SessionID
 		}
@@ -184,6 +177,24 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "sprite session upload: "+err.Error(), http.StatusBadGateway)
 			return
 		}
+	}
+
+	// Step 5: gateway commits the checkpoint (advances
+	// latest_synced_checkpoint after verifying the code blobs are in
+	// storage). Runs only after both code AND session uploads
+	// succeeded so a partial-upload failure can't leak a pointer
+	// advance.
+	if _, err := g.cfg.Sync.CommitCheckpoint(r.Context(), userID, ck.CheckpointID); err != nil {
+		syncErrToHTTP(w, "commit checkpoint", err)
+		return
+	}
+
+	// Step 6: mint presigned GET URLs (both code and session) for
+	// the laptop. DownloadSessionURLs requires the checkpoint to be
+	// committed (UploadedAt set), so it has to run after step 5.
+	var sessionManifestGetURL string
+	var sessionBlobGetURLs map[string]string
+	if len(sessionIDs) > 0 {
 		sessionGets, err := g.cfg.Sync.DownloadSessionURLs(r.Context(), userID, ck.CheckpointID, sessionIDs)
 		if err != nil {
 			syncErrToHTTP(w, "download session URLs", err)
@@ -192,8 +203,6 @@ func (g *Gateway) handleMigrateMaterialize(w http.ResponseWriter, r *http.Reques
 		sessionManifestGetURL = sessionGets.SessionManifestGetURL
 		sessionBlobGetURLs = sessionGets.SessionGetURLs
 	}
-
-	// Step 6: mint presigned GET URLs for the laptop to pull from.
 	gets, err := g.cfg.Sync.DownloadCheckpointURLs(r.Context(), userID, ck.CheckpointID)
 	if err != nil {
 		syncErrToHTTP(w, "download checkpoint URLs", err)
