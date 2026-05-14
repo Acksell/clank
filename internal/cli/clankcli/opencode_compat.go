@@ -5,47 +5,64 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/acksell/clank/internal/agent"
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 )
 
-// assertOpencodeCompatible queries `opencode --version` on both
-// ends of a migration (laptop's local clank-host, remote sprite's
-// clank-host via the gateway) and enforces the version-skew policy
-// in agent.AssertOpencodeVersionsCompatible:
+// Asymmetric timeouts for the version compatibility check. The two
+// hosts have very different latency floors:
+//
+//   - Local clank-host is a Unix-socket call to an always-warm
+//     process that serves /software-manifest from in-memory cache.
+//     Should answer in milliseconds. A short timeout makes a hung
+//     local daemon fail fast.
+//
+//   - Remote clank-host (via the cloud gateway) may need to
+//     cold-start: EnsureHost wakes the sprite, installs the
+//     embedded clank-host binary if missing, installs opencode at
+//     the pinned version if missing. That's 30-90s on a truly
+//     fresh sprite, and the previous symmetric 10s timeout
+//     produced spurious "context deadline exceeded" errors on
+//     first push.
+const (
+	localCompatCheckTimeout  = 5 * time.Second
+	remoteCompatCheckTimeout = 2 * time.Minute
+)
+
+// assertOpencodeCompatible queries each end's software manifest
+// and enforces the version-skew policy in
+// agent.AssertOpencodeVersionsCompatible:
 //
 //   - exact match: silent OK
 //   - patch-only diff: log a one-line warning to stderr, proceed
 //   - minor or major diff: return an error so the caller aborts
 //     the migration before any code/session work begins
 //
-// Failures fetching either version are reported as compatibility
+// Failures fetching either manifest are reported as compatibility
 // errors with the upgrade hint — better to refuse than guess.
+//
+// Local and remote queries use independent budgets (see
+// localCompatCheckTimeout / remoteCompatCheckTimeout) so a slow
+// sprite cold-start doesn't make a fast local probe look like a
+// failure.
 func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remote *daemonclient.Client) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	localVer, err := local.OpenCodeVersion(ctx)
+	localCtx, cancelLocal := context.WithTimeout(ctx, localCompatCheckTimeout)
+	defer cancelLocal()
+	localManifest, err := local.SoftwareManifest(localCtx)
 	if err != nil {
-		return fmt.Errorf("read laptop opencode version: %w", err)
-	}
-	remoteVer, err := remote.OpenCodeVersion(ctx)
-	if err != nil {
-		// "host unavailable" is the gateway's signal that EnsureHost
-		// failed (provisioner credentials, sprite suspended, etc.).
-		// The actual reason is in the gateway's logs, not in our
-		// response. Tell the user where to look instead of letting
-		// them debug the version check.
-		if isHostUnavailable(err) {
-			return fmt.Errorf("can't reach the remote sprite: %w\n\nThe gateway returned 'host unavailable', which means its provisioner.EnsureHost failed.\nCheck the gateway's logs for the underlying reason. For the dev stack:\n  make docker-logs\nLook for a line like 'gateway: ensure host for user …: …'.", err)
-		}
-		return fmt.Errorf("read remote opencode version: %w", err)
+		return fmt.Errorf("read laptop software manifest: %w", err)
 	}
 
-	warn, err := agent.AssertOpencodeVersionsCompatible(localVer, remoteVer)
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, remoteCompatCheckTimeout)
+	defer cancelRemote()
+	remoteManifest, err := remote.SoftwareManifest(remoteCtx)
+	if err != nil {
+		return fmt.Errorf("read remote software manifest (sprite may still be cold-starting; retry in a moment): %w", err)
+	}
+
+	warn, err := agent.AssertOpencodeVersionsCompatible(localManifest.OpenCode.Version, remoteManifest.OpenCode.Version)
 	if err != nil {
 		var typed *agent.OpencodeIncompatibleError
 		if errors.As(err, &typed) {
@@ -66,20 +83,4 @@ func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remo
 		fmt.Fprintf(stderr, "  warning: %s\n", warn.String())
 	}
 	return nil
-}
-
-// isHostUnavailable detects the gateway's "EnsureHost failed → 502
-// host unavailable" response. The string is the literal body the
-// gateway writes via http.Error in proxy.go's proxyToHost when
-// Provisioner.EnsureHost returns an error. Matched by substring
-// because the daemonclient error wrapping prefixes a path before it.
-//
-// A typed error code from the gateway would be nicer, but this is
-// the existing string and changing the gateway's response shape is
-// a bigger surface than we want for one diagnostic message.
-func isHostUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "host unavailable")
 }
