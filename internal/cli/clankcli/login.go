@@ -31,6 +31,7 @@ Defaults to the active remote; pass --remote to log in to a different
 remote (without changing which is active). The remote must have
 auth_url set; configure it via ` + "`clank remote add <name> --auth-url=...`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			prefs, err := config.LoadPreferences()
 			if err != nil {
 				return fmt.Errorf("load preferences: %w", err)

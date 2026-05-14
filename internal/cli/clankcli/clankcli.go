@@ -27,6 +27,7 @@ func Command() *cobra.Command {
 		Short: "AI-powered coding session manager",
 		Long:  "Clank manages your coding agent sessions and helps you track what's in flight.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runInbox()
 		},
 	}
@@ -36,6 +37,7 @@ func Command() *cobra.Command {
 		inboxCmd(),
 		pushCmd(),
 		pullCmd(),
+		statusCmd(),
 		remoteCmd(),
 		loginCmd(),
 	)
@@ -61,6 +63,7 @@ session detail TUI. Without a prompt, opens the inbox TUI.
 
 The daemon is auto-started if not already running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			// Determine prompt.
 			prompt := strings.Join(args, " ")
 			if prompt == "" {
@@ -176,6 +179,7 @@ func inboxCmd() *cobra.Command {
 		Short: "Open the agent session inbox",
 		Long:  "View and manage daemon-managed coding agent sessions in an interactive TUI.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runInbox()
 		},
 	}

@@ -36,6 +36,7 @@ migration, and the TUI auth panel all target it.
 With no subcommand, prints the configured remotes — active marked with
 ` + "`*`" + `. Pass -v for URLs and signed-in identity.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runRemoteList(cmd, verbose)
 		},
 	}
@@ -107,6 +108,7 @@ func remoteSwitchCmd() *cobra.Command {
 		Short: "Set the active remote",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			if name == "" {
 				return fmt.Errorf("remote name is required")
@@ -153,6 +155,7 @@ flow against --auth-url. Set --token directly only for self-hosted
 static-bearer deployments (server-side CLANK_AUTH_TOKEN + CLANK_AUTH_ALLOW_STATIC=true).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			if name == "" {
 				return fmt.Errorf("remote name is required")
@@ -198,6 +201,7 @@ func remoteRemoveCmd() *cobra.Command {
 		Short:   "Delete a remote",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			name := strings.TrimSpace(args[0])
 			var removed bool
 			err := config.UpdatePreferences(func(p *config.Preferences) {
