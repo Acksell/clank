@@ -26,7 +26,7 @@ func TestCloudView_Status_DiskBaseline(t *testing.T) {
 	if err := config.UpdatePreferences(func(p *config.Preferences) {
 		p.Remote = &config.RemoteConfig{
 			Active:   "default",
-			Profiles: map[string]*config.Remote{"default": {AuthURL: "https://example.test"}},
+			Profiles: map[string]*config.Remote{"default": {GatewayURL: "https://example.test"}},
 		}
 	}); err != nil {
 		t.Fatalf("UpdatePreferences: %v", err)
@@ -55,7 +55,7 @@ func TestCloudView_Status_ReachabilityAxis(t *testing.T) {
 		p.Remote = &config.RemoteConfig{
 			Active: "default",
 			Profiles: map[string]*config.Remote{"default": {
-				AuthURL:     "https://example.test",
+				GatewayURL:  "https://example.test",
 				AccessToken: "tok-abc",
 				// ExpiresAt: 0 means "no expiry tracked" → cloudTokenExpired returns false.
 			}},

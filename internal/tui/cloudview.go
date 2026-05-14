@@ -1,20 +1,19 @@
 package tui
 
-// cloudview.go — TUI panel for the cloud. Provider-agnostic
-// by design: clank speaks RFC 8628 device flow to the cloud's URL and
-// nothing else. The cloud owns the user-auth mechanism
-// (Supabase, OAuth, magic link, …) and exposes it via its /connect
-// web page; clank never sees the auth provider.
+// cloudview.go — TUI panel for the cloud. Provider-agnostic by design:
+// clank discovers the IdP from <GatewayURL>/auth-config, then runs
+// standard OAuth 2.0 authorization code + PKCE against that IdP
+// (Supabase Auth today, anything tomorrow). The gateway never sees
+// passwords; clank never sees the auth provider directly.
 //
-// Mirrors providerauth.go's device-flow pattern: a single tea.Model
-// with a phase enum and async HTTP wrapped in tea.Cmd.
+// One panel, narrow phase machine, single async chain (Login). Mirrors
+// the spirit of providerauth.go (one model, one bubbletea.Update, one
+// View) but with simpler state since PKCE has no polling.
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -28,37 +27,25 @@ import (
 	"github.com/acksell/clank/internal/config"
 )
 
-// cloudViewPhase walks the user through the device-flow grant.
+// cloudViewPhase walks the user through OAuth login + signed-in state.
 type cloudViewPhase int
 
 const (
 	cloudPhaseLoading       cloudViewPhase = iota
-	cloudPhaseNotConfigured                // no cloud_url in prefs
+	cloudPhaseNotConfigured                // no gateway URL in prefs
 	cloudPhaseSignedOut                    // press Enter to start
-	cloudPhaseStarting                     // device/start in flight
-	cloudPhaseAwaiting                     // showing user_code; polling
-	cloudPhaseFetchingMe                   // success → fetching /me
+	cloudPhaseLoggingIn                    // browser opened, awaiting callback + token exchange
 	cloudPhaseSignedIn                     // user-info card
 	cloudPhaseError                        // message + retry
 )
 
 // --- async messages -------------------------------------------------
 
-type cloudDeviceStartedMsg struct {
-	resp *cloud.DeviceStartResponse
-	err  error
-}
-
-type cloudDevicePollMsg struct{}
-
-type cloudDevicePollResultMsg struct {
+// cloudLoginResultMsg is delivered when the OAuth Login dance finishes
+// (success or failure). err is the OAuth error sentinel when relevant.
+type cloudLoginResultMsg struct {
 	session *cloud.Session
 	err     error
-}
-
-type cloudMeResultMsg struct {
-	me  *cloud.MeResponse
-	err error
 }
 
 // cloudOpenURLPickerMsg is emitted when the user requests to change
@@ -73,36 +60,30 @@ type cloudView struct {
 
 	phase cloudViewPhase
 
-	// device-flow state, populated after StartDeviceFlow.
-	device *cloud.DeviceStartResponse
-
-	// pollInterval is the per-flow cadence the cloud asks us to use.
-	// May be increased on ErrSlowDown per RFC 8628 §3.5.
-	pollInterval time.Duration
-
-	// pollDeadline marks when device.ExpiresIn elapses; we stop
-	// polling and surface ErrExpiredToken locally if the cloud doesn't.
-	pollDeadline time.Time
-
 	spinner spinner.Model
 
-	// session is populated on a successful poll; persisted to prefs
-	// before transitioning to cloudPhaseFetchingMe.
+	// session is the most recent successful auth result.
 	session *cloud.Session
 
-	// me is the most recent /me response; rendered in cloudPhaseSignedIn.
-	me *cloud.MeResponse
-
-	// err carries the message rendered in cloudPhaseError (and as a
-	// banner in cloudPhaseSignedIn when /me reported ErrNotSignedUp).
+	// err is rendered in cloudPhaseError, and as a banner in
+	// cloudPhaseSignedIn when we want to surface a non-fatal note.
 	err string
 
-	cloudURL string
-	client   *cloud.Client
+	// gatewayURL is read from the active remote's GatewayURL. Empty
+	// when no remote is configured; phase reflects that.
+	gatewayURL string
+
+	// client is the gateway HTTP client (used for /auth-config
+	// discovery). Nil when gatewayURL is empty.
+	client *cloud.Client
+
+	// loginCancel is the context-cancel for an in-flight login;
+	// invoked on `c` or `esc` from cloudPhaseLoggingIn.
+	loginCancel context.CancelFunc
 
 	// remoteNames is the sorted list of configured remotes — rendered
-	// as a "remotes: dev* managed enterprise" line at the top of the
-	// panel so the user sees what they can tab to.
+	// as a "remote: dev managed enterprise (tab to switch)" line at
+	// the top so the user sees what they can tab to.
 	remoteNames []string
 	// activeRemoteName is the currently-active entry in remoteNames.
 	// Re-read on every Init so prefs edits made out of band (e.g. via
@@ -111,8 +92,7 @@ type cloudView struct {
 
 	// Reachability tracking — fed into Status() so the sidebar
 	// indicator can distinguish "identity ok, server unreachable"
-	// from "identity ok, all good". Updated by message handlers
-	// for /me and the device-flow calls.
+	// from "identity ok, all good". Updated by message handlers.
 	hasCalled   bool
 	lastCallErr error
 }
@@ -154,10 +134,9 @@ func newCloudView() cloudView {
 	}
 }
 
-// Init loads prefs, decides the entry phase, and (if there's a saved
-// session) kicks off a /me to verify it. Operates on the active
-// remote; tab in the panel switches active and re-runs Init for the
-// newly-selected remote.
+// Init loads prefs, decides the entry phase, and is otherwise quiet
+// (no async work). PKCE login fires only when the user explicitly
+// presses Enter.
 func (m *cloudView) Init() tea.Cmd {
 	prefs, _ := config.LoadPreferences()
 	m.remoteNames = remoteNamesSorted(prefs)
@@ -166,20 +145,21 @@ func (m *cloudView) Init() tea.Cmd {
 		m.activeRemoteName = prefs.Remote.Active
 	}
 	p := prefs.ActiveRemote()
-	m.cloudURL = ""
+	m.gatewayURL = ""
 	if p != nil {
-		m.cloudURL = p.AuthURL
+		m.gatewayURL = p.GatewayURL
 	}
-	// Clear any session carried over from a previous remote so the
-	// signed-in card doesn't render with stale data while the new
-	// remote's session is still loading.
+	// Clear any session carried over from a previous remote.
 	m.session = nil
-	m.me = nil
-	if m.cloudURL == "" {
+	m.hasCalled = false
+	m.lastCallErr = nil
+
+	if m.gatewayURL == "" {
 		m.phase = cloudPhaseNotConfigured
+		m.client = nil
 		return nil
 	}
-	m.client = cloud.New(m.cloudURL, nil)
+	m.client = cloud.New(m.gatewayURL, nil)
 
 	if p != nil && p.AccessToken != "" && !cloudTokenExpired(p) {
 		m.session = &cloud.Session{
@@ -189,8 +169,12 @@ func (m *cloudView) Init() tea.Cmd {
 			UserEmail:    p.UserEmail,
 			ExpiresAt:    p.ExpiresAt,
 		}
-		m.phase = cloudPhaseFetchingMe
-		return tea.Batch(m.spinner.Tick, m.fetchMeCmd())
+		m.phase = cloudPhaseSignedIn
+		// Mark reachability as "checking" so the sidebar shows the
+		// spinner until the first authenticated request. (No /me
+		// endpoint to call here — the gateway's first real request
+		// from elsewhere in the app will flip lastCallErr.)
+		return nil
 	}
 
 	m.phase = cloudPhaseSignedOut
@@ -208,84 +192,22 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case cloudDeviceStartedMsg:
+	case cloudLoginResultMsg:
+		m.loginCancel = nil
 		if msg.err != nil {
+			if errors.Is(msg.err, cloud.ErrLoginCancelled) {
+				m.phase = cloudPhaseSignedOut
+				m.err = ""
+				return m, nil
+			}
 			m.phase = cloudPhaseError
-			m.err = "starting device flow: " + msg.err.Error()
+			m.err = "sign-in failed: " + msg.err.Error()
 			return m, nil
 		}
-		m.device = msg.resp
-		m.pollInterval = time.Duration(maxInt(msg.resp.Interval, 1)) * time.Second
-		m.pollDeadline = time.Now().Add(time.Duration(msg.resp.ExpiresIn) * time.Second)
-		m.phase = cloudPhaseAwaiting
-		// Nudge the user's browser if we can — non-fatal if it fails.
-		go openBrowser(msg.resp.VerificationURIComplete, msg.resp.VerificationURI)
-		// Start the poll loop.
-		return m, tea.Batch(m.spinner.Tick, m.scheduleNextPoll())
-
-	case cloudDevicePollMsg:
-		// Ignore stray ticks once we've moved past the awaiting phase.
-		if m.phase != cloudPhaseAwaiting {
-			return m, nil
-		}
-		if time.Now().After(m.pollDeadline) {
-			m.phase = cloudPhaseError
-			m.err = "device code expired — press any key to start over"
-			return m, nil
-		}
-		return m, m.pollOnceCmd()
-
-	case cloudDevicePollResultMsg:
-		switch {
-		case msg.err == nil:
-			// Approved — persist + fetch /me.
-			m.session = msg.session
-			_ = persistSession(msg.session)
-			m.phase = cloudPhaseFetchingMe
-			return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
-		case errors.Is(msg.err, cloud.ErrAuthorizationPending):
-			return m, m.scheduleNextPoll()
-		case errors.Is(msg.err, cloud.ErrSlowDown):
-			m.pollInterval += 5 * time.Second
-			return m, m.scheduleNextPoll()
-		case errors.Is(msg.err, cloud.ErrAccessDenied):
-			m.phase = cloudPhaseError
-			m.err = "the request was denied"
-			return m, nil
-		case errors.Is(msg.err, cloud.ErrExpiredToken):
-			m.phase = cloudPhaseError
-			m.err = "device code expired — press any key to start over"
-			return m, nil
-		default:
-			m.phase = cloudPhaseError
-			m.err = "polling: " + msg.err.Error()
-			return m, nil
-		}
-
-	case cloudMeResultMsg:
-		m.hasCalled = true
-		m.lastCallErr = msg.err
-		if errors.Is(msg.err, cloud.ErrUnauthorized) {
-			m.session = nil
-			_ = clearSession()
-			m.phase = cloudPhaseSignedOut
-			m.err = "session expired; sign in again"
-			return m, nil
-		}
-		if errors.Is(msg.err, cloud.ErrNotSignedUp) {
-			m.me = nil
-			m.phase = cloudPhaseSignedIn
-			m.err = "Authenticated, but you haven't claimed a handle yet."
-			return m, nil
-		}
-		if msg.err != nil {
-			m.phase = cloudPhaseError
-			m.err = "fetching profile: " + msg.err.Error()
-			return m, nil
-		}
-		m.me = msg.me
-		m.err = ""
+		m.session = msg.session
+		_ = persistSession(msg.session)
 		m.phase = cloudPhaseSignedIn
+		m.err = ""
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -316,19 +238,29 @@ func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 		return m, nil
 
 	case cloudPhaseSignedOut:
-		// Enter starts the device flow; any other key is a no-op so
-		// the user can navigate back to the sidebar.
+		// Enter opens the browser and starts PKCE; any other key is
+		// a no-op so the user can navigate back to the sidebar.
 		if key.Matches(msg, key.NewBinding(key.WithKeys("enter"))) {
-			m.phase = cloudPhaseStarting
 			m.err = ""
-			return m, tea.Batch(m.spinner.Tick, m.startDeviceCmd())
+			m.phase = cloudPhaseLoggingIn
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			m.loginCancel = cancel
+			return m, tea.Batch(m.spinner.Tick, m.loginCmd(ctx))
+		}
+		// 'u' jumps to URL picker even from signed-out (e.g. user
+		// configured the wrong gateway and needs to re-enter it).
+		if key.Matches(msg, key.NewBinding(key.WithKeys("u"))) {
+			return m, func() tea.Msg { return cloudOpenURLPickerMsg{} }
 		}
 		return m, nil
 
-	case cloudPhaseAwaiting:
-		// 'c' cancels and returns to signed-out.
+	case cloudPhaseLoggingIn:
+		// 'c' / esc cancels the in-flight login.
 		if key.Matches(msg, key.NewBinding(key.WithKeys("c", "esc"))) {
-			m.device = nil
+			if m.loginCancel != nil {
+				m.loginCancel()
+				m.loginCancel = nil
+			}
 			m.phase = cloudPhaseSignedOut
 			return m, nil
 		}
@@ -337,30 +269,21 @@ func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 	case cloudPhaseSignedIn:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("o"))):
-			if m.session != nil && m.client != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				m.client.SignOut(ctx, m.session.AccessToken)
-			}
 			_ = clearSession()
 			m.session = nil
-			m.me = nil
 			m.err = ""
 			m.phase = cloudPhaseSignedOut
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("r"))):
-			if m.session != nil {
-				m.phase = cloudPhaseFetchingMe
-				return m, tea.Batch(m.spinner.Tick, m.fetchMeCmd())
-			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("u"))):
+			return m, func() tea.Msg { return cloudOpenURLPickerMsg{} }
 		}
 		return m, nil
 
 	case cloudPhaseError:
-		// Any key returns to the prior usable state.
+		// Any key returns to the prior usable state (signed-out, so
+		// they can retry the flow).
 		m.phase = cloudPhaseSignedOut
 		m.err = ""
-		m.device = nil
 		return m, nil
 	}
 	return m, nil
@@ -368,77 +291,37 @@ func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 
 // --- async commands -------------------------------------------------
 
-func (m *cloudView) startDeviceCmd() tea.Cmd {
+// loginCmd kicks off the full PKCE flow in a goroutine and returns
+// the result via cloudLoginResultMsg. It performs two HTTP roundtrips:
+//   1. GET <gateway>/auth-config (discover Supabase URL + anon key)
+//   2. The OAuth dance (browser open, callback, token exchange)
+// Both run inside the supplied ctx; cancelling ctx aborts the flow.
+func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		resp, err := client.StartDeviceFlow(ctx)
-		return cloudDeviceStartedMsg{resp: resp, err: err}
+		// Discover IdP via /auth-config.
+		discoverCtx, cancelDiscover := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelDiscover()
+		cfg, err := client.FetchAuthConfig(discoverCtx)
+		if err != nil {
+			return cloudLoginResultMsg{err: fmt.Errorf("discover IdP: %w", err)}
+		}
+		oauth := &cloud.OAuthClient{
+			SupabaseURL: cfg.SupabaseURL,
+			AnonKey:     cfg.AnonKey,
+			Provider:    nonEmpty(cfg.DefaultProvider, "github"),
+		}
+		sess, err := oauth.Login(ctx)
+		return cloudLoginResultMsg{session: sess, err: err}
 	}
 }
 
-// scheduleNextPoll waits one pollInterval, then fires a
-// cloudDevicePollMsg which Update interprets as "go ahead and poll".
-// Splitting the wait from the request makes the wait cancelable
-// (ESC during cloudPhaseAwaiting transitions to signed-out and any
-// in-flight tick becomes a no-op).
-func (m *cloudView) scheduleNextPoll() tea.Cmd {
-	d := m.pollInterval
-	return tea.Tick(d, func(time.Time) tea.Msg {
-		return cloudDevicePollMsg{}
-	})
-}
-
-func (m *cloudView) pollOnceCmd() tea.Cmd {
-	client := m.client
-	deviceCode := ""
-	if m.device != nil {
-		deviceCode = m.device.DeviceCode
+// nonEmpty returns a if non-empty, else b.
+func nonEmpty(a, b string) string {
+	if a != "" {
+		return a
 	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		s, err := client.PollDeviceFlow(ctx, deviceCode)
-		return cloudDevicePollResultMsg{session: s, err: err}
-	}
-}
-
-func (m *cloudView) fetchMeCmd() tea.Cmd {
-	client := m.client
-	tok := ""
-	if m.session != nil {
-		tok = m.session.AccessToken
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		me, err := client.Me(ctx, tok)
-		return cloudMeResultMsg{me: me, err: err}
-	}
-}
-
-// openBrowser tries to launch the user's browser. uriComplete includes
-// the user_code as a query param so the user doesn't have to type it.
-// Falls back to uri if uriComplete is empty.
-func openBrowser(uriComplete, uri string) {
-	target := uriComplete
-	if target == "" {
-		target = uri
-	}
-	if target == "" {
-		return
-	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", target)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
-	default:
-		cmd = exec.Command("xdg-open", target)
-	}
-	_ = cmd.Run()
+	return b
 }
 
 // --- view -----------------------------------------------------------
@@ -448,7 +331,7 @@ func (m cloudView) View() string {
 
 	// Remote selector — rendered between header and phase body so the
 	// user sees what they can tab to. Hidden when only one (or zero)
-	// remote is configured; there's nothing to switch to.
+	// remote is configured; nothing to switch to.
 	var selector string
 	if len(m.remoteNames) > 1 {
 		muted := lipgloss.NewStyle().Foreground(mutedColor)
@@ -473,12 +356,8 @@ func (m cloudView) View() string {
 		body = m.viewNotConfigured()
 	case cloudPhaseSignedOut:
 		body = m.viewSignedOut()
-	case cloudPhaseStarting:
-		body = lipgloss.NewStyle().Foreground(mutedColor).Render(m.spinner.View() + " starting device flow…")
-	case cloudPhaseAwaiting:
-		body = m.viewAwaiting()
-	case cloudPhaseFetchingMe:
-		body = lipgloss.NewStyle().Foreground(mutedColor).Render(m.spinner.View() + " fetching profile…")
+	case cloudPhaseLoggingIn:
+		body = m.viewLoggingIn()
 	case cloudPhaseSignedIn:
 		body = m.viewSignedIn()
 	case cloudPhaseError:
@@ -491,7 +370,7 @@ func (m cloudView) View() string {
 
 func (m cloudView) viewNotConfigured() string {
 	muted := lipgloss.NewStyle().Foreground(mutedColor)
-	return muted.Render("Cloud credentials not set up.\n\npress Enter to configure.")
+	return muted.Render("Cloud not configured.\n\npress Enter to set the gateway URL.")
 }
 
 func (m cloudView) viewSignedOut() string {
@@ -500,7 +379,9 @@ func (m cloudView) viewSignedOut() string {
 	parts := []string{
 		text.Render("Connect this device to the cloud."),
 		"",
-		muted.Render("press Enter to sign in."),
+		muted.Render("press Enter to sign in via your browser."),
+		"",
+		muted.Render("u: change cloud URL"),
 	}
 	if m.err != "" {
 		parts = append([]string{lipgloss.NewStyle().Foreground(dangerColor).Render(m.err), ""}, parts...)
@@ -508,26 +389,13 @@ func (m cloudView) viewSignedOut() string {
 	return strings.Join(parts, "\n")
 }
 
-func (m cloudView) viewAwaiting() string {
+func (m cloudView) viewLoggingIn() string {
 	muted := lipgloss.NewStyle().Foreground(mutedColor)
-	text := lipgloss.NewStyle().Foreground(textColor).Bold(true)
-	primary := lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
-
-	uri := ""
-	code := ""
-	if m.device != nil {
-		uri = m.device.VerificationURI
-		code = m.device.UserCode
-	}
-
+	text := lipgloss.NewStyle().Foreground(textColor)
 	rows := []string{
-		text.Render("Visit:"),
-		"  " + primary.Render(uri),
+		text.Render(m.spinner.View() + " opening browser…"),
 		"",
-		text.Render("Enter code:"),
-		"  " + primary.Render(code),
-		"",
-		muted.Render(m.spinner.View() + " waiting for confirmation…"),
+		muted.Render("complete sign-in in the browser tab that opened."),
 		"",
 		muted.Render("c / esc: cancel"),
 	}
@@ -551,35 +419,15 @@ func (m cloudView) viewSignedIn() string {
 		rows = append(rows, "")
 	}
 
-	if m.me != nil {
-		if len(m.me.Hubs) > 0 {
-			h := m.me.Hubs[0]
-			rows = append(rows,
-				text.Bold(true).Render("Hub"),
-				muted.Render("subdomain "+h.Subdomain),
-				muted.Render("region    "+h.Region),
-				muted.Render("status    "+h.Status),
-				muted.Render("url       "+h.PublicURL),
-				"",
-			)
-		}
-		if len(m.me.Hosts) > 0 {
-			h := m.me.Hosts[0]
-			rows = append(rows,
-				text.Bold(true).Render("Host"),
-				muted.Render("provider  "+h.Provider),
-				muted.Render("hostname  "+h.Hostname),
-				muted.Render("status    "+h.Status),
-				"",
-			)
-		} else if len(m.me.Hubs) > 0 {
-			rows = append(rows, muted.Render("(no host yet — POST /provision against the cloud to create one)"), "")
-		}
-	} else if m.err != "" {
+	if m.gatewayURL != "" {
+		rows = append(rows, muted.Render("gateway   "+m.gatewayURL), "")
+	}
+
+	if m.err != "" {
 		rows = append(rows, muted.Render(m.err), "")
 	}
 
-	rows = append(rows, muted.Render("r: refresh   o: sign out"))
+	rows = append(rows, muted.Render("u: change URL   o: sign out"))
 	return strings.Join(rows, "\n")
 }
 
@@ -601,13 +449,6 @@ func humanTTL(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // --- pref helpers ---------------------------------------------------
@@ -687,8 +528,8 @@ func nextRemoteName(names []string, current string) string {
 }
 
 // ensureActiveProfile resolves (or creates) the active cloud profile
-// so the device-flow grant has somewhere to write. Used by
-// persistSession — clear is a no-op when nothing is active.
+// so the OAuth grant has somewhere to write. Used by persistSession;
+// clear is a no-op when nothing is active.
 func ensureActiveProfile(p *config.Preferences) *config.Remote {
 	if p.Remote == nil {
 		p.Remote = &config.RemoteConfig{Active: "default", Profiles: map[string]*config.Remote{}}
