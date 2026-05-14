@@ -288,6 +288,12 @@ type spriteBuildResult struct {
 	IncrementalCommit string `json:"incremental_commit"`
 }
 
+// TODO(coderabbit): collapse the six sprite-request helpers below
+// (triggerSpriteBuild/Upload/delete + their session-leg twins) into a
+// single doSpriteRequest(ctx, hostRef, method, path, body) helper.
+// Six near-identical NewRequestWithContext+Authorization+Transport
+// blocks ought to share one. https://github.com/Acksell/clank/pull/18
+//
 // triggerSpriteBuild POSTs to /sync/build?repo=<id> on the sprite.
 func triggerSpriteBuild(ctx context.Context, baseClient *http.Client, hostRef provisioner.HostRef, worktreeID string) (*spriteBuildResult, error) {
 	if worktreeID == "" {
