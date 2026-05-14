@@ -120,6 +120,30 @@ is no longer the owner — to resume work locally, run
 				fmt.Fprintf(cmd.OutOrStdout(), "registered worktree %s as %q\n", worktreeID, name)
 			}
 
+			// When --migrate is set, run the pre-flight check (version
+			// compatibility + reachability of remote clank-host) BEFORE
+			// PushCheckpoint. Otherwise a sprite that's unreachable or
+			// has the wrong opencode version makes us waste a full
+			// checkpoint upload first. Constructed clients are reused
+			// downstream for the session leg + migrate call.
+			var dc, localCli *daemonclient.Client
+			if alsoMig {
+				dc, err = daemonclient.NewRemoteClient()
+				if err != nil {
+					return fmt.Errorf("remote client: %w", err)
+				}
+				localCli, err = daemonclient.NewLocalClient()
+				if err != nil {
+					return fmt.Errorf("local daemon client: %w", err)
+				}
+				done := timer.Start("version compatibility check")
+				err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
+				done()
+				if err != nil {
+					return err
+				}
+			}
+
 			done := timer.Start("push checkpoint")
 			res, err := cli.PushCheckpoint(ctx, worktreeID, absRepo)
 			done()
@@ -130,27 +154,6 @@ is no longer the owner — to resume work locally, run
 				res.CheckpointID, shortSHA(res.Manifest.HeadCommit))
 
 			if alsoMig {
-				// Construct the remote daemon client up-front: we use it
-				// for the version-skew check AND the migration call.
-				dc, err := daemonclient.NewRemoteClient()
-				if err != nil {
-					return fmt.Errorf("remote client: %w", err)
-				}
-				localCli, err := daemonclient.NewLocalClient()
-				if err != nil {
-					return fmt.Errorf("local daemon client: %w", err)
-				}
-				// Refuse the migration up-front if opencode versions
-				// can't safely round-trip session blobs across the two
-				// hosts. Cheaper to fail here than after we've uploaded
-				// a checkpoint and built session blobs.
-				done := timer.Start("version compatibility check")
-				err = assertOpencodeCompatible(cmd.Context(), cmd.ErrOrStderr(), localCli, dc)
-				done()
-				if err != nil {
-					return err
-				}
-
 				// Session leg — ride the session blobs into the same
 				// checkpoint so code + sessions transfer atomically. If
 				// pushSessionLeg fails the migration aborts before
