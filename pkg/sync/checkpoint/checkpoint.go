@@ -107,6 +107,53 @@ func NewBuilder(repoPath, createdBy string) *Builder {
 	return &Builder{repoPath: repoPath, createdBy: createdBy}
 }
 
+// Snapshot is the content-addressed view of the working tree without
+// any bundling work. Cheaper than Build: 4 git plumbing calls, no
+// commit-tree synthesis, no `git bundle create`. Used by divergence
+// detection in push/pull (`clank status`, `clank push` idempotency)
+// to decide "is local already in sync with remote" before committing
+// to a full bundle upload.
+type Snapshot struct {
+	HeadCommit   string
+	HeadRef      string
+	IndexTree    string
+	WorktreeTree string
+}
+
+// Snapshot computes the 4 content SHAs that uniquely identify the
+// working tree's state. No filesystem writes (other than git's own
+// object hashing).
+func (b *Builder) Snapshot(ctx context.Context) (*Snapshot, error) {
+	headCommit, err := b.gitOutput(ctx, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
+	}
+	headCommit = strings.TrimSpace(headCommit)
+
+	headRef := ""
+	if out, err := b.gitOutput(ctx, nil, "symbolic-ref", "--short", "HEAD"); err == nil {
+		headRef = strings.TrimSpace(out)
+	}
+
+	indexTreeOut, err := b.gitOutput(ctx, nil, "write-tree")
+	if err != nil {
+		return nil, fmt.Errorf("write-tree (index): %w", err)
+	}
+	indexTree := strings.TrimSpace(indexTreeOut)
+
+	worktreeTree, err := b.captureWorktreeTree(ctx, headCommit)
+	if err != nil {
+		return nil, fmt.Errorf("capture worktreeTree: %w", err)
+	}
+
+	return &Snapshot{
+		HeadCommit:   headCommit,
+		HeadRef:      headRef,
+		IndexTree:    indexTree,
+		WorktreeTree: worktreeTree,
+	}, nil
+}
+
 // Build constructs a checkpoint with the given checkpointID. The
 // caller is responsible for generating the ID (typically a ULID) and
 // for cleaning up the returned Result.
