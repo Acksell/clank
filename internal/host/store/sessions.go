@@ -62,7 +62,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]agent.SessionInfo, error) {
 // without a worktree context should use ListSessions instead.
 func (s *Store) ListSessionsByWorktree(ctx context.Context, worktreeID string) ([]agent.SessionInfo, error) {
 	if worktreeID == "" {
-		return nil, nil
+		return []agent.SessionInfo{}, nil
 	}
 	rows, err := s.q.ListSessionsByWorktree(ctx, worktreeID)
 	if err != nil {

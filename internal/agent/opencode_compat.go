@@ -66,9 +66,6 @@ func AssertOpencodeVersionsCompatible(local, remote string) (*OpencodeWarning, e
 			Reason: "could not determine one or both opencode versions",
 		}
 	}
-	if local == remote {
-		return nil, nil
-	}
 	lMaj, lMin, lPat, err := parseOpencodeVersion(local)
 	if err != nil {
 		return nil, &OpencodeIncompatibleError{
@@ -82,6 +79,10 @@ func AssertOpencodeVersionsCompatible(local, remote string) (*OpencodeWarning, e
 			Local: local, Remote: remote,
 			Reason: fmt.Sprintf("remote version unparseable: %v", err),
 		}
+	}
+	if lMaj == rMaj && lMin == rMin && lPat == rPat {
+		// Semantic equality: "1.14" and "1.14.0" both parse to (1,14,0).
+		return nil, nil
 	}
 	if lMaj != rMaj {
 		return nil, &OpencodeIncompatibleError{
@@ -98,9 +99,6 @@ func AssertOpencodeVersionsCompatible(local, remote string) (*OpencodeWarning, e
 			Reason: "minor version differs — opencode has shipped breaking schema changes between minors before; upgrade one side to match the other before retrying",
 		}
 	}
-	// Same major.minor, different patch. Permitted but worth surfacing.
-	_ = lPat
-	_ = rPat
 	return &OpencodeWarning{
 		Local: local, Remote: remote,
 		Message: "opencode patch versions differ across hosts — usually fine, but consider upgrading the older side if you see schema errors",

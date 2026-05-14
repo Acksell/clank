@@ -70,14 +70,18 @@ func TestAssertOpencodeVersionsCompatible(t *testing.T) {
 			errContainsAny: []string{"unparseable"},
 		},
 		{
-			name:   "two-segment versions parse cleanly with patch defaulting to 0",
+			name:   "two-segment vs three-segment: semantically equal, no warning",
 			local:  "1.14",
 			remote: "1.14.0",
-			// 1.14 → (1,14,0); 1.14.0 → (1,14,0). Same major.minor,
-			// patch differs only in stringification → exact equality
-			// fails on the string compare, drops into the patch-warn
-			// branch.
-			wantWarn: true,
+			// 1.14 → (1,14,0); 1.14.0 → (1,14,0). Numerically equal
+			// after parse — no warning.
+		},
+		{
+			name:           "both garbage and equal — must still refuse via parse error",
+			local:          "garbage",
+			remote:         "garbage",
+			wantErr:        true,
+			errContainsAny: []string{"unparseable"},
 		},
 	}
 	for _, c := range cases {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -66,6 +67,29 @@ func TestParseLegacyTimeMs_ProductionFormats(t *testing.T) {
 					c.input, got, c.want, got-c.want)
 			}
 		})
+	}
+}
+
+// TestParseLegacyTimeMs_NumericPassThrough pins idempotency: a
+// pure-digit string is already INTEGER millis (the CAST(int AS TEXT)
+// shape produced by re-running the v3 migration on an
+// already-migrated table), and must pass through unchanged rather
+// than fall back to the ULID/now() path. Regression for
+// half-committed v3 migrations that silently rewrote timestamps.
+func TestParseLegacyTimeMs_NumericPassThrough(t *testing.T) {
+	t.Parallel()
+	cases := []int64{
+		0,
+		1,
+		1716000000000,
+		time.Now().UnixMilli(),
+	}
+	for _, want := range cases {
+		s := strconv.FormatInt(want, 10)
+		got := parseLegacyTimeMs(s, "")
+		if got != want {
+			t.Errorf("parseLegacyTimeMs(%q) = %d, want %d", s, got, want)
+		}
 	}
 }
 

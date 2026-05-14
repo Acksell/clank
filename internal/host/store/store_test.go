@@ -512,6 +512,68 @@ func TestOpen_MigrationV2ToV3_BackfillsTimeFormats(t *testing.T) {
 	}
 }
 
+// TestOpen_MigrationV3_IdempotentOnReentry simulates the partial-failure
+// case CodeRabbit flagged: migrateSessionsToMillis commits, but the
+// outer migrate() exits before bumping user_version to 3 (e.g. helper #2
+// panics, process crashes, etc.). On next Open the v3 block re-runs;
+// sessions is now INTEGER, so CAST(created_at AS TEXT) produces digit
+// strings like "1716000000000". Pre-fix, parseLegacyTimeMs didn't
+// recognise that shape and fell back to ULID/now(), silently rewriting
+// the timestamps. After the fix it passes the integer through unchanged.
+func TestOpen_MigrationV3_IdempotentOnReentry(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.db")
+
+	// Open once → full v3 migration runs from a fresh DB.
+	s1, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	now := time.Now()
+	if err := s1.UpsertSession(context.Background(), agent.SessionInfo{
+		ID:        "01KREAZB05YBB9P6QVH0SRZC1F",
+		Backend:   agent.BackendOpenCode,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	wantCreatedMs := now.UnixMilli()
+	s1.Close()
+
+	// Hand-rewind user_version to 2 so the next Open re-runs v3 on a
+	// table whose schema is already INTEGER. This is the
+	// half-committed shape the CR comment is about.
+	rawDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	if _, err := rawDB.Exec(`PRAGMA user_version = 2`); err != nil {
+		rawDB.Close()
+		t.Fatalf("rewind user_version: %v", err)
+	}
+	rawDB.Close()
+
+	// Re-open. v3 reruns; parseLegacyTimeMs must recognise the digit
+	// strings produced by CAST(INTEGER AS TEXT) and pass them through.
+	s2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("re-open after rewind: %v", err)
+	}
+	t.Cleanup(func() { s2.Close() })
+
+	got, err := s2.GetSession(context.Background(), "01KREAZB05YBB9P6QVH0SRZC1F")
+	if err != nil {
+		t.Fatalf("GetSession after re-entry: %v", err)
+	}
+	if got.CreatedAt.UnixMilli() != wantCreatedMs {
+		t.Errorf("timestamp rewritten by re-entry: got %d ms, want %d ms (delta %d)",
+			got.CreatedAt.UnixMilli(), wantCreatedMs,
+			got.CreatedAt.UnixMilli()-wantCreatedMs)
+	}
+}
+
 // TestOpen_MigrationV2ToV3_UnparseableTimeFallsBackToULID covers the
 // last-ditch path of the v3 migration: if a row's stored time is
 // completely unparseable (corruption, missing format, etc.) the

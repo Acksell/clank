@@ -73,7 +73,7 @@ func assertOpencodeCompatible(ctx context.Context, stderr io.Writer, local, remo
 			// automatically on EnsureHost), suggesting the pin
 			// directly avoids a guessing game.
 			return fmt.Errorf(
-				"%s\n\nclank pins opencode at version %s. Upgrade your laptop to match:\n  opencode upgrade --version %s\n\n(The sprite re-installs the pinned opencode automatically on its next EnsureHost; if it's the side that's drifted, restart the sprite via your remote provisioner and retry.)",
+				"%s\n\nclank pins opencode at version %s. Upgrade your laptop to match:\n  opencode upgrade v%s\n\n(The sprite re-installs the pinned opencode automatically on its next EnsureHost; if it's the side that's drifted, restart the sprite via your remote provisioner and retry.)",
 				typed.Error(), agent.PinnedOpencodeVersion, agent.PinnedOpencodeVersion,
 			)
 		}

@@ -3,7 +3,15 @@ package agent
 import (
 	"context"
 	"sync"
+	"time"
 )
+
+// softwareManifestProbeTimeout bounds the FIRST /software-manifest
+// probe. Independent of any caller's ctx so a short-deadline first
+// request can't poison the process-global cache with an empty
+// manifest (sync.Once.Do runs exactly once whether the probe
+// succeeded or was canceled).
+const softwareManifestProbeTimeout = 5 * time.Second
 
 // SoftwareInfo describes one tool clank-host knows about. Version
 // is empty when the tool isn't installed (or failed to respond to
@@ -43,13 +51,18 @@ var (
 // lazily on first call. Concurrent first-callers serialize on
 // sync.Once; once cached, reads are lock-free.
 //
-// ctx is used for the FIRST probe only — once the manifest is
-// cached, this function ignores ctx and returns immediately.
-// If you need an uncached probe (e.g. to detect an out-of-band
-// opencode upgrade), the right answer is to restart clank-host.
+// ctx is accepted for symmetry with cancellable callers but is
+// NOT plumbed into the probe — the probe runs on a private
+// softwareManifestProbeTimeout context so a canceled first
+// request can't permanently cache an empty manifest. If you
+// need an uncached probe (e.g. to detect an out-of-band opencode
+// upgrade), the right answer is to restart clank-host.
 func GetSoftwareManifest(ctx context.Context) SoftwareManifest {
+	_ = ctx
 	softwareManifestOnce.Do(func() {
-		softwareManifest = probeSoftwareManifest(ctx)
+		probeCtx, cancel := context.WithTimeout(context.Background(), softwareManifestProbeTimeout)
+		defer cancel()
+		softwareManifest = probeSoftwareManifest(probeCtx)
 	})
 	return softwareManifest
 }

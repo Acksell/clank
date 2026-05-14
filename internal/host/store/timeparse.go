@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,12 +43,33 @@ func parseLegacyTimeMs(s, fallbackULID string) int64 {
 	if s == "" {
 		return fallbackTimeMs(fallbackULID)
 	}
+	// Idempotency: a pure-digit string is already INTEGER millis
+	// (CAST(int AS TEXT) post-v3). Pass through unchanged so a
+	// partially-committed v3 migration can re-run without
+	// rewriting timestamps via fallbackTimeMs.
+	if isAllDigits(s) {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return n
+		}
+	}
 	for _, layout := range legacyTimeLayouts {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t.UnixMilli()
 		}
 	}
 	return fallbackTimeMs(fallbackULID)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // legacyTimeLayouts is the closed set of formats we'll try on each
