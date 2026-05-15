@@ -162,8 +162,8 @@ func (m *InboxModel) updateCloudURLPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 // (creating one named "default" if none exists). Empty url clears the
 // field, disabling cloud features for that profile.
 //
-// Sets GatewayURL only. AuthURL is no longer used: clank discovers the
-// IdP via <GatewayURL>/auth-config at login time.
+// The gateway is the only URL the laptop needs — it exposes
+// /auth-config so clank can discover the OAuth IdP at login time.
 func persistCloudURL(url string) {
 	_ = config.UpdatePreferences(func(p *config.Preferences) {
 		profile := ensureActiveProfile(p)
