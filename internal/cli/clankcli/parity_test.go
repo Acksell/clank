@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
@@ -174,5 +176,31 @@ func TestCheckParity_NilSnapshot(t *testing.T) {
 	dc := newRemoteClient(t, f.srv.URL)
 	if _, err := checkParity(context.Background(), dc, "wt-id", nil); err == nil {
 		t.Fatal("nil snapshot should error")
+	}
+}
+
+func TestIsGitRepo(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	missing := filepath.Join(root, "does-not-exist")
+	if ok, err := isGitRepo(missing); err != nil || ok {
+		t.Errorf("missing path: got (%v, %v), want (false, nil)", ok, err)
+	}
+
+	bare := filepath.Join(root, "bare")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := isGitRepo(bare); err != nil || ok {
+		t.Errorf("non-git dir: got (%v, %v), want (false, nil)", ok, err)
+	}
+
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := isGitRepo(repo); err != nil || !ok {
+		t.Errorf("git dir: got (%v, %v), want (true, nil)", ok, err)
 	}
 }

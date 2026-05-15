@@ -96,39 +96,46 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			timer := newPhaseTimer(timing || envTrue("CLANK_TIMING"))
 			defer timer.Summary(cmd.ErrOrStderr())
 
-			// Snapshot local state and parity-check before the
-			// expensive materialize. The no-op branch is identical
-			// across all error cases below — early-exit on
-			// "you already own this + in sync".
-			done := timer.Start("snapshot local")
-			snap, err := snapshotRepo(cmd.Context(), absRepo)
-			done()
+			// Snapshot + parity is a no-op fast-path. It needs a git
+			// repo on disk; pulling into a fresh destination
+			// (--worktree-id + new path) skips it and goes straight
+			// to materialize — checkpoint.Apply will git-init the
+			// target as part of restore.
+			isRepo, err := isGitRepo(absRepo)
 			if err != nil {
-				return fmt.Errorf("snapshot repo: %w", err)
+				return fmt.Errorf("check repo state: %w", err)
 			}
+			if isRepo {
+				done := timer.Start("snapshot local")
+				snap, err := snapshotRepo(cmd.Context(), absRepo)
+				done()
+				if err != nil {
+					return fmt.Errorf("snapshot repo: %w", err)
+				}
 
-			done = timer.Start("parity check")
-			parity, err := checkParity(cmd.Context(), dc, worktreeID, snap)
-			done()
-			if err != nil {
-				return fmt.Errorf("check remote state: %w", err)
-			}
+				done = timer.Start("parity check")
+				parity, err := checkParity(cmd.Context(), dc, worktreeID, snap)
+				done()
+				if err != nil {
+					return fmt.Errorf("check remote state: %w", err)
+				}
 
-			if parity.RemoteNotFound {
-				return fmt.Errorf("worktree %s not registered on the active remote — run `clank push` to register it first", worktreeID)
-			}
+				if parity.RemoteNotFound {
+					return fmt.Errorf("worktree %s not registered on the active remote — run `clank push` to register it first", worktreeID)
+				}
 
-			// Already-reclaimed no-op: local-owned + in-sync.
-			if parity.OwnerKind == "local" && parity.InSync {
-				fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" — you already own this worktree and local matches remote"))
-				return nil
-			}
+				// Already-reclaimed no-op: local-owned + in-sync.
+				if parity.OwnerKind == "local" && parity.InSync {
+					fmt.Fprintln(cmd.OutOrStdout(), styleOK.Render("✓ Already up to date")+styleDim.Render(" — you already own this worktree and local matches remote"))
+					return nil
+				}
 
-			// Refuse the dangerous case (local owns + diverged) unless
-			// explicitly forced. The user's safer option is push -m.
-			if parity.OwnerKind == "local" && !parity.InSync && !force {
-				printPullMigrateConflict(cmd)
-				return errors.New("pull --migrate refused: local-owned worktree has unsynced changes (see options above)")
+				// Refuse the dangerous case (local owns + diverged) unless
+				// explicitly forced. The user's safer option is push -m.
+				if parity.OwnerKind == "local" && !parity.InSync && !force {
+					printPullMigrateConflict(cmd)
+					return errors.New("pull --migrate refused: local-owned worktree has unsynced changes (see options above)")
+				}
 			}
 
 			return runPullMigrate(cmd, timer, dc, absRepo, worktreeID)
@@ -202,9 +209,13 @@ func runPullMigrate(cmd *cobra.Command, timer *phaseTimer, dc *daemonclient.Clie
 
 	fmt.Fprintf(cmd.OutOrStdout(), "committing ownership transfer...\n")
 
-	// Phase 3: commit ownership transfer
+	// Phase 3: commit ownership transfer. Independent budget — the
+	// apply phase above can burn most of applyCtx, leaving too little
+	// to flip ownership cleanly.
+	commitCtx, commitCancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+	defer commitCancel()
 	done = timer.Start("commit migration")
-	res, err := dc.CommitMigration(applyCtx, worktreeID, mres.CheckpointID, mres.MigrationToken)
+	res, err := dc.CommitMigration(commitCtx, worktreeID, mres.CheckpointID, mres.MigrationToken)
 	done()
 	if err != nil {
 		return fmt.Errorf("commit migration (apply succeeded; rerun pull to retry the ownership flip): %w", err)
