@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -262,6 +263,136 @@ func TestDecodeJWTClaims_ExtractsSubEmailExp(t *testing.T) {
 	sub2, _, _ := decodeJWTClaims("opaque-token")
 	if sub2 != "" {
 		t.Errorf("opaque token: got sub %q, want empty", sub2)
+	}
+}
+
+// TestLogin_IgnoresNonRootCallbackRequests pins that a follow-up
+// browser fetch to the localhost listener (e.g. /favicon.ico) gets a
+// clean 404 without rendering a misleading "no code" page or blocking
+// the handler goroutine on the result channel.
+func TestLogin_IgnoresNonRootCallbackRequests(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		redirect := r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		u, _ := url.Parse(redirect)
+		q := u.Query()
+		q.Set("code", "abc")
+		q.Set("state", state)
+		u.RawQuery = q.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token":  "opaque-token",
+			"refresh_token": "rt",
+			"token_type":    "Bearer",
+			"expires_in":    60,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	openedCh := make(chan string, 1)
+	favStatusCh := make(chan int, 1)
+	cli := &OAuthClient{
+		AuthorizeEndpoint: srv.URL + "/authorize",
+		TokenEndpoint:     srv.URL + "/token",
+		ClientID:          "test",
+		OpenBrowser:       func(t string) error { openedCh <- t; return nil },
+	}
+	go func() {
+		target := <-openedCh
+		u, _ := url.Parse(target)
+		redirect := u.Query().Get("redirect_uri")
+		state := u.Query().Get("state")
+		c := &http.Client{Timeout: 5 * time.Second}
+		// Browser fires favicon BEFORE the real callback — must
+		// return 404 without engaging the result channel.
+		resp, err := c.Get(redirect + "/favicon.ico")
+		if err != nil {
+			favStatusCh <- -1
+		} else {
+			favStatusCh <- resp.StatusCode
+			resp.Body.Close()
+		}
+		// Now the real callback.
+		q := url.Values{"code": {"abc"}, "state": {state}}
+		_, _ = c.Get(redirect + "?" + q.Encode())
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Login(ctx); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if got := <-favStatusCh; got != http.StatusNotFound {
+		t.Errorf("favicon status: got %d, want 404", got)
+	}
+}
+
+// TestLogin_FixedCallbackPort pins the IdP-specifies-port mechanism:
+// when OAuthClient.CallbackPort is set, the listener binds exactly
+// that port and the redirect_uri sent to /authorize uses it.
+// Required by IdPs that match redirect_uris strictly (Supabase OAuth
+// Server is the motivating case).
+func TestLogin_FixedCallbackPort(t *testing.T) {
+	t.Parallel()
+	// Bind a temp listener to discover an unused port we can request.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	wantPort := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	var gotRedirectURI string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /authorize", func(w http.ResponseWriter, r *http.Request) {
+		gotRedirectURI = r.URL.Query().Get("redirect_uri")
+		redirect := r.URL.Query().Get("redirect_uri")
+		state := r.URL.Query().Get("state")
+		u, _ := url.Parse(redirect)
+		q := u.Query()
+		q.Set("code", "ok")
+		q.Set("state", state)
+		u.RawQuery = q.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_token":  signTestJWT(t, []byte("k"), map[string]any{"sub": "u"}),
+			"refresh_token": "rt",
+			"token_type":    "Bearer",
+			"expires_in":    60,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	openedCh := make(chan string, 1)
+	cli := &OAuthClient{
+		AuthorizeEndpoint: srv.URL + "/authorize",
+		TokenEndpoint:     srv.URL + "/token",
+		ClientID:          "test",
+		CallbackPort:      wantPort,
+		OpenBrowser:       func(target string) error { openedCh <- target; return nil },
+	}
+	go func() {
+		target := <-openedCh
+		c := &http.Client{Timeout: 5 * time.Second}
+		_, _ = c.Get(target)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := cli.Login(ctx); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	wantSubstr := fmt.Sprintf(":%d", wantPort)
+	if !strings.Contains(gotRedirectURI, wantSubstr) {
+		t.Errorf("redirect_uri: got %q, want it to contain %q", gotRedirectURI, wantSubstr)
 	}
 }
 

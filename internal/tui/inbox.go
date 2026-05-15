@@ -976,6 +976,7 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
+			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 			// Only rebuild from this data if not actively filtering.
 			if m.searchQuery == "" {
 				m.buildGroups(m.filteredSessions())

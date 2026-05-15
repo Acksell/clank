@@ -124,6 +124,15 @@ type Snapshot struct {
 // working tree's state. No filesystem writes (other than git's own
 // object hashing).
 func (b *Builder) Snapshot(ctx context.Context) (*Snapshot, error) {
+	return b.snapshot(ctx)
+}
+
+// snapshot is the shared SHA-capture routine. Both Snapshot (parity
+// fast-path) and Build (full checkpoint) start from these 4 fields;
+// keeping a single implementation rules out silent divergence — if
+// the two paths emit different SHAs for the same working tree, the
+// parity check breaks idempotency without anyone noticing.
+func (b *Builder) snapshot(ctx context.Context) (*Snapshot, error) {
 	headCommit, err := b.gitOutput(ctx, nil, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
@@ -162,27 +171,14 @@ func (b *Builder) Build(ctx context.Context, checkpointID string) (*Result, erro
 		return nil, errors.New("checkpoint: checkpointID is required")
 	}
 
-	headCommit, err := b.gitOutput(ctx, nil, "rev-parse", "HEAD")
+	snap, err := b.snapshot(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
+		return nil, err
 	}
-	headCommit = strings.TrimSpace(headCommit)
-
-	headRef := ""
-	if out, err := b.gitOutput(ctx, nil, "symbolic-ref", "--short", "HEAD"); err == nil {
-		headRef = strings.TrimSpace(out)
-	}
-
-	indexTreeOut, err := b.gitOutput(ctx, nil, "write-tree")
-	if err != nil {
-		return nil, fmt.Errorf("write-tree (index): %w", err)
-	}
-	indexTree := strings.TrimSpace(indexTreeOut)
-
-	worktreeTree, err := b.captureWorktreeTree(ctx, headCommit)
-	if err != nil {
-		return nil, fmt.Errorf("capture worktreeTree: %w", err)
-	}
+	headCommit := snap.HeadCommit
+	headRef := snap.HeadRef
+	indexTree := snap.IndexTree
+	worktreeTree := snap.WorktreeTree
 
 	commitMsg := "clank checkpoint " + checkpointID
 

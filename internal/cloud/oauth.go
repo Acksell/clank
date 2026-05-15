@@ -68,6 +68,17 @@ type OAuthClient struct {
 	// IdPs allow either as a wildcard in their redirect-URI config.
 	CallbackHosts []string
 
+	// CallbackPort, when non-zero, pins the localhost listener to
+	// exactly this port. Default 0 = kernel-assigned random port,
+	// which is what RFC 8252 §7.3 recommends for native apps.
+	//
+	// Set this when the IdP rejects redirect_uris with arbitrary
+	// loopback ports (Supabase OAuth Server, for example, requires
+	// an exact match against the registered redirect_uris). The
+	// gateway communicates the required port via AuthConfig.
+	// If the port is already in use, Login returns an error.
+	CallbackPort int
+
 	// HTTPClient is used for the token exchange. Optional;
 	// defaults to a 30s-timeout client.
 	HTTPClient *http.Client
@@ -127,7 +138,7 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 	}
 	state := base64.RawURLEncoding.EncodeToString(stateBytes)
 
-	listener, redirectURL, err := bindLocalhost(c.CallbackHosts)
+	listener, redirectURL, err := bindLocalhost(c.CallbackHosts, c.CallbackPort)
 	if err != nil {
 		return nil, fmt.Errorf("oauth: bind localhost: %w", err)
 	}
@@ -142,28 +153,41 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 		state string
 	}
 	resultCh := make(chan callbackResult, 1)
+	send := func(r callbackResult) {
+		// Non-blocking: a second redirect (or a quirky provider) must
+		// not pin the handler goroutine on a full buffered channel.
+		select {
+		case resultCh <- r:
+		default:
+		}
+	}
 
-	// Single-shot callback handler. We accept any path so providers
-	// that drop query params on redirect (or that strip the path)
-	// still hit us — we just key on the presence of `code`.
+	// Callback handler. Only the root path is the OAuth callback;
+	// favicon and other browser-issued sub-requests get a 404 so
+	// they can't render a misleading "no code" page or trip the
+	// non-blocking guard on the result channel.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		q := r.URL.Query()
 		if errStr := q.Get("error"); errStr != "" {
 			desc := q.Get("error_description")
 			renderCallbackPage(w, false, "Login failed: "+errStr+" — "+desc)
-			resultCh <- callbackResult{err: fmt.Errorf("oauth: %s: %s", errStr, desc)}
+			send(callbackResult{err: fmt.Errorf("oauth: %s: %s", errStr, desc)})
 			return
 		}
 		code := q.Get("code")
 		gotState := q.Get("state")
 		if code == "" {
 			renderCallbackPage(w, false, "Login failed: no code in callback.")
-			resultCh <- callbackResult{err: fmt.Errorf("oauth: callback missing code")}
+			send(callbackResult{err: fmt.Errorf("oauth: callback missing code")})
 			return
 		}
 		renderCallbackPage(w, true, "")
-		resultCh <- callbackResult{code: code, state: gotState}
+		send(callbackResult{code: code, state: gotState})
 	})
 
 	srv := &http.Server{Handler: mux}
@@ -335,22 +359,29 @@ func generatePKCEPair() (verifier, challenge string, err error) {
 }
 
 // bindLocalhost tries each host in `hosts` in turn (e.g. 127.0.0.1
-// then localhost) on port 0 (kernel-assigned) and returns the first
-// successful listener plus the redirect URL the IdP should call
-// back to. Defaults the host list when empty.
-func bindLocalhost(hosts []string) (net.Listener, string, error) {
+// then localhost) and returns the first successful listener plus the
+// redirect URL the IdP should call back to. Defaults the host list
+// when empty.
+//
+// When port == 0, binds on a kernel-assigned random port (RFC 8252's
+// recommendation for native apps). When port != 0, binds exactly that
+// port — required for IdPs that match redirect_uris strictly (e.g.
+// Supabase OAuth Server). If the fixed port is in use, returns the
+// EADDRINUSE error so the caller can surface a clear message.
+func bindLocalhost(hosts []string, port int) (net.Listener, string, error) {
 	if len(hosts) == 0 {
 		hosts = []string{"127.0.0.1", "localhost"}
 	}
 	var lastErr error
 	for _, h := range hosts {
-		l, err := net.Listen("tcp", h+":0")
+		addr := fmt.Sprintf("%s:%d", h, port) // port=0 → kernel-assigned
+		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		port := l.Addr().(*net.TCPAddr).Port
-		redirect := fmt.Sprintf("http://%s:%d", h, port)
+		gotPort := l.Addr().(*net.TCPAddr).Port
+		redirect := fmt.Sprintf("http://%s:%d", h, gotPort)
 		return l, redirect, nil
 	}
 	if lastErr == nil {
