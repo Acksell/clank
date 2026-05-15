@@ -100,7 +100,7 @@ func TestLogin_EndToEnd(t *testing.T) {
 	go func() {
 		target := <-openedCh
 		c := &http.Client{Timeout: 5 * time.Second}
-		_, _ = c.Get(target) // follows redirects to localhost listener
+		getAndDiscard(c, target) // follows redirects to localhost listener
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -190,7 +190,7 @@ func TestLogin_StateMismatchIsRejected(t *testing.T) {
 	go func() {
 		target := <-openedCh
 		c := &http.Client{Timeout: 5 * time.Second}
-		_, _ = c.Get(target)
+		getAndDiscard(c, target)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -320,7 +320,7 @@ func TestLogin_IgnoresNonRootCallbackRequests(t *testing.T) {
 		}
 		// Now the real callback.
 		q := url.Values{"code": {"abc"}, "state": {state}}
-		_, _ = c.Get(redirect + "?" + q.Encode())
+		getAndDiscard(c, redirect+"?"+q.Encode())
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -383,7 +383,7 @@ func TestLogin_FixedCallbackPort(t *testing.T) {
 	go func() {
 		target := <-openedCh
 		c := &http.Client{Timeout: 5 * time.Second}
-		_, _ = c.Get(target)
+		getAndDiscard(c, target)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -425,7 +425,7 @@ func TestLogin_ErrorResponseBubbles(t *testing.T) {
 	go func() {
 		target := <-openedCh
 		c := &http.Client{Timeout: 5 * time.Second}
-		_, _ = c.Get(target)
+		getAndDiscard(c, target)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -436,6 +436,18 @@ func TestLogin_ErrorResponseBubbles(t *testing.T) {
 }
 
 // --- helpers --------------------------------------------------------
+
+// getAndDiscard issues a GET and immediately closes the body. Used by
+// the IdP-driver goroutines whose only job is to walk the redirect
+// chain into clank's localhost listener; the body bytes are noise.
+// Keeps the test sockets from leaking file descriptors when these
+// tests are run in a tight loop.
+func getAndDiscard(c *http.Client, url string) {
+	resp, err := c.Get(url)
+	if err == nil && resp != nil {
+		_ = resp.Body.Close()
+	}
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
