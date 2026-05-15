@@ -9,6 +9,7 @@ package gateway
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +17,30 @@ import (
 	"github.com/acksell/clank/pkg/provisioner"
 	clanksync "github.com/acksell/clank/pkg/sync"
 )
+
+// AuthConfig is the public OAuth 2.0 discovery payload returned by
+// GET /auth-config. Embedders populate Config.AuthConfig with their
+// IdP details; the gateway serves it via AuthConfigHandler. Daemons
+// must mount that handler PRE-auth (it's the laptop's bootstrap
+// route — clank has no token when it calls it).
+//
+// Standard OAuth 2.0 only — Supabase OAuth Server, Auth0, Keycloak,
+// Okta, etc. all fit this shape. Nothing provider-specific.
+type AuthConfig struct {
+	AuthorizeEndpoint string   `json:"authorize_endpoint"`
+	TokenEndpoint     string   `json:"token_endpoint"`
+	ClientID          string   `json:"client_id"`
+	Scopes            []string `json:"scopes,omitempty"`
+	DefaultProvider   string   `json:"default_provider,omitempty"`
+
+	// CallbackPort, when set, instructs the laptop to bind its
+	// PKCE callback listener to exactly this port. Required when
+	// the IdP matches redirect_uris strictly (e.g. Supabase OAuth
+	// Server). The IdP must have `http://127.0.0.1:<port>` in its
+	// redirect_uris allow-list. Zero = random kernel-assigned port
+	// (RFC 8252 default for native apps).
+	CallbackPort int `json:"callback_port,omitempty"`
+}
 
 // Config wires the gateway's dependencies. Provisioner is required;
 // Sync is optional (when nil, the migration route returns 503 and
@@ -50,6 +75,12 @@ type Config struct {
 	// set; same supplier as the OwnerCache itself, but threaded
 	// separately so the router can call out without sharing state.
 	RemoteResolver RemoteResolver
+
+	// AuthConfig, when non-nil, makes AuthConfigHandler() return a
+	// handler that serves this payload as JSON. Daemons wire that
+	// handler pre-auth on GET /auth-config so the laptop can
+	// discover the IdP before it has a token.
+	AuthConfig *AuthConfig
 }
 
 // Gateway is the public ingress.
@@ -132,4 +163,25 @@ func (g *Gateway) handlePing(w http.ResponseWriter, _ *http.Request) {
 func (g *Gateway) handleGatewayHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// AuthConfigHandler returns an http.Handler that serves the
+// configured AuthConfig as JSON, or nil when AuthConfig is unset.
+// Daemons must mount this PRE-auth (GET /auth-config is the laptop's
+// bootstrap discovery route — clank has no token yet at that point).
+//
+// Returning a nil handler when AuthConfig is unset lets callers wire
+// the route conditionally without ceremony — `if h := gw.AuthConfigHandler();
+// h != nil { mux.Handle("GET /auth-config", h) }`.
+func (g *Gateway) AuthConfigHandler() http.Handler {
+	if g.cfg.AuthConfig == nil {
+		return nil
+	}
+	// Pre-encode once; the payload doesn't change at runtime.
+	body, _ := json.Marshal(g.cfg.AuthConfig)
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = w.Write(body)
+	})
 }

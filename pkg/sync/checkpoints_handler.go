@@ -254,7 +254,7 @@ func (s *Server) handleRegisterWorktree(w http.ResponseWriter, r *http.Request) 
 	// server appends `-2`, `-3`, … until INSERT succeeds. The user
 	// only sees a suffix when they hit an actual collision.
 	now := time.Now().UTC()
-	base := slugifyWorktreeID(req.DisplayName)
+	base := capWorktreeIDBase(slugifyWorktreeID(req.DisplayName))
 	id, err := s.mintUniqueWorktreeID(r.Context(), base, Worktree{
 		UserID:      caller.UserID,
 		DisplayName: req.DisplayName,
@@ -302,6 +302,24 @@ func (s *Server) mintUniqueWorktreeID(ctx context.Context, base string, template
 		// collision — try the next suffix
 	}
 	return "", fmt.Errorf("could not find an unused worktree id after %d attempts (base=%q)", maxAttempts, base)
+}
+
+// maxWorktreeIDBase caps the slug used as the base for worktree IDs.
+// Filesystem path components are bounded at 255 bytes on macOS/Linux;
+// mintUniqueWorktreeID appends up to a 4-char `-N` suffix (N≤200),
+// so a 64-byte base leaves plenty of headroom inside that limit and
+// keeps S3 keys readable.
+const maxWorktreeIDBase = 64
+
+// capWorktreeIDBase truncates a slug to maxWorktreeIDBase bytes,
+// preserving the "worktree" empty-input sentinel from slugifyWorktreeID.
+// Trims any trailing separators left by the truncation so the result
+// remains a clean slug.
+func capWorktreeIDBase(s string) string {
+	if len(s) <= maxWorktreeIDBase {
+		return s
+	}
+	return strings.TrimRight(s[:maxWorktreeIDBase], "-_.")
 }
 
 // slugifyWorktreeID turns a free-form display name into a filesystem-

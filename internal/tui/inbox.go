@@ -514,11 +514,10 @@ func (m *InboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateCloud(msg)
 	}
 
-	// Route background cloud results (e.g. the eager /me from Init)
-	// to the cloud view even when its panel isn't visible, so the
-	// sidebar indicator can flip from "checking" to "online" /
-	// "unavailable" without a hover.
-	if _, ok := msg.(cloudMeResultMsg); ok && m.cloudInitialized {
+	// Route background cloud login results to the cloud view even when
+	// its panel isn't visible, so the sidebar indicator can flip
+	// without the user having to re-enter the panel.
+	if _, ok := msg.(cloudLoginResultMsg); ok && m.cloudInitialized {
 		var cmd tea.Cmd
 		m.cloud, cmd = m.cloud.Update(msg)
 		m.sidebar.SetCloudStatus(m.cloud.Status())
@@ -977,6 +976,7 @@ func (m *InboxModel) updateSearch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.cachedSessions = msg.sessions
 			m.sidebar.SetSessions(m.cachedSessions)
+			m.sidebar.UpdateWorktreeOwnersFromSessions(m.cachedSessions)
 			// Only rebuild from this data if not actively filtering.
 			if m.searchQuery == "" {
 				m.buildGroups(m.filteredSessions())

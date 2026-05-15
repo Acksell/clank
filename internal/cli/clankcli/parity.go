@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	daemonclient "github.com/acksell/clank/internal/daemonclient"
 	"github.com/acksell/clank/pkg/sync/checkpoint"
@@ -71,4 +73,18 @@ func checkParity(ctx context.Context, dc *daemonclient.Client, worktreeID string
 // reach into pkg/sync/checkpoint directly.
 func snapshotRepo(ctx context.Context, repoPath string) (*checkpoint.Snapshot, error) {
 	return checkpoint.NewBuilder(repoPath, "laptop").Snapshot(ctx)
+}
+
+// isGitRepo reports whether repoPath is an initialized git working
+// tree (has a .git entry). Returns (false, nil) for both
+// "path doesn't exist" and "path exists but no .git" — both are
+// "skip the snapshot/parity fast-path" from pull's perspective.
+func isGitRepo(repoPath string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
