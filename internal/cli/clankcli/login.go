@@ -106,7 +106,7 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 		},
 	}
 	cmd.Flags().StringVar(&remoteName, "remote", "", "Remote name to log in to (default: active remote)")
-	cmd.Flags().StringVar(&provider, "provider", "", "OAuth provider override (default: server's default, falls back to 'github')")
+	cmd.Flags().StringVar(&provider, "provider", "", "OAuth provider override (default: server's default_provider, if any)")
 	return cmd
 }
 

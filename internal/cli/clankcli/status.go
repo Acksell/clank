@@ -21,7 +21,6 @@ import (
 // `clank push --migrate`), so it works even when the local clankd
 // isn't running.
 func statusCmd() *cobra.Command {
-	var repoPath string
 	cmd := &cobra.Command{
 		Use:   "status [repo-path]",
 		Short: "Show the current worktree's local/remote status",
@@ -30,6 +29,7 @@ ownership currently lives. Without arguments, uses the current directory.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
+			repoPath := ""
 			if len(args) == 1 {
 				repoPath = args[0]
 			}
@@ -77,11 +77,12 @@ func runStatus(ctx context.Context, repoPath string) (string, error) {
 	rep := statusReport{WorktreeID: wtID}
 
 	prefs, err := config.LoadPreferences()
-	if err == nil {
-		if p := prefs.ActiveRemote(); p != nil {
-			rep.ActiveRemote = prefs.Remote.Active
-			rep.ActiveRemoteURL = p.GatewayURL
-		}
+	if err != nil {
+		return "", fmt.Errorf("load preferences: %w", err)
+	}
+	if p := prefs.ActiveRemote(); p != nil {
+		rep.ActiveRemote = prefs.Remote.Active
+		rep.ActiveRemoteURL = p.GatewayURL
 	}
 
 	if rep.ActiveRemote != "" && wtID != "" {

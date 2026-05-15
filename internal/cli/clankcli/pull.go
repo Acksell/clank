@@ -31,7 +31,6 @@ import (
 // `--force` discards local changes and resets to the remote.
 func pullCmd() *cobra.Command {
 	var (
-		repoPath   string
 		worktreeID string
 		alsoMig    bool
 		force      bool
@@ -59,6 +58,7 @@ Without --migrate: bare data-only pull is post-MVP.`,
 			if force && !alsoMig {
 				return errors.New("--force only applies with --migrate (-m)")
 			}
+			repoPath := ""
 			if len(args) == 1 {
 				repoPath = args[0]
 			}
