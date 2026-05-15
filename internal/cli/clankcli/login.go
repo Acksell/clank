@@ -17,10 +17,10 @@ import (
 // code path the TUI's cloud panel uses; this is the terminal-only
 // entry point.
 //
-// Discovery: the gateway exposes /auth-config returning the IdP
-// (Supabase URL + anon key today). clank uses that to build the
-// authorize URL; the browser handles the actual sign-in (GitHub /
-// Google / etc. as configured in the IdP dashboard).
+// Discovery: the gateway exposes /auth-config returning standard
+// OAuth 2.0 endpoints (authorize, token, client_id, scopes). clank
+// runs PKCE against them; the browser handles the actual sign-in
+// (GitHub / Google / SSO / etc. as configured in the IdP dashboard).
 //
 // Targets the active remote by default; --remote selects a different
 // one without flipping which is active.
@@ -35,7 +35,7 @@ func loginCmd() *cobra.Command {
 		Long: `Authenticate against the gateway_url of a configured remote and
 store the access token on that remote's entry in preferences.json.
 
-clank opens your browser to the IdP (Supabase, discovered via
+clank opens your browser to the IdP (discovered via
 <gateway_url>/auth-config), and you sign in there. The browser
 redirects to a localhost listener clank spawns; the token round-trips
 back into the prefs file.
@@ -77,14 +77,20 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 
 			provName := provider
 			if provName == "" {
-				provName = nonEmptyCLIString(cfg.DefaultProvider, "github")
+				provName = cfg.DefaultProvider
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in via %s … ", provName)
+			if provName != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in via %s … ", provName)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Opening browser for sign-in … ")
+			}
 			oauth := &cloud.OAuthClient{
-				SupabaseURL: cfg.SupabaseURL,
-				AnonKey:     cfg.AnonKey,
-				Provider:    provName,
+				AuthorizeEndpoint: cfg.AuthorizeEndpoint,
+				TokenEndpoint:     cfg.TokenEndpoint,
+				ClientID:          cfg.ClientID,
+				Scopes:            cfg.Scopes,
+				Provider:          provName,
 			}
 			session, err := oauth.Login(ctx)
 			if err != nil {
@@ -142,11 +148,3 @@ func persistRemoteSession(name string, s *cloud.Session) error {
 	})
 }
 
-// nonEmptyCLIString is the CLI-side twin of cloudview.go's nonEmpty.
-// Kept inline to avoid creating a tiny utility package for one helper.
-func nonEmptyCLIString(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}

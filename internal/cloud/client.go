@@ -1,8 +1,8 @@
 // Package cloud is the laptop's HTTP client for the user's clank
 // gateway deployment. Provider-agnostic: the gateway exposes an
-// /auth-config discovery endpoint that returns the IdP details
-// (Supabase URL + anon key today), and clank's OAuth client (oauth.go)
-// runs standard OAuth 2.0 authorization code + PKCE against that IdP.
+// /auth-config discovery endpoint that returns standard OAuth 2.0
+// endpoints (authorize, token, client_id, scopes), and clank's OAuth
+// client (oauth.go) runs authorization code + PKCE against them.
 //
 // Designed for the TUI's Cloud panel (internal/tui/cloudview.go) and
 // the `clank login` subcommand. Every call is one-shot, Context-bounded.
@@ -44,26 +44,33 @@ func New(gatewayURL string, httpClient *http.Client) *Client {
 }
 
 // AuthConfig is the gateway's reply to GET /auth-config. It tells
-// clank which IdP to run OAuth against, plus the publishable details
-// needed to do so. The endpoint is public (no auth) because clank
-// has no token yet at the point it calls it.
+// clank which OAuth 2.0 IdP to talk to. The endpoint is public (no
+// auth) because clank has no token yet at the point it calls it.
 //
-// Fields are intentionally narrow — additions go in a separate
-// optional struct so older clients don't break on new fields.
+// All fields are standard OAuth 2.0 — Supabase OAuth Server, Auth0,
+// Okta, Keycloak, etc. all populate the same shape.
 type AuthConfig struct {
-	// SupabaseURL is the Supabase project root, e.g.
-	// "https://abc123.supabase.co". OAuth endpoints sit under
-	// /auth/v1/*.
-	SupabaseURL string `json:"supabase_url"`
+	// AuthorizeEndpoint is the IdP's /authorize URL, e.g.
+	// "https://abc.supabase.co/oauth/authorize".
+	AuthorizeEndpoint string `json:"authorize_endpoint"`
 
-	// AnonKey is the Supabase publishable anon key. Sent in the
-	// `apikey` header on every call to /auth/v1/*. Safe to ship
-	// to clients by design (RLS is the security boundary).
-	AnonKey string `json:"anon_key"`
+	// TokenEndpoint is the IdP's /token URL, e.g.
+	// "https://abc.supabase.co/oauth/token".
+	TokenEndpoint string `json:"token_endpoint"`
 
-	// DefaultProvider is the OAuth provider name the gateway
-	// suggests as the primary sign-in option (e.g. "github").
-	// Optional — clank's UI can override.
+	// ClientID is the public OAuth client identifier the laptop
+	// presents at both endpoints. PKCE replaces the client secret;
+	// nothing secret is shipped to the laptop.
+	ClientID string `json:"client_id"`
+
+	// Scopes are the OAuth scopes the laptop should request. Joined
+	// with spaces on the authorize URL per RFC 6749 §3.3.
+	Scopes []string `json:"scopes,omitempty"`
+
+	// DefaultProvider is an optional IdP hint (e.g. "github") the
+	// gateway suggests as the primary sign-in option. Passed as the
+	// non-spec `provider` query param when set; ignored by IdPs that
+	// don't recognise it.
 	DefaultProvider string `json:"default_provider,omitempty"`
 }
 
@@ -90,8 +97,8 @@ func (c *Client) FetchAuthConfig(ctx context.Context) (*AuthConfig, error) {
 	if err := json.Unmarshal(body, &cfg); err != nil {
 		return nil, fmt.Errorf("parse auth-config: %w", err)
 	}
-	if cfg.SupabaseURL == "" || cfg.AnonKey == "" {
-		return nil, fmt.Errorf("auth-config: response missing supabase_url or anon_key")
+	if cfg.AuthorizeEndpoint == "" || cfg.TokenEndpoint == "" || cfg.ClientID == "" {
+		return nil, fmt.Errorf("auth-config: response missing authorize_endpoint, token_endpoint, or client_id")
 	}
 	return &cfg, nil
 }

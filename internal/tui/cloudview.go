@@ -2,9 +2,10 @@ package tui
 
 // cloudview.go — TUI panel for the cloud. Provider-agnostic by design:
 // clank discovers the IdP from <GatewayURL>/auth-config, then runs
-// standard OAuth 2.0 authorization code + PKCE against that IdP
-// (Supabase Auth today, anything tomorrow). The gateway never sees
-// passwords; clank never sees the auth provider directly.
+// standard OAuth 2.0 authorization code + PKCE against the returned
+// endpoints. The gateway never sees passwords; clank never knows or
+// cares which IdP (Supabase OAuth Server, Auth0, Keycloak, …) is on
+// the other end.
 //
 // One panel, narrow phase machine, single async chain (Login). Mirrors
 // the spirit of providerauth.go (one model, one bubbletea.Update, one
@@ -14,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +53,12 @@ type cloudLoginResultMsg struct {
 // cloudOpenURLPickerMsg is emitted when the user requests to change
 // the cloud URL. The inbox intercepts it and opens the URL picker modal.
 type cloudOpenURLPickerMsg struct{}
+
+// cloudReachabilityMsg carries the result of an authenticated probe
+// against the gateway. Fed into the model by Init (cold start) so the
+// sidebar can leave the "checking" state without waiting for the user
+// to navigate to a feature that hits the gateway.
+type cloudReachabilityMsg struct{ err error }
 
 // --- model ----------------------------------------------------------
 
@@ -170,11 +178,11 @@ func (m *cloudView) Init() tea.Cmd {
 			ExpiresAt:    p.ExpiresAt,
 		}
 		m.phase = cloudPhaseSignedIn
-		// Mark reachability as "checking" so the sidebar shows the
-		// spinner until the first authenticated request. (No /me
-		// endpoint to call here — the gateway's first real request
-		// from elsewhere in the app will flip lastCallErr.)
-		return nil
+		// Fire a probe so the sidebar can leave "checking" state.
+		// Authenticated GET /ping returns 200 with a valid bearer,
+		// 401 if the token's been revoked or doesn't match the
+		// gateway's auth config, network error if unreachable.
+		return cloudReachabilityProbe(m.gatewayURL, p.AccessToken)
 	}
 
 	m.phase = cloudPhaseSignedOut
@@ -208,6 +216,17 @@ func (m cloudView) Update(msg tea.Msg) (cloudView, tea.Cmd) {
 		_ = persistSession(msg.session)
 		m.phase = cloudPhaseSignedIn
 		m.err = ""
+		// The token-exchange round-trip just succeeded, so we know
+		// the IdP is reachable and minted us a valid token. Flip the
+		// reachability flag so the sidebar leaves "checking" without
+		// waiting on a follow-up gateway probe.
+		m.hasCalled = true
+		m.lastCallErr = nil
+		return m, nil
+
+	case cloudReachabilityMsg:
+		m.hasCalled = true
+		m.lastCallErr = msg.err
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -291,9 +310,43 @@ func (m cloudView) handleKey(msg tea.KeyPressMsg) (cloudView, tea.Cmd) {
 
 // --- async commands -------------------------------------------------
 
+// cloudReachabilityProbe fires an authenticated GET /ping against the
+// gateway and returns a cloudReachabilityMsg with the verdict. Used by
+// Init() on cold start: when prefs already hold a token, the sidebar
+// would otherwise stay in "checking" forever (no other code path flips
+// hasCalled). The probe gives us a reachability answer in one round-trip.
+//
+// Bounded by a short timeout so a slow/unreachable gateway doesn't
+// leave the probe goroutine hanging — Status() simply stays Checking
+// until the timeout fires and reports the failure.
+func cloudReachabilityProbe(gatewayURL, accessToken string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(gatewayURL, "/")+"/ping", nil)
+		if err != nil {
+			return cloudReachabilityMsg{err: err}
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return cloudReachabilityMsg{err: err}
+		}
+		defer resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return cloudReachabilityMsg{err: nil}
+		case http.StatusUnauthorized:
+			return cloudReachabilityMsg{err: cloud.ErrUnauthorized}
+		default:
+			return cloudReachabilityMsg{err: fmt.Errorf("ping: status %d", resp.StatusCode)}
+		}
+	}
+}
+
 // loginCmd kicks off the full PKCE flow in a goroutine and returns
 // the result via cloudLoginResultMsg. It performs two HTTP roundtrips:
-//   1. GET <gateway>/auth-config (discover Supabase URL + anon key)
+//   1. GET <gateway>/auth-config (discover OAuth 2.0 endpoints + client_id)
 //   2. The OAuth dance (browser open, callback, token exchange)
 // Both run inside the supplied ctx; cancelling ctx aborts the flow.
 func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
@@ -307,21 +360,15 @@ func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
 			return cloudLoginResultMsg{err: fmt.Errorf("discover IdP: %w", err)}
 		}
 		oauth := &cloud.OAuthClient{
-			SupabaseURL: cfg.SupabaseURL,
-			AnonKey:     cfg.AnonKey,
-			Provider:    nonEmpty(cfg.DefaultProvider, "github"),
+			AuthorizeEndpoint: cfg.AuthorizeEndpoint,
+			TokenEndpoint:     cfg.TokenEndpoint,
+			ClientID:          cfg.ClientID,
+			Scopes:            cfg.Scopes,
+			Provider:          cfg.DefaultProvider,
 		}
 		sess, err := oauth.Login(ctx)
 		return cloudLoginResultMsg{session: sess, err: err}
 	}
-}
-
-// nonEmpty returns a if non-empty, else b.
-func nonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 // --- view -----------------------------------------------------------

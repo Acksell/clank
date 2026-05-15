@@ -1,20 +1,17 @@
 package cloud
 
-// oauth.go — Supabase Auth PKCE client. Implements OAuth 2.0
-// Authorization Code with PKCE (RFC 7636) against Supabase's
-// /auth/v1/* endpoints. Browser-based flow with a localhost callback;
-// suitable for desktop CLIs where the user can open a browser.
+// oauth.go — standards OAuth 2.0 Authorization Code + PKCE client
+// (RFC 6749 + RFC 7636). Browser-based flow with a localhost callback;
+// suitable for desktop CLIs where the user can open a browser. Knows
+// nothing about any specific IdP: the endpoint URLs and client_id are
+// supplied at construction time (typically by FetchAuthConfig).
 //
-// Why Supabase Auth (not OAuth Server): the user already runs a
-// Supabase project for their gateway. Supabase Auth has full OAuth
-// provider support (GitHub, Google, etc.) configured via the
-// dashboard, returns JWTs the gateway can verify via JWKS, and
-// requires zero client registration. The PKCE flow tracks the
-// installed-app contract from RFC 8252.
+// Token endpoint uses application/x-www-form-urlencoded per RFC 6749
+// §4.1.3. PKCE uses S256 (SHA256(verifier), base64url) per RFC 7636.
 //
 // Not used in SSH / container environments: localhost callbacks
 // can't reach the user's laptop from a remote shell. Device flow
-// could be re-added as a fallback later (auto-detected via
+// (RFC 8628) could be re-added as a fallback later (auto-detected via
 // $SSH_TTY).
 
 import (
@@ -35,21 +32,30 @@ import (
 	"time"
 )
 
-// OAuthClient runs the PKCE dance against a single Supabase project.
-// Construct once per login attempt; not reused after Login returns.
+// OAuthClient runs the PKCE dance against a single IdP. Construct once
+// per login attempt; not reused after Login returns.
 type OAuthClient struct {
-	// SupabaseURL is the project root, e.g.
-	// "https://abc123.supabase.co". OAuth endpoints sit under
-	// /auth/v1/*.
-	SupabaseURL string
+	// AuthorizeEndpoint is the IdP's authorize URL, e.g.
+	// "https://abc.supabase.co/oauth/authorize" or
+	// "https://auth.example.com/oauth/authorize".
+	AuthorizeEndpoint string
 
-	// AnonKey is the project's publishable anon key. Required for
-	// all /auth/v1/* calls (sent in the `apikey` header).
-	AnonKey string
+	// TokenEndpoint is the IdP's token URL, e.g.
+	// "https://abc.supabase.co/oauth/token".
+	TokenEndpoint string
 
-	// Provider is the OAuth provider Supabase should sign in with
-	// — e.g. "github", "google", "azure". Required: forwarded as
-	// the `provider` query param on /authorize.
+	// ClientID is the public OAuth client identifier registered with
+	// the IdP. PKCE replaces the client secret, so no secret here.
+	ClientID string
+
+	// Scopes are the OAuth scopes requested at /authorize. Joined
+	// with spaces per RFC 6749 §3.3. May be empty.
+	Scopes []string
+
+	// Provider is an optional IdP hint passed as the non-standard
+	// `provider` query parameter on /authorize. Used by Supabase Auth
+	// (and similar) to route the user straight to GitHub / Google /
+	// etc. Ignored by IdPs that don't recognise it.
 	Provider string
 
 	// OpenBrowser is the function called to launch the user's
@@ -58,11 +64,11 @@ type OAuthClient struct {
 	OpenBrowser func(target string) error
 
 	// CallbackHosts is the set of bind hosts the localhost listener
-	// will try in order. Default ["127.0.0.1", "localhost"]; Supabase
-	// allows either as a wildcard in "Additional Redirect URLs".
+	// will try in order. Default ["127.0.0.1", "localhost"]; most
+	// IdPs allow either as a wildcard in their redirect-URI config.
 	CallbackHosts []string
 
-	// HTTPClient is used for the /auth/v1/token exchange. Optional;
+	// HTTPClient is used for the token exchange. Optional;
 	// defaults to a 30s-timeout client.
 	HTTPClient *http.Client
 }
@@ -80,25 +86,26 @@ var ErrLoginTimeout = errors.New("cloud: login timed out")
 //
 //  1. Generate code_verifier + code_challenge (S256).
 //  2. Bind a localhost listener on a random free port.
-//  3. Open the user's browser to <SupabaseURL>/auth/v1/authorize
-//     with redirect_to pointing at the localhost listener.
-//  4. Wait for the provider's redirect (?code=... or ?error=...).
-//  5. Exchange the code at <SupabaseURL>/auth/v1/token?grant_type=pkce.
-//  6. Return the resulting Session.
+//  3. Open the user's browser to AuthorizeEndpoint with PKCE params
+//     and a redirect_uri pointing at the localhost listener.
+//  4. Wait for the IdP's redirect (?code=... or ?error=...).
+//  5. Exchange the code at TokenEndpoint (form-encoded).
+//  6. Return the resulting Session (with sub/email decoded from the
+//     JWT payload when the access token is a JWT).
 //
 // The context's deadline bounds the wait — caller is expected to
 // pass ctx with a reasonable timeout (e.g. 5 minutes). The browser
 // always opens; if OpenBrowser fails, the URL is returned in the
 // error so the user can paste it manually.
 func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
-	if c.SupabaseURL == "" {
-		return nil, fmt.Errorf("oauth: SupabaseURL is required")
+	if c.AuthorizeEndpoint == "" {
+		return nil, fmt.Errorf("oauth: AuthorizeEndpoint is required")
 	}
-	if c.AnonKey == "" {
-		return nil, fmt.Errorf("oauth: AnonKey is required")
+	if c.TokenEndpoint == "" {
+		return nil, fmt.Errorf("oauth: TokenEndpoint is required")
 	}
-	if c.Provider == "" {
-		c.Provider = "github"
+	if c.ClientID == "" {
+		return nil, fmt.Errorf("oauth: ClientID is required")
 	}
 	openBrowser := c.OpenBrowser
 	if openBrowser == nil {
@@ -126,7 +133,7 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 	}
 	defer listener.Close()
 
-	authorizeURL := buildAuthorizeURL(c.SupabaseURL, c.Provider, redirectURL, challenge, state)
+	authorizeURL := buildAuthorizeURL(c.AuthorizeEndpoint, c.ClientID, c.Scopes, c.Provider, redirectURL, challenge, state)
 
 	// Channel for the callback handler to deliver the result.
 	type callbackResult struct {
@@ -182,7 +189,7 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 		if res.state != state {
 			return nil, fmt.Errorf("oauth: state mismatch (possible CSRF) — got %q, want %q", res.state, state)
 		}
-		return c.exchangeCode(ctx, httpClient, res.code, verifier)
+		return c.exchangeCode(ctx, httpClient, res.code, verifier, redirectURL)
 	}
 }
 
@@ -190,58 +197,54 @@ func (c *OAuthClient) Login(ctx context.Context) (*Session, error) {
 // Used when the cached access_token has expired but the refresh
 // token is still valid.
 func (c *OAuthClient) Refresh(ctx context.Context, refreshToken string) (*Session, error) {
-	if c.SupabaseURL == "" || c.AnonKey == "" {
-		return nil, fmt.Errorf("oauth: SupabaseURL and AnonKey are required")
+	if c.TokenEndpoint == "" || c.ClientID == "" {
+		return nil, fmt.Errorf("oauth: TokenEndpoint and ClientID are required")
 	}
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-
-	tokenURL := strings.TrimRight(c.SupabaseURL, "/") + "/auth/v1/token?grant_type=refresh_token"
-	body, _ := json.Marshal(map[string]string{"refresh_token": refreshToken})
-	return doTokenExchange(ctx, httpClient, tokenURL, c.AnonKey, body)
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {c.ClientID},
+	}
+	return doTokenExchange(ctx, httpClient, c.TokenEndpoint, form.Encode())
 }
 
 // --- internals ------------------------------------------------------
 
-func (c *OAuthClient) exchangeCode(ctx context.Context, hc *http.Client, code, verifier string) (*Session, error) {
-	tokenURL := strings.TrimRight(c.SupabaseURL, "/") + "/auth/v1/token?grant_type=pkce"
-	body, _ := json.Marshal(map[string]string{
-		"auth_code":     code,
-		"code_verifier": verifier,
-	})
-	return doTokenExchange(ctx, hc, tokenURL, c.AnonKey, body)
+func (c *OAuthClient) exchangeCode(ctx context.Context, hc *http.Client, code, verifier, redirectURI string) (*Session, error) {
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {c.ClientID},
+		"code_verifier": {verifier},
+	}
+	return doTokenExchange(ctx, hc, c.TokenEndpoint, form.Encode())
 }
 
-// supabaseTokenResponse mirrors Supabase Auth's token response shape.
-type supabaseTokenResponse struct {
+// tokenResponse mirrors RFC 6749 §5.1's standard token response.
+type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int64  `json:"expires_in"`
-	ExpiresAt    int64  `json:"expires_at"`
-	User         struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-	} `json:"user"`
 }
 
-type supabaseErrorResponse struct {
-	Code             string `json:"code"`
-	Message          string `json:"message"`
+// oauthErrorResponse mirrors RFC 6749 §5.2's error response.
+type oauthErrorResponse struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
 }
 
-func doTokenExchange(ctx context.Context, hc *http.Client, tokenURL, anonKey string, body []byte) (*Session, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
+func doTokenExchange(ctx context.Context, hc *http.Client, tokenURL, formBody string) (*Session, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(formBody))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("apikey", anonKey)
-	req.Header.Set("Authorization", "Bearer "+anonKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := hc.Do(req)
@@ -252,11 +255,11 @@ func doTokenExchange(ctx context.Context, hc *http.Client, tokenURL, anonKey str
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp supabaseErrorResponse
+		var errResp oauthErrorResponse
 		_ = json.Unmarshal(respBody, &errResp)
-		msg := errResp.Message
+		msg := errResp.ErrorDescription
 		if msg == "" {
-			msg = errResp.ErrorDescription
+			msg = errResp.Error
 		}
 		if msg == "" {
 			msg = strings.TrimSpace(string(respBody))
@@ -267,24 +270,53 @@ func doTokenExchange(ctx context.Context, hc *http.Client, tokenURL, anonKey str
 		return nil, fmt.Errorf("token exchange: status %d: %s", resp.StatusCode, msg)
 	}
 
-	var tok supabaseTokenResponse
+	var tok tokenResponse
 	if err := json.Unmarshal(respBody, &tok); err != nil {
 		return nil, fmt.Errorf("parse token response: %w", err)
 	}
 	if tok.AccessToken == "" {
 		return nil, fmt.Errorf("token exchange: empty access_token in response")
 	}
-	expires := tok.ExpiresAt
+	sub, email, exp := decodeJWTClaims(tok.AccessToken)
+	expires := exp
 	if expires == 0 && tok.ExpiresIn > 0 {
 		expires = time.Now().Unix() + tok.ExpiresIn
 	}
 	return &Session{
 		AccessToken:  tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
-		UserID:       tok.User.ID,
-		UserEmail:    tok.User.Email,
+		UserID:       sub,
+		UserEmail:    email,
 		ExpiresAt:    expires,
 	}, nil
+}
+
+// decodeJWTClaims base64-decodes the middle segment of a JWT and
+// extracts sub, email, and exp. Best-effort — opaque (non-JWT) tokens
+// or unparseable payloads return zero values; the gateway re-verifies
+// the signature on every request so we don't need to here.
+func decodeJWTClaims(token string) (sub, email string, exp int64) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return "", "", 0
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Some libraries emit padded base64 — try the padded variant.
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return "", "", 0
+		}
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+		Exp   int64  `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", 0
+	}
+	return claims.Sub, claims.Email, claims.Exp
 }
 
 // generatePKCEPair returns (code_verifier, code_challenge) per
@@ -304,7 +336,7 @@ func generatePKCEPair() (verifier, challenge string, err error) {
 
 // bindLocalhost tries each host in `hosts` in turn (e.g. 127.0.0.1
 // then localhost) on port 0 (kernel-assigned) and returns the first
-// successful listener plus the redirect URL Supabase should call
+// successful listener plus the redirect URL the IdP should call
 // back to. Defaults the host list when empty.
 func bindLocalhost(hosts []string) (net.Listener, string, error) {
 	if len(hosts) == 0 {
@@ -327,18 +359,28 @@ func bindLocalhost(hosts []string) (net.Listener, string, error) {
 	return nil, "", lastErr
 }
 
-// buildAuthorizeURL constructs the Supabase /auth/v1/authorize URL
-// with PKCE parameters. URL-encodes redirect_to since it contains
-// scheme + port.
-func buildAuthorizeURL(supabaseURL, provider, redirectTo, challenge, state string) string {
-	base := strings.TrimRight(supabaseURL, "/") + "/auth/v1/authorize"
+// buildAuthorizeURL constructs the /authorize URL with PKCE parameters
+// per RFC 6749 §4.1.1 + RFC 7636 §4.3. provider is an optional
+// non-spec hint; emitted only when non-empty.
+func buildAuthorizeURL(authorizeEndpoint, clientID string, scopes []string, provider, redirectURI, challenge, state string) string {
 	v := url.Values{}
-	v.Set("provider", provider)
-	v.Set("redirect_to", redirectTo)
+	v.Set("response_type", "code")
+	v.Set("client_id", clientID)
+	v.Set("redirect_uri", redirectURI)
+	if len(scopes) > 0 {
+		v.Set("scope", strings.Join(scopes, " "))
+	}
+	v.Set("state", state)
 	v.Set("code_challenge", challenge)
 	v.Set("code_challenge_method", "S256")
-	v.Set("state", state)
-	return base + "?" + v.Encode()
+	if provider != "" {
+		v.Set("provider", provider)
+	}
+	sep := "?"
+	if strings.Contains(authorizeEndpoint, "?") {
+		sep = "&"
+	}
+	return authorizeEndpoint + sep + v.Encode()
 }
 
 // renderCallbackPage writes a minimal HTML page to the browser
