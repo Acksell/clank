@@ -365,6 +365,7 @@ func (m *cloudView) loginCmd(ctx context.Context) tea.Cmd {
 			ClientID:          cfg.ClientID,
 			Scopes:            cfg.Scopes,
 			Provider:          cfg.DefaultProvider,
+			CallbackPort:      cfg.CallbackPort,
 		}
 		sess, err := oauth.Login(ctx)
 		return cloudLoginResultMsg{session: sess, err: err}

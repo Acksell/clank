@@ -217,6 +217,10 @@ func runGatewayServer(prov provisioner.Provisioner, opts ServerOptions) error {
 // CLANK_AUTH_CLIENT_ID          — OAuth client identifier
 // CLANK_AUTH_SCOPES             — space-separated, e.g. "openid email"
 // CLANK_AUTH_DEFAULT_PROVIDER   — optional IdP hint (e.g. "github")
+// CLANK_AUTH_CALLBACK_PORT      — pin laptop's PKCE listener to a
+//                                  fixed port (required when the IdP
+//                                  matches redirect_uris strictly,
+//                                  e.g. Supabase OAuth Server).
 func loadAuthConfigFromEnv() *gateway.AuthConfig {
 	authorize := os.Getenv("CLANK_AUTH_AUTHORIZE_ENDPOINT")
 	token := os.Getenv("CLANK_AUTH_TOKEN_ENDPOINT")
@@ -232,6 +236,14 @@ func loadAuthConfigFromEnv() *gateway.AuthConfig {
 	}
 	if s := os.Getenv("CLANK_AUTH_SCOPES"); s != "" {
 		cfg.Scopes = strings.Fields(s)
+	}
+	if s := os.Getenv("CLANK_AUTH_CALLBACK_PORT"); s != "" {
+		p, err := strconv.Atoi(s)
+		if err != nil || p < 1 || p > 65535 {
+			log.Printf("gateway: CLANK_AUTH_CALLBACK_PORT=%q invalid, ignoring", s)
+		} else {
+			cfg.CallbackPort = p
+		}
 	}
 	return cfg
 }

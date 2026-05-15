@@ -91,6 +91,7 @@ the user's browser). Workaround: ssh -L <port>:localhost:<port>.`,
 				ClientID:          cfg.ClientID,
 				Scopes:            cfg.Scopes,
 				Provider:          provName,
+				CallbackPort:      cfg.CallbackPort,
 			}
 			session, err := oauth.Login(ctx)
 			if err != nil {

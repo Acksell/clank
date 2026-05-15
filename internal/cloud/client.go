@@ -72,6 +72,14 @@ type AuthConfig struct {
 	// non-spec `provider` query param when set; ignored by IdPs that
 	// don't recognise it.
 	DefaultProvider string `json:"default_provider,omitempty"`
+
+	// CallbackPort, when set, tells the laptop to bind its PKCE
+	// callback listener to exactly this port (instead of a random
+	// kernel-assigned port). Required by IdPs that match
+	// redirect_uris strictly — Supabase OAuth Server, for example.
+	// The IdP must have the same `http://127.0.0.1:<port>` registered
+	// as a redirect_uri for the OAuth client.
+	CallbackPort int `json:"callback_port,omitempty"`
 }
 
 // FetchAuthConfig calls GET <gateway>/auth-config to discover the
@@ -99,6 +107,9 @@ func (c *Client) FetchAuthConfig(ctx context.Context) (*AuthConfig, error) {
 	}
 	if cfg.AuthorizeEndpoint == "" || cfg.TokenEndpoint == "" || cfg.ClientID == "" {
 		return nil, fmt.Errorf("auth-config: response missing authorize_endpoint, token_endpoint, or client_id")
+	}
+	if cfg.CallbackPort < 0 || cfg.CallbackPort > 65535 {
+		return nil, fmt.Errorf("auth-config: callback_port %d out of range", cfg.CallbackPort)
 	}
 	return &cfg, nil
 }

@@ -32,6 +32,14 @@ type AuthConfig struct {
 	ClientID          string   `json:"client_id"`
 	Scopes            []string `json:"scopes,omitempty"`
 	DefaultProvider   string   `json:"default_provider,omitempty"`
+
+	// CallbackPort, when set, instructs the laptop to bind its
+	// PKCE callback listener to exactly this port. Required when
+	// the IdP matches redirect_uris strictly (e.g. Supabase OAuth
+	// Server). The IdP must have `http://127.0.0.1:<port>` in its
+	// redirect_uris allow-list. Zero = random kernel-assigned port
+	// (RFC 8252 default for native apps).
+	CallbackPort int `json:"callback_port,omitempty"`
 }
 
 // Config wires the gateway's dependencies. Provisioner is required;
