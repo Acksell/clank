@@ -110,22 +110,20 @@ type cloudView struct {
 //
 // The disk baseline is authoritative for NotConfigured and Offline
 // (no token → reachability is moot). Once a token is on disk we move
-// through Checking → Online | Unavailable based on the most recent
+// through Online → Unavailable based on the most recent
 // server call we've made.
 func (m *cloudView) Status() cloudAuthStatus {
 	base := loadCloudAuthStatus()
-	if base != cloudStatusChecking {
+	if base == cloudStatusNotConfigured || base == cloudStatusOffline {
 		return base
 	}
 	if !m.hasCalled {
-		return cloudStatusChecking
+		return base
 	}
 	if m.lastCallErr == nil {
 		return cloudStatusOnline
 	}
 	if errors.Is(m.lastCallErr, cloud.ErrUnauthorized) {
-		// Defensive: clearSession() should already have flipped the
-		// disk baseline to Offline before we get here.
 		return cloudStatusOffline
 	}
 	return cloudStatusUnavailable

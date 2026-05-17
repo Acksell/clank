@@ -51,5 +51,5 @@ func loadCloudAuthStatus() cloudAuthStatus {
 	if p.AccessToken == "" || cloudTokenExpired(p) {
 		return cloudStatusOffline
 	}
-	return cloudStatusChecking
+	return cloudStatusOnline
 }
